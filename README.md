@@ -31,13 +31,30 @@ In practice, teams work around these limitations by overwriting data, duplicatin
 TBD
 
 ## Core concept
-1. Three-dimensional time series data model
+### Three-dimensional time series data model
 Every time series value is described using three independent timelines:
-- `knowledge_time`, the time when the value was known
-- `valid_time`, the time the value is representing a fact for
-- `change_time`, the time the value was changed
 
-2. Additional attributes that
+| Time dimension    | Description                                  |
+| ----------------- | -------------------------------------------- |
+| `knowledge_time`  | The time when the value was known            |
+| `valid_time`      | The time the value represents a fact for     |
+| `change_time`     | The time when the value was changed          |
+
+
+### Additional attributes 
+Schema columns provides additional attributes to the values according to:  
+
+| Column name   | Description                                                     |
+| ------------- | --------------------------------------------------------------- |
+| `value`       | The numeric value being stored (may be NULL)                    |
+| `value_key`   | Identifies what the value represents (e.g. mean, quantile, scenario) |
+| `tags`        | Semantic labels and quality flags applied to the value           |
+| `comment`     | Optional human annotation explaining the value or change         |
+| `run_id`      | Reference to the workflow run that produced the value            |
+| `run_params`  | Parameters and configuration associated with the producing run  |
+| `is_current`  | Indicates whether this row is the active version for its key     |
+| `changed_by`  | User or service responsible for the change                       |
+
 
 ## Installation
 ```python
