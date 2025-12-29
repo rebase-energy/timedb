@@ -3,8 +3,12 @@ import psycopg
 import json
 from typing import Optional, Iterable, Tuple, Any, Dict
 from datetime import datetime
+from importlib import resources
 
 from pg_insert_table import insert_run, insert_values
+
+# Read packaged SQL
+SQL_INSERT_METADATA = resources.files(__package__).joinpath("pg_insert_table_with_metadata.sql").read_text(encoding="utf-8")
 
 
 def _choose_typed_slots(val: Any):
@@ -97,21 +101,7 @@ def insert_metadata(
     if meta_inserts:
         with conn.cursor() as cur:
             cur.executemany(
-                """
-                INSERT INTO metadata_table (
-                    run_id, valid_time, metadata_key,
-                    value_number, value_string, value_bool, value_time, value_json,
-                    inserted_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
-                ON CONFLICT (run_id, valid_time, metadata_key) DO UPDATE
-                    SET value_number = EXCLUDED.value_number,
-                        value_string = EXCLUDED.value_string,
-                        value_bool   = EXCLUDED.value_bool,
-                        value_time   = EXCLUDED.value_time,
-                        value_json   = EXCLUDED.value_json,
-                        inserted_at  = now();
-                """,
+                SQL_INSERT_METADATA,
                 meta_inserts,
             )
 

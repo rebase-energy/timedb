@@ -20,6 +20,11 @@ dependencies = [
   "click>=8.0",
   "psycopg[binary]>=3.1",     # psycopg3 with binary wheels on macOS
   "python-dotenv>=0.21",      # load_dotenv used in helper scripts
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+  "pydantic>=2.0.0",
+  "pandas>=2.0.0",
+  "sqlalchemy>=2.0.0",
 ]
 
 # expose the CLI command 'timedb' which points to the Click group `cli` in timedb/cli.py

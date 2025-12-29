@@ -29,6 +29,28 @@ def delete():
     """Delete resources (e.g. tables)"""
     pass
 
+@cli.command("api")
+@click.option("--host", default="127.0.0.1", help="Host to bind to")
+@click.option("--port", default=8000, type=int, help="Port to bind to")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
+def start_api(host, port, reload):
+    """
+    Start the FastAPI server.
+    Example: timedb api --host 127.0.0.1 --port 8000
+    """
+    try:
+        import uvicorn
+        from . import api
+        click.echo(f"Starting TimeDB API server on http://{host}:{port}")
+        click.echo(f"API docs available at http://{host}:{port}/docs")
+        uvicorn.run(api.app, host=host, port=port, reload=reload)
+    except ImportError:
+        click.echo("ERROR: FastAPI dependencies not installed. Run: pip install fastapi uvicorn[standard]", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(1)
+
 @create.command("tables")
 @dsn_option
 @click.option("--schema", "-s", default=None, help="Schema name to use for the tables (sets search_path for the DDL).")
