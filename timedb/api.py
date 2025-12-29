@@ -45,6 +45,7 @@ class CreateRunRequest(BaseModel):
     workflow_id: str
     run_start_time: datetime
     run_finish_time: Optional[datetime] = None
+    known_time: Optional[datetime] = None  # Time of knowledge - defaults to inserted_at (now()) if not provided
     run_params: Optional[Dict[str, Any]] = None
     value_rows: List[ValueRow] = Field(default_factory=list)
 
@@ -213,12 +214,21 @@ async def create_run(request: CreateRunRequest):
         else:
             run_finish_time = None
         
+        if request.known_time is not None:
+            if request.known_time.tzinfo is None:
+                known_time = request.known_time.replace(tzinfo=timezone.utc)
+            else:
+                known_time = request.known_time
+        else:
+            known_time = None  # Will default to run_start_time in insert_run
+        
         db.insert.insert_run_with_values(
             conninfo=dsn,
             run_id=run_id,
             workflow_id=request.workflow_id,
             run_start_time=run_start_time,
             run_finish_time=run_finish_time,
+            known_time=known_time,
             value_rows=value_rows,
             run_params=request.run_params,
         )

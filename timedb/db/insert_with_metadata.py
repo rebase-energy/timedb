@@ -113,6 +113,7 @@ def insert_run_with_values_and_metadata(
     run_start_time: datetime,
     run_finish_time: Optional[datetime],
     value_rows: Iterable[Tuple[datetime, str, Optional[float]]],
+    known_time: Optional[datetime] = None,
     run_params: Optional[Dict] = None,
     metadata_rows: Optional[Iterable[Tuple[datetime, dict]]] = None,
 ) -> None:
@@ -121,21 +122,27 @@ def insert_run_with_values_and_metadata(
 
     - value_rows: iterable of (valid_time, value_key, value)
     - metadata_rows: iterable of (valid_time, {metadata_key: value, ...})
+    
+    Args:
+        known_time: Time of knowledge - when the data was known/available.
+                   If not provided, defaults to inserted_at (now()) in the database.
+                   Useful for backfill operations where data is inserted later.
     """
 
     with psycopg.connect(conninfo) as conn:
         with conn.transaction():
-            # insert run (uses pg_insert_table.insert_run)
+            # insert run (uses db.insert.insert_run)
             insert_run(
                 conn,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 run_start_time=run_start_time,
                 run_finish_time=run_finish_time,
+                known_time=known_time,
                 run_params=run_params,
             )
 
-            # insert values (uses pg_insert_table.insert_values)
+            # insert values (uses db.insert.insert_values)
             insert_values(conn, run_id=run_id, value_rows=value_rows)
 
             insert_metadata(conn, run_id=run_id, metadata_rows=metadata_rows)

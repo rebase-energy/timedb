@@ -12,31 +12,50 @@ def insert_run(
     workflow_id: str,
     run_start_time: datetime,
     run_finish_time: Optional[datetime] = None,
+    known_time: Optional[datetime] = None,
     run_params: Optional[Dict] = None,
 ) -> None:
     """
     Insert one forecast run into runs_table.
 
     Uses ON CONFLICT so retries are safe.
+    
+    Args:
+        known_time: Time of knowledge - when the data was known/available.
+                   If not provided, defaults to inserted_at (now()) in the database.
+                   Useful for backfill operations where data is inserted later.
     """
 
     run_params = json.dumps(run_params) if run_params is not None else None
-
 
     if run_start_time.tzinfo is None:
         raise ValueError("run_start_time must be timezone-aware")
     if run_finish_time is not None and run_finish_time.tzinfo is None:
         raise ValueError("run_finish_time must be timezone-aware")
+    if known_time is not None and known_time.tzinfo is None:
+        raise ValueError("known_time must be timezone-aware")
 
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO runs_table (run_id, workflow_id, run_start_time, run_finish_time, run_params)
-            VALUES (%s, %s, %s, %s, %s::jsonb)
-            ON CONFLICT (run_id) DO NOTHING;
-            """,
-            (run_id, workflow_id, run_start_time, run_finish_time, run_params),
-        )
+        if known_time is not None:
+            # If known_time is provided, include it in the INSERT
+            cur.execute(
+                """
+                INSERT INTO runs_table (run_id, workflow_id, run_start_time, run_finish_time, known_time, run_params)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (run_id) DO NOTHING;
+                """,
+                (run_id, workflow_id, run_start_time, run_finish_time, known_time, run_params),
+            )
+        else:
+            # If known_time is not provided, let the database default to inserted_at (now())
+            cur.execute(
+                """
+                INSERT INTO runs_table (run_id, workflow_id, run_start_time, run_finish_time, run_params)
+                VALUES (%s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (run_id) DO NOTHING;
+                """,
+                (run_id, workflow_id, run_start_time, run_finish_time, run_params),
+            )
 
 
 def insert_values(
@@ -112,6 +131,7 @@ def insert_run_with_values(
     run_start_time: datetime,
     run_finish_time: Optional[datetime],
     value_rows: Iterable[Tuple],  # accepts (valid_time, value_key, value) or (valid_time, valid_time_end, value_key, value)
+    known_time: Optional[datetime] = None,
     run_params: Optional[Dict] = None,
 ) -> None:
     """
@@ -123,6 +143,11 @@ def insert_run_with_values(
 
     This function will prepend the provided run_id to each row and call insert_values,
     inserting tuples of shape (run_id, valid_time, valid_time_end, value_key, value).
+    
+    Args:
+        known_time: Time of knowledge - when the data was known/available.
+                   If not provided, defaults to inserted_at (now()) in the database.
+                   Useful for backfill operations where data is inserted later.
     """
 
     with psycopg.connect(conninfo) as conn:
@@ -133,6 +158,7 @@ def insert_run_with_values(
                 workflow_id=workflow_id,
                 run_start_time=run_start_time,
                 run_finish_time=run_finish_time,
+                known_time=known_time,
                 run_params=run_params,
             )
 

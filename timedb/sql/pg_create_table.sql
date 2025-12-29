@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS runs_table (
   run_start_time   timestamptz NOT NULL,
   run_finish_time  timestamptz,
 
+  -- Time of knowledge: when the data was known/available
+  -- This can differ from run_start_time for backfill operations
+  -- Defaults to inserted_at (now()) if not provided
+  known_time       timestamptz DEFAULT now(),
+
   -- Parameters/configuration used for this run
   -- e.g. model settings, API request params, feature flags
   run_params       jsonb,
