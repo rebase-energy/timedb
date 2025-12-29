@@ -5,10 +5,10 @@ from typing import Optional, Iterable, Tuple, Any, Dict
 from datetime import datetime
 from importlib import resources
 
-from pg_insert_table import insert_run, insert_values
+from .insert import insert_run, insert_values
 
 # Read packaged SQL
-SQL_INSERT_METADATA = resources.files(__package__).joinpath("pg_insert_table_with_metadata.sql").read_text(encoding="utf-8")
+SQL_INSERT_METADATA = resources.files("timedb").joinpath("sql", "pg_insert_table_with_metadata.sql").read_text(encoding="utf-8")
 
 
 def _choose_typed_slots(val: Any):

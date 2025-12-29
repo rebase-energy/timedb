@@ -56,10 +56,10 @@ def start_api(host, port, reload):
 @click.option("--schema", "-s", default=None, help="Schema name to use for the tables (sets search_path for the DDL).")
 @click.option("--with-metadata/--no-metadata", default=False, help="Also create the optional metadata_table addon.")
 @click.option("--yes", "-y", is_flag=True, help="Do not prompt for confirmation")
-@click.option("--dry-run", is_flag=True, help="Print the DDL (from pg_create_table.DDL) and exit")
+@click.option("--dry-run", is_flag=True, help="Print the DDL (from db.create.DDL) and exit")
 def create_tables(dsn, schema, with_metadata, yes, dry_run):
     """
-    Create timedb tables using pg_create_table.create_schema().
+    Create timedb tables using db.create.create_schema().
     Example: timedb create tables --dsn postgresql://... --schema timedb --with-metadata
     """
     conninfo = dsn
@@ -69,14 +69,14 @@ def create_tables(dsn, schema, with_metadata, yes, dry_run):
 
     # Import the implementation module(s) from repository
     try:
-        from . import pg_create_table
+        from . import db
     except Exception as e:
-        click.echo(f"ERROR: cannot import pg_create_table: {e}", err=True)
+        click.echo(f"ERROR: cannot import db module: {e}", err=True)
         sys.exit(1)
 
-    # Dry-run -> print the DDL string defined in module (pg_create_table.DDL)
+    # Dry-run -> print the DDL string defined in module (db.create.DDL)
     if dry_run:
-        ddl = getattr(pg_create_table, "DDL", None)
+        ddl = getattr(db.create, "DDL", None)
         if ddl is None:
             click.echo("No DDL found in pg_create_table module.", err=True)
             sys.exit(1)
@@ -101,19 +101,18 @@ def create_tables(dsn, schema, with_metadata, yes, dry_run):
         # This ensures create_schema's psycopg.connect() inherits the search_path.
         os.environ["PGOPTIONS"] = f"-c search_path={schema}"
     try:
-        # call the create_schema function from pg_create_table
-        create_schema = getattr(pg_create_table, "create_schema", None)
+        # call the create_schema function from db.create
+        create_schema = getattr(db.create, "create_schema", None)
         if create_schema is None:
-            raise RuntimeError("pg_create_table.create_schema not found")
+            raise RuntimeError("db.create.create_schema not found")
         create_schema(conninfo)
         click.echo("Base timedb tables created/updated successfully.")
 
         if with_metadata:
             try:
-                from . import pg_create_table_with_metadata
-                create_schema_metadata = getattr(pg_create_table_with_metadata, "create_schema_metadata", None)
+                create_schema_metadata = getattr(db.create_with_metadata, "create_schema_metadata", None)
                 if create_schema_metadata is None:
-                    raise RuntimeError("pg_create_table_with_metadata.create_schema_metadata not found")
+                    raise RuntimeError("db.create_with_metadata.create_schema_metadata not found")
                 create_schema_metadata(conninfo)
                 click.echo("Optional metadata schema created/updated successfully.")
             except Exception as e:
@@ -157,9 +156,9 @@ def delete_tables(dsn, schema, yes):
 
     # Import the implementation module from repository
     try:
-        from . import pg_delete_table
+        from . import db
     except Exception as e:
-        click.echo(f"ERROR: cannot import pg_delete_table: {e}", err=True)
+        click.echo(f"ERROR: cannot import db module: {e}", err=True)
         sys.exit(1)
 
     # If schema specified, set PGOPTIONS to ensure the DDL runs with that search_path.
@@ -169,8 +168,8 @@ def delete_tables(dsn, schema, yes):
         # This ensures delete_schema's psycopg.connect() inherits the search_path.
         os.environ["PGOPTIONS"] = f"-c search_path={schema}"
     try:
-        # call the delete_schema function from pg_delete_table
-        delete_schema = getattr(pg_delete_table, "delete_schema", None)
+        # call the delete_schema function from db.delete
+        delete_schema = getattr(db.delete, "delete_schema", None)
         if delete_schema is None:
             raise RuntimeError("pg_delete_table.delete_schema not found")
         delete_schema(conninfo)

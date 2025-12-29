@@ -29,7 +29,7 @@ from psycopg.rows import dict_row
 # DDL (the schema you approved)
 # -----------------------------------------------------------------------------
 # Read packaged SQL
-DDL = resources.files(__package__).joinpath("pg_update_records.sql").read_text(encoding="utf-8")
+DDL = resources.files("timedb").joinpath("sql", "pg_update_records.sql").read_text(encoding="utf-8")
 
 # -----------------------------------------------------------------------------
 # Sentinel + dataclasses

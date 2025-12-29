@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import modal
 
-from pg_insert_table import insert_run_with_values
+from timedb.db.insert import insert_run_with_values
 
 load_dotenv()
 

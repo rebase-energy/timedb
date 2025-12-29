@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from dotenv import load_dotenv
 import modal
 
-from pg_insert_table_with_metadata import insert_run_with_values_and_metadata
+from timedb.db.insert_with_metadata import insert_run_with_values_and_metadata
 
 load_dotenv()
 

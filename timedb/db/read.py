@@ -9,7 +9,7 @@ from importlib import resources
 load_dotenv()
 
 # Read packaged SQL
-SQL_QUERY = resources.files(__package__).joinpath("pg_read_table.sql").read_text(encoding="utf-8")
+SQL_QUERY = resources.files("timedb").joinpath("sql", "pg_read_table.sql").read_text(encoding="utf-8")
 
 def read_values_between(
     conninfo: str,

@@ -3,10 +3,10 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["timedb"]
+packages = ["timedb", "timedb.db", "timedb.workflows"]
 
 [tool.setuptools.package-data]
-timedb = ["*.sql"]
+timedb = ["sql/*.sql"]
 
 [project]
 name = "timedb"

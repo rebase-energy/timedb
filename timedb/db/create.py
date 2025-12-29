@@ -18,7 +18,7 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 
 # Read packaged SQL
-DDL = resources.files(__package__).joinpath("pg_create_table.sql").read_text(encoding="utf-8")
+DDL = resources.files("timedb").joinpath("sql", "pg_create_table.sql").read_text(encoding="utf-8")
 
 def create_schema(conninfo: str) -> None:
     """

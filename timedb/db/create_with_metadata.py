@@ -3,7 +3,7 @@ import psycopg
 from dotenv import load_dotenv
 from importlib import resources
 
-from pg_create_table import create_schema
+from .create import create_schema
 
 load_dotenv()
 
@@ -17,7 +17,7 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 
 # Read packaged SQL
-DDL = resources.files(__package__).joinpath("pg_create_table_with_metadata.sql").read_text(encoding="utf-8")
+DDL = resources.files("timedb").joinpath("sql", "pg_create_table_with_metadata.sql").read_text(encoding="utf-8")
 
 
 def create_schema_metadata(conninfo: str) -> None:

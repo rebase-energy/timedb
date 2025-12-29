@@ -13,11 +13,7 @@ from dotenv import load_dotenv, find_dotenv
 import psycopg
 import pandas as pd
 
-from . import pg_read_table
-from . import pg_insert_table
-from . import pg_create_table
-from . import pg_delete_table
-from . import pg_update_records
+from . import db
 
 load_dotenv(find_dotenv())
 
@@ -152,7 +148,7 @@ async def read_values(
         if end_run and end_run.tzinfo is None:
             end_run = end_run.replace(tzinfo=timezone.utc)
         
-        df = pg_read_table.read_values_between(
+        df = db.read.read_values_between(
             dsn,
             start_valid=start_valid,
             end_valid=end_valid,
@@ -217,7 +213,7 @@ async def create_run(request: CreateRunRequest):
         else:
             run_finish_time = None
         
-        pg_insert_table.insert_run_with_values(
+        db.insert.insert_run_with_values(
             conninfo=dsn,
             run_id=run_id,
             workflow_id=request.workflow_id,
@@ -278,24 +274,24 @@ async def update_records(request: UpdateRecordsRequest):
             if "value" in provided_fields:
                 update_dict["value"] = req_update.value  # Can be None (explicit clear) or a float
             else:
-                update_dict["value"] = pg_update_records._UNSET  # Not provided, leave unchanged
+                update_dict["value"] = db.update._UNSET  # Not provided, leave unchanged
                 
             if "comment" in provided_fields:
                 update_dict["comment"] = req_update.comment  # Can be None (explicit clear) or a string
             else:
-                update_dict["comment"] = pg_update_records._UNSET  # Not provided, leave unchanged
+                update_dict["comment"] = db.update._UNSET  # Not provided, leave unchanged
                 
             if "tags" in provided_fields:
                 update_dict["tags"] = req_update.tags  # Can be None or [] (explicit clear) or a list
             else:
-                update_dict["tags"] = pg_update_records._UNSET  # Not provided, leave unchanged
+                update_dict["tags"] = db.update._UNSET  # Not provided, leave unchanged
             
-            update = pg_update_records.RecordUpdate(**update_dict)
+            update = db.update.RecordUpdate(**update_dict)
             updates.append(update)
         
         # Execute updates
         with psycopg.connect(dsn) as conn:
-            outcome = pg_update_records.update_records(conn, updates)
+            outcome = db.update.update_records(conn, updates)
         
         # Convert response to JSON-serializable format
         updated = [
@@ -343,12 +339,11 @@ async def create_schema(request: CreateSchemaRequest):
             os.environ["PGOPTIONS"] = f"-c search_path={request.schema}"
         
         try:
-            pg_create_table.create_schema(dsn)
+            db.create.create_schema(dsn)
             message = "Base timedb tables created/updated successfully."
             
             if request.with_metadata:
-                from . import pg_create_table_with_metadata
-                pg_create_table_with_metadata.create_schema_metadata(dsn)
+                db.create_with_metadata.create_schema_metadata(dsn)
                 message += " Optional metadata schema created/updated successfully."
             
             return {"message": message}
@@ -379,7 +374,7 @@ async def delete_schema(schema: Optional[str] = Query(None, description="Schema 
             os.environ["PGOPTIONS"] = f"-c search_path={schema}"
         
         try:
-            pg_delete_table.delete_schema(dsn)
+            db.delete.delete_schema(dsn)
             return {"message": "All timedb tables (including metadata) deleted successfully."}
         finally:
             # Restore PGOPTIONS
