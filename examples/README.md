@@ -44,7 +44,7 @@ python examples/02_forecast_revisions.py
 
 ### 3. Updates and Annotations (`03_updates_and_annotations.py`)
 Demonstrates human-in-the-loop corrections:
-- Updating existing values with comments
+- Updating existing values with annotations
 - Adding quality flags using tags
 - Tracking who made changes and when
 

@@ -93,15 +93,11 @@ Fixtures are defined in `conftest.py`:
 
 **Important**: The codebase has two different schemas:
 
-1. **Main schema** (`pg_create_table.sql`): Uses `value_key` and supports `valid_time_end` for intervals
-   - Used by: `create`, `insert`, `read` modules
-   - Used in: `test_create.py`, `test_insert.py`, `test_read.py`
+1. **Main schema** (`pg_create_table.sql`): Unified schema that supports inserts, reads, and updates. Includes support for `valid_time_end` for intervals, tags, annotations, and versioning.
+   - Used by: `create`, `insert`, `read`, `update` modules
+   - Used in: All test files (`test_create.py`, `test_insert.py`, `test_read.py`, `test_update.py`)
 
-2. **Update schema** (`pg_update_records.sql`): Uses `value_key` and doesn't support intervals
-   - Used by: `update` module
-   - Used in: `test_update.py`
-
-The test fixtures handle this automatically - use `clean_db` for main schema tests and `clean_db_for_update` for update tests.
+The test fixtures handle this automatically - both `clean_db` and `clean_db_for_update` use the main schema.
 
 ## Writing New Tests
 

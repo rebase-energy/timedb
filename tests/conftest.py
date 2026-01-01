@@ -34,14 +34,12 @@ def clean_db(test_db_conninfo):
 
 @pytest.fixture(scope="function")
 def clean_db_for_update(test_db_conninfo):
-    """Create a clean database schema for update tests."""
-    from timedb.db import update as update_module
-    
+    """Create a clean database schema for update tests (uses main schema which supports updates)."""
     # Delete existing schema if it exists
     delete.delete_schema(test_db_conninfo)
     
-    # Create update schema
-    update_module.create_schema(test_db_conninfo)
+    # Create main schema (now supports updates)
+    create.create_schema(test_db_conninfo)
     
     yield test_db_conninfo
     

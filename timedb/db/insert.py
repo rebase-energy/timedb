@@ -64,6 +64,7 @@ def insert_values(
     *,
     run_id: uuid.UUID,
     value_rows: Iterable[Tuple],
+    changed_by: Optional[str] = None,
 ) -> None:
     """
     Bulk insert forecast values for a run.
@@ -130,9 +131,9 @@ def insert_values(
             """
             INSERT INTO values_table (
                 run_id, tenant_id, series_id, valid_time, valid_time_end, value,
-                change_time, is_current
+                changed_by, change_time, is_current
             )
-            SELECT %s, %s, %s, %s, %s, %s, now(), true
+            SELECT %s, %s, %s, %s, %s, %s, %s, now(), true
             WHERE NOT EXISTS (
                 SELECT 1 FROM values_table
                 WHERE run_id = %s
@@ -143,7 +144,7 @@ def insert_values(
                   AND is_current = true
             );
             """,
-            [(r[0], r[1], r[4], r[2], r[3], r[5], r[0], r[1], r[2], r[3], r[2], r[4]) for r in rows_list],
+            [(r[0], r[1], r[4], r[2], r[3], r[5], changed_by, r[0], r[1], r[2], r[3], r[2], r[4]) for r in rows_list],
         )
 
 
@@ -158,6 +159,7 @@ def insert_run_with_values(
     value_rows: Iterable[Tuple],  # accepts (tenant_id, valid_time, series_id, value) or (tenant_id, valid_time, valid_time_end, series_id, value)
     known_time: Optional[datetime] = None,
     run_params: Optional[Dict] = None,
+    changed_by: Optional[str] = None,
 ) -> None:
     """
     One-shot helper: inserts the run + all values atomically.
@@ -203,6 +205,6 @@ def insert_run_with_values(
                 run_params=run_params,
             )
 
-            insert_values(conn, run_id=run_id, value_rows=value_rows)
+            insert_values(conn, run_id=run_id, value_rows=value_rows, changed_by=changed_by)
     
     print("Data values inserted successfully.")

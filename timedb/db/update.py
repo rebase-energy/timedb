@@ -1,14 +1,13 @@
-# pg_update_records.py
 """
-Create schema + concurrency-safe tri-state update API for versioned time-series.
+Concurrency-safe tri-state update API for versioned time-series.
 
 Key conventions:
  - At the Python API level, every updatable field is tri-state:
-     _UNSET => leave unchanged (field not provided)
-     None   => explicitly set SQL NULL (clear)
-     value  => set to that concrete value
+     Omit field => leave unchanged (field not provided)
+     None      => explicitly set SQL NULL (clear)
+     value     => set to that concrete value
  - Canonicalization:
-     comment: empty or whitespace-only -> SQL NULL
+     annotation: empty or whitespace-only -> SQL NULL
      tags: empty iterable or tags that normalize away -> SQL NULL
      tags normalized -> strip/lower/dedupe/sort (treated as a set)
  - No-op updates (canonicalized new == canonicalized current) are skipped.
@@ -16,67 +15,17 @@ Key conventions:
 """
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Iterable, List, Dict, Tuple
+from typing import Any, Optional, List, Dict, Tuple
 import uuid
 import datetime as dt
-from importlib import resources
-from dotenv import load_dotenv
 
 import psycopg
 from psycopg.rows import dict_row
 
 # -----------------------------------------------------------------------------
-# DDL (the schema you approved)
-# -----------------------------------------------------------------------------
-# Read packaged SQL
-DDL = resources.files("timedb").joinpath("sql", "pg_update_records.sql").read_text(encoding="utf-8")
-
-# -----------------------------------------------------------------------------
-# Sentinel + dataclasses
+# Sentinel for tri-state updates
 # -----------------------------------------------------------------------------
 _UNSET = object()  # sentinel to mean "field not provided / leave unchanged"
-
-@dataclass(frozen=True)
-class RecordKey:
-    run_id: uuid.UUID
-    tenant_id: uuid.UUID
-    valid_time: dt.datetime
-    series_id: uuid.UUID
-
-
-@dataclass(frozen=True)
-class RecordUpdate:
-    """
-    Tri-state update object.
-      - field == _UNSET => leave unchanged
-      - field == None   => explicitly set SQL NULL (clear)
-      - field == value  => set to that concrete value
-    """
-    run_id: uuid.UUID
-    tenant_id: uuid.UUID
-    valid_time: dt.datetime           # tz-aware
-    series_id: uuid.UUID
-
-    # Use Any so callers can pass floats, None, or the _UNSET sentinel
-    value: Any = _UNSET                 # float | None | _UNSET (must be in canonical unit for series)
-    comment: Any = _UNSET               # str   | None | _UNSET
-    tags: Any = _UNSET                  # Sequence[str] | None | _UNSET
-
-    changed_by: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class RecordUpdateResult:
-    key: RecordKey
-    version_id: int
-
-
-@dataclass(frozen=True)
-class UpdateRecordsOutcome:
-    updated: List[RecordUpdateResult]
-    skipped_no_ops: List[RecordKey]
 
 
 # -----------------------------------------------------------------------------
@@ -144,60 +93,272 @@ def _canonicalize_tags_stored(tags) -> Optional[List[str]]:
     return sorted(uniq)
 
 
-def _canonicalize_comment_input(comment) -> Optional[str]:
+def _canonicalize_annotation_input(annotation) -> Optional[str]:
     """
-    Canonicalize comment provided by caller:
+    Canonicalize annotation provided by caller:
       - None => explicit clear -> None
       - empty/whitespace-only => canonical None
       - otherwise strip() and return non-empty string
     """
-    if comment is None:
+    if annotation is None:
         return None
-    s = str(comment).strip()
+    s = str(annotation).strip()
     return s or None
 
 
-def _canonicalize_comment_stored(comment) -> Optional[str]:
-    """Canonicalize comment read from DB (defensive)."""
-    if comment is None:
+def _canonicalize_annotation_stored(annotation) -> Optional[str]:
+    """Canonicalize annotation read from DB (defensive)."""
+    if annotation is None:
         return None
-    s = str(comment).strip()
+    s = str(annotation).strip()
     return s or None
 
 
 # -----------------------------------------------------------------------------
 # Update function (concurrency-safe)
 # -----------------------------------------------------------------------------
-def update_records(conn: psycopg.Connection, updates: Iterable[RecordUpdate]) -> UpdateRecordsOutcome:
+def update_records(
+    conn: psycopg.Connection,
+    *,
+    updates: List[Dict[str, Any]],
+) -> Dict[str, List]:
     """
-    Batch, concurrency-safe versioned updates for values_table using _UNSET sentinel.
+    Batch, concurrency-safe versioned updates for values_table.
+
+    Args:
+        conn: Database connection
+        updates: List of update dictionaries. Each dictionary must contain EITHER:
+            Option 1 (by value_id - simplest, recommended):
+            - value_id (int): The value_id of the row to update
+            - value (float, optional): New value (omit to leave unchanged, None to clear)
+            - annotation (str, optional): New annotation (omit to leave unchanged, None to clear)
+            - tags (list[str], optional): New tags (omit to leave unchanged, None or [] to clear)
+            - changed_by (str, optional): Who made the change
+            
+            Option 2 (by key - for backwards compatibility):
+            - run_id (uuid.UUID): Run identifier
+            - tenant_id (uuid.UUID): Tenant identifier
+            - valid_time (datetime): Time the value is valid for (must be timezone-aware)
+            - series_id (uuid.UUID): Series identifier
+            - value (float, optional): New value (omit to leave unchanged, None to clear)
+            - annotation (str, optional): New annotation (omit to leave unchanged, None to clear)
+            - tags (list[str], optional): New tags (omit to leave unchanged, None or [] to clear)
+            - changed_by (str, optional): Who made the change
+
+    Returns:
+        Dictionary with keys:
+            - 'updated': List of dicts with keys (value_id, run_id, tenant_id, valid_time, series_id)
+            - 'skipped_no_ops': List of dicts with keys (value_id) or (run_id, tenant_id, valid_time, series_id)
 
     Rules:
-      - For each key (run_id, tenant_id, valid_time, series_id):
-          * Lock current row (if any) with SELECT ... FOR UPDATE
-          * Compute merged canonical values with tri-state rules
-          * If no current row: caller must provide `value` (explicitly; may be None)
-          * If canonical new == canonical current => skip (no-op)
-          * Otherwise: unset old current row (is_current=false) and insert new current row
-      - Returns lists of updated rows and skipped no-op keys
+      - For updates by value_id: directly updates the specified row
+      - For updates by key: finds current row and creates new version
+      - If canonical new == canonical current => skip (no-op)
+      - Otherwise: unset old current row (is_current=false) and insert new current row
       - Note: Values must be in the canonical unit for the series (unit conversion should happen before calling this function).
     """
-    updates_list = list(updates)
-    if not updates_list:
-        return UpdateRecordsOutcome(updated=[], skipped_no_ops=[])
+    if not updates:
+        return {"updated": [], "skipped_no_ops": []}
 
+    updated: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+
+    # Separate updates by value_id vs by key
+    updates_by_value_id: List[Dict[str, Any]] = []
+    updates_by_key: List[Dict[str, Any]] = []
+    
+    for u in updates:
+        if "value_id" in u:
+            updates_by_value_id.append(u)
+        else:
+            updates_by_key.append(u)
+    
+    # Process updates by value_id (simpler path)
+    if updates_by_value_id:
+        _process_updates_by_value_id(conn, updates_by_value_id, updated, skipped)
+    
+    # Process updates by key (backwards compatibility)
+    if updates_by_key:
+        _process_updates_by_key(conn, updates_by_key, updated, skipped)
+    
+    return {"updated": updated, "skipped_no_ops": skipped}
+
+
+def _process_updates_by_value_id(
+    conn: psycopg.Connection,
+    updates: List[Dict[str, Any]],
+    updated: List[Dict[str, Any]],
+    skipped: List[Dict[str, Any]],
+) -> None:
+    """Process updates that specify value_id directly."""
+    sql_lock = """
+        SELECT value_id, run_id, tenant_id, valid_time, series_id, value, annotation, tags
+        FROM values_table
+        WHERE value_id = %(value_id)s
+        FOR UPDATE
+    """
+    
+    sql_unset_current = """
+        UPDATE values_table
+        SET is_current = false
+        WHERE run_id = %(run_id)s
+          AND tenant_id = %(tenant_id)s
+          AND valid_time = %(valid_time)s
+          AND series_id = %(series_id)s
+          AND is_current = true
+    """
+    
+    sql_insert_new = """
+        INSERT INTO values_table (
+            run_id, tenant_id, valid_time, series_id,
+            value, annotation, tags,
+            changed_by, is_current
+        )
+        VALUES (
+            %(run_id)s, %(tenant_id)s, %(valid_time)s, %(series_id)s,
+            %(value)s, %(annotation)s, %(tags)s,
+            %(changed_by)s, true
+        )
+        RETURNING value_id
+    """
+    
+    with conn.transaction():
+        with conn.cursor(row_factory=dict_row) as cur:
+            for u in updates:
+                value_id = u["value_id"]
+                
+                # Lock the row
+                cur.execute(sql_lock, {"value_id": value_id})
+                current = cur.fetchone()
+                
+                if current is None:
+                    raise ValueError(f"No row found with value_id={value_id}")
+                
+                # Get current values
+                current_value = current["value"]
+                current_annotation_canon = _canonicalize_annotation_stored(current["annotation"])
+                current_tags_canon = _canonicalize_tags_stored(current["tags"])
+                
+                # Merge using tri-state semantics
+                new_value = u.get("value", _UNSET)
+                if new_value is _UNSET:
+                    new_value = current_value
+                
+                new_annotation = u.get("annotation", _UNSET)
+                if new_annotation is _UNSET:
+                    new_annotation = current_annotation_canon
+                else:
+                    new_annotation = _canonicalize_annotation_input(new_annotation)
+                
+                new_tags = u.get("tags", _UNSET)
+                if new_tags is _UNSET:
+                    new_tags = current_tags_canon
+                else:
+                    new_tags = _canonicalize_tags_input(new_tags)
+                
+                # Check if at least one field is being modified
+                has_value = "value" in u
+                has_annotation = "annotation" in u
+                has_tags = "tags" in u
+                
+                if not (has_value or has_annotation or has_tags):
+                    raise ValueError(
+                        "No updates supplied: provide at least one of value/annotation/tags (omit field to leave unchanged)."
+                    )
+                
+                # No-op detection
+                if (new_value == current_value) and (new_annotation == current_annotation_canon) and (new_tags == current_tags_canon):
+                    skipped.append({"value_id": value_id})
+                    continue
+                
+                # Unset previous current row
+                cur.execute(sql_unset_current, {
+                    "run_id": current["run_id"],
+                    "tenant_id": current["tenant_id"],
+                    "valid_time": current["valid_time"],
+                    "series_id": current["series_id"],
+                })
+                
+                # Insert new current version
+                cur.execute(sql_insert_new, {
+                    "run_id": current["run_id"],
+                    "tenant_id": current["tenant_id"],
+                    "valid_time": current["valid_time"],
+                    "series_id": current["series_id"],
+                    "value": new_value,
+                    "annotation": new_annotation,
+                    "tags": new_tags,
+                    "changed_by": u.get("changed_by"),
+                })
+                new_value_id = cur.fetchone()["value_id"]
+                updated.append({
+                    "value_id": new_value_id,
+                    "run_id": current["run_id"],
+                    "tenant_id": current["tenant_id"],
+                    "valid_time": current["valid_time"],
+                    "series_id": current["series_id"],
+                })
+
+
+def _process_updates_by_key(
+    conn: psycopg.Connection,
+    updates: List[Dict[str, Any]],
+    updated: List[Dict[str, Any]],
+    skipped: List[Dict[str, Any]],
+) -> None:
+    """Process updates that specify run_id, tenant_id, valid_time, series_id (backwards compatibility)."""
     # Validate and collapse duplicates (last-write-wins)
     KeyT = Tuple[uuid.UUID, uuid.UUID, dt.datetime, uuid.UUID]
-    collapsed: Dict[KeyT, RecordUpdate] = {}
-    for u in updates_list:
-        if u.valid_time.tzinfo is None:
+    collapsed: Dict[KeyT, Dict[str, Any]] = {}
+    
+    for u in updates:
+        # Extract required fields
+        run_id = u.get("run_id")
+        tenant_id = u.get("tenant_id")
+        valid_time = u.get("valid_time")
+        series_id = u.get("series_id")
+        
+        if run_id is None or tenant_id is None or valid_time is None or series_id is None:
+            raise ValueError("Each update must contain run_id, tenant_id, valid_time, and series_id")
+        
+        # Convert to UUID if strings
+        if isinstance(run_id, str):
+            run_id = uuid.UUID(run_id)
+        if isinstance(tenant_id, str):
+            tenant_id = uuid.UUID(tenant_id)
+        if isinstance(series_id, str):
+            series_id = uuid.UUID(series_id)
+        
+        # Validate timezone-aware datetime
+        if isinstance(valid_time, str):
+            # Try to parse if string
+            valid_time = dt.datetime.fromisoformat(valid_time.replace('Z', '+00:00'))
+        if valid_time.tzinfo is None:
             raise ValueError(f"valid_time must be timezone-aware (timestamptz). Bad update: {u}")
-        # ensure at least one field is being modified
-        if (u.value is _UNSET) and (u.comment is _UNSET) and (u.tags is _UNSET):
+        
+        # Check if at least one field is being modified
+        has_value = "value" in u
+        has_annotation = "annotation" in u
+        has_tags = "tags" in u
+        
+        if not (has_value or has_annotation or has_tags):
             raise ValueError(
-                "No updates supplied: provide at least one of value/comment/tags (use _UNSET to leave fields unchanged)."
+                "No updates supplied: provide at least one of value/annotation/tags (omit field to leave unchanged)."
             )
-        collapsed[(u.run_id, u.tenant_id, u.valid_time, u.series_id)] = u
+        
+        # Store the update with _UNSET for omitted fields
+        update_dict = {
+            "run_id": run_id,
+            "tenant_id": tenant_id,
+            "valid_time": valid_time,
+            "series_id": series_id,
+            "value": u.get("value", _UNSET),
+            "annotation": u.get("annotation", _UNSET),
+            "tags": u.get("tags", _UNSET),
+            "changed_by": u.get("changed_by"),
+        }
+        
+        collapsed[(run_id, tenant_id, valid_time, series_id)] = update_dict
 
     # Deterministic order reduces deadlock risk
     ordered_items = sorted(
@@ -206,7 +367,7 @@ def update_records(conn: psycopg.Connection, updates: Iterable[RecordUpdate]) ->
     )
 
     sql_lock_current = """
-        SELECT version_id, value, comment, tags
+        SELECT value_id, value, annotation, tags
         FROM values_table
         WHERE run_id = %(run_id)s
           AND tenant_id = %(tenant_id)s
@@ -229,26 +390,21 @@ def update_records(conn: psycopg.Connection, updates: Iterable[RecordUpdate]) ->
     sql_insert_new = """
         INSERT INTO values_table (
             run_id, tenant_id, valid_time, series_id,
-            value, comment, tags,
+            value, annotation, tags,
             changed_by, is_current
         )
         VALUES (
             %(run_id)s, %(tenant_id)s, %(valid_time)s, %(series_id)s,
-            %(value)s, %(comment)s, %(tags)s,
+            %(value)s, %(annotation)s, %(tags)s,
             %(changed_by)s, true
         )
-        RETURNING version_id
+        RETURNING value_id
     """
-
-    updated: List[RecordUpdateResult] = []
-    skipped: List[RecordKey] = []
 
     # Run batch inside a transaction to maintain invariants
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
             for (run_id, tenant_id, valid_time, series_id), u in ordered_items:
-                key = RecordKey(run_id=run_id, tenant_id=tenant_id, valid_time=valid_time, series_id=series_id)
-
                 # 1) Lock current row for this key (if it exists)
                 cur.execute(sql_lock_current, {
                     "run_id": run_id,
@@ -261,44 +417,51 @@ def update_records(conn: psycopg.Connection, updates: Iterable[RecordUpdate]) ->
                 # 2) Canonicalize current row defensively
                 if current is None:
                     current_value = None
-                    current_comment_canon = None
+                    current_annotation_canon = None
                     current_tags_canon = None
                 else:
                     current_value = current["value"]     # may be None
-                    current_comment_canon = _canonicalize_comment_stored(current["comment"])
+                    current_annotation_canon = _canonicalize_annotation_stored(current["annotation"])
                     current_tags_canon = _canonicalize_tags_stored(current["tags"])
 
                 # 3) Merge using tri-state semantics
                 # VALUE
-                if u.value is _UNSET:
+                if u["value"] is _UNSET:
                     new_value = current_value
                 else:
                     # explicit provided: may be None (clear) or a concrete numeric value
-                    new_value = u.value
+                    new_value = u["value"]
 
-                # COMMENT
-                if u.comment is _UNSET:
-                    new_comment = current_comment_canon
+                # ANNOTATION
+                if u["annotation"] is _UNSET:
+                    new_annotation = current_annotation_canon
                 else:
                     # explicit provided: None => clear; string => canonicalize
-                    new_comment = _canonicalize_comment_input(u.comment)
+                    new_annotation = _canonicalize_annotation_input(u["annotation"])
 
                 # TAGS
-                if u.tags is _UNSET:
+                if u["tags"] is _UNSET:
                     new_tags = current_tags_canon
                 else:
                     # explicit provided: None or empty -> clear (canonical None); else normalized list
-                    new_tags = _canonicalize_tags_input(u.tags)
+                    new_tags = _canonicalize_tags_input(u["tags"])
 
                 # 4) If no current row exists, require `value` to be provided (explicitly, possibly None)
-                if current is None and u.value is _UNSET:
+                if current is None and u["value"] is _UNSET:
                     raise ValueError(
-                        f"No current row exists for {key}. You must provide `value` (explicitly, possibly None) to create the first version."
+                        f"No current row exists for (run_id={run_id}, tenant_id={tenant_id}, "
+                        f"valid_time={valid_time}, series_id={series_id}). "
+                        f"You must provide `value` (explicitly, possibly None) to create the first version."
                     )
 
                 # 5) No-op detection (compare canonicalized forms)
-                if (new_value == current_value) and (new_comment == current_comment_canon) and (new_tags == current_tags_canon):
-                    skipped.append(key)
+                if (new_value == current_value) and (new_annotation == current_annotation_canon) and (new_tags == current_tags_canon):
+                    skipped.append({
+                        "run_id": run_id,
+                        "tenant_id": tenant_id,
+                        "valid_time": valid_time,
+                        "series_id": series_id,
+                    })
                     continue  # nothing to do for this key
 
                 # 6) Unset previous current row (0 or 1 rows)
@@ -316,96 +479,15 @@ def update_records(conn: psycopg.Connection, updates: Iterable[RecordUpdate]) ->
                     "valid_time": valid_time,
                     "series_id": series_id,
                     "value": new_value,
-                    "comment": new_comment,
+                    "annotation": new_annotation,
                     "tags": new_tags,        # None => SQL NULL; list => text[]
-                    "changed_by": u.changed_by,
+                    "changed_by": u["changed_by"],
                 })
-                version_id = cur.fetchone()["version_id"]
-                updated.append(RecordUpdateResult(key=key, version_id=version_id))
-
-    return UpdateRecordsOutcome(updated=updated, skipped_no_ops=skipped)
-
-
-# -----------------------------------------------------------------------------
-# Schema creation helper
-# -----------------------------------------------------------------------------
-def create_schema(conninfo: str) -> None:
-    """
-    Creates (or updates) the database schema.
-
-    - Uses an explicit transaction (BEGIN/COMMIT)
-    - Safe to run multiple times on a fresh DB
-    """
-    with psycopg.connect(conninfo, autocommit=False) as conn:
-        with conn.cursor() as cur:
-            cur.execute(DDL)
-
-
-# -----------------------------------------------------------------------------
-# Example usage (run as script)
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    load_dotenv()
-    conninfo = os.environ.get("NEON_PG_URL")
-    if not conninfo:
-        raise RuntimeError("NEON_PG_URL must be set in environment for example run")
-
-    # Create schema (safe for fresh DBs)
-    create_schema(conninfo)
-    print("Schema created/updated.")
-
-    # Demo of update_records
-    with psycopg.connect(conninfo) as conn:
-        # Create a run to reference
-        run_id = uuid.uuid4()
-        tenant_id = uuid.uuid4()  # In production, this would come from context
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO runs_table (run_id, tenant_id, workflow_id, run_start_time) VALUES (%s, %s, %s, %s)",
-                (run_id, tenant_id, "demo-workflow", dt.datetime.now(tz=dt.timezone.utc)),
-            )
-
-        t = dt.datetime(2025, 12, 27, 12, 0, tzinfo=dt.timezone.utc)
-        series_id = uuid.uuid4()  # In production, this would come from context
-
-        # 1) Create first version (value provided; may be None explicitly)
-        upd = RecordUpdate(
-            run_id=run_id,
-            tenant_id=tenant_id,
-            valid_time=t,
-            series_id=series_id,
-            value=123.4,
-            comment="initial value",
-            tags=["Icing", "Review"],
-            changed_by="demo",
-        )
-        out = update_records(conn, [upd])
-        print("Updated:", out.updated)
-        print("Skipped:", out.skipped_no_ops)
-
-        # 2) Update only comment (leave value/tags unchanged)
-        upd2 = RecordUpdate(
-            run_id=run_id,
-            tenant_id=tenant_id,
-            valid_time=t,
-            series_id=series_id,
-            comment="  checked  ",   # trimmed to "checked"
-            # value/tags left as _UNSET => unchanged
-            changed_by="demo",
-        )
-        out2 = update_records(conn, [upd2])
-        print("Updated:", out2.updated)
-        print("Skipped:", out2.skipped_no_ops)
-
-        # 3) Clear tags explicitly
-        upd3 = RecordUpdate(
-            run_id=run_id,
-            tenant_id=tenant_id,
-            valid_time=t,
-            series_id=series_id,
-            tags=[],   # explicit clear -> stored as NULL (canonical)
-            changed_by="demo",
-        )
-        out3 = update_records(conn, [upd3])
-        print("Updated:", out3.updated)
-        print("Skipped:", out3.skipped_no_ops)
+                value_id = cur.fetchone()["value_id"]
+                updated.append({
+                    "run_id": run_id,
+                    "tenant_id": tenant_id,
+                    "valid_time": valid_time,
+                    "series_id": series_id,
+                    "value_id": value_id,
+                })

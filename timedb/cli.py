@@ -40,10 +40,15 @@ def start_api(host, port, reload):
     """
     try:
         import uvicorn
-        from . import api
         click.echo(f"Starting TimeDB API server on http://{host}:{port}")
         click.echo(f"API docs available at http://{host}:{port}/docs")
-        uvicorn.run(api.app, host=host, port=port, reload=reload)
+        click.echo("Press Ctrl+C to stop the server")
+        uvicorn.run(
+            "timedb.api:app",
+            host=host,
+            port=port,
+            reload=reload,
+        )
     except ImportError:
         click.echo("ERROR: FastAPI dependencies not installed. Run: pip install fastapi uvicorn[standard]", err=True)
         sys.exit(1)

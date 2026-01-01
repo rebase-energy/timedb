@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS series_table (
   -- e.g. 'wind_power_forecast', 'temperature_mean', 'energy_consumption'
   series_key   text NOT NULL,
 
+  -- Optional description of the series
+  -- e.g. 'Wind power forecast for the next 24 hours'
+  description  text,
+
   -- Canonical unit for this series (Pint-compatible unit string)
   -- e.g. 'MW', 'kW', 'MWh', 'dimensionless', 'celsius'
   -- All values stored in values_table for this series are in this unit
@@ -82,6 +86,17 @@ CREATE TABLE IF NOT EXISTS series_table (
 -- Index for efficient lookup by series_key
 CREATE INDEX IF NOT EXISTS series_key_idx
   ON series_table (series_key);
+
+-- Add description column if it doesn't exist (for existing databases)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'series_table' AND column_name = 'description'
+  ) THEN
+    ALTER TABLE series_table ADD COLUMN description text;
+  END IF;
+END $$;
 
 
 -- ============================================================================
@@ -125,9 +140,9 @@ CREATE TABLE IF NOT EXISTS values_table (
   value       double precision,
 
   -- Optional human annotations
-  -- NULL means "no comment"
+  -- NULL means "no annotation"
   -- Empty or whitespace-only strings are disallowed (see constraint below)
-  comment     text,
+  annotation     text,
 
   -- Optional tags
   -- NULL means "no tags"
@@ -157,10 +172,10 @@ CREATE TABLE IF NOT EXISTS values_table (
       OR valid_time_end > valid_time
     ),
 
-  -- We treat "" (or whitespace-only) comments as equivalent to NULL (no comment).
+  -- We treat "" (or whitespace-only) annotations as equivalent to NULL (no annotation).
   -- Enforce that empty/whitespace-only strings cannot be stored.
-  CONSTRAINT comment_not_empty
-    CHECK (comment IS NULL OR length(btrim(comment)) > 0),
+  CONSTRAINT annotation_not_empty
+    CHECK (annotation IS NULL OR length(btrim(annotation)) > 0),
 
   -- We treat {} (empty array) tags as equivalent to NULL (no tags).
   -- Enforce that empty arrays cannot be stored; use NULL instead.

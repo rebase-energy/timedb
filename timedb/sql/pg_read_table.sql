@@ -7,7 +7,7 @@ SELECT
   s.series_key,
   s.series_unit,
   v.value,
-  v.comment,
+  v.annotation,
   v.tags,
   v.changed_by,
   v.change_time

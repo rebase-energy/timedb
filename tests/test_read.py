@@ -116,10 +116,10 @@ def test_read_values_filter_by_valid_time(clean_db, sample_run_id, sample_tenant
 
 def test_read_values_all_versions(clean_db_for_update, sample_run_id, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
     """Test reading all versions (including non-current)."""
-    from timedb.db.update import RecordUpdate, update_records
+    from timedb.db import update
     import psycopg
     
-    # Insert initial value using update schema
+    # Insert initial value
     with psycopg.connect(clean_db_for_update) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -127,22 +127,21 @@ def test_read_values_all_versions(clean_db_for_update, sample_run_id, sample_ten
                 (sample_run_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
             cur.execute(
-                "INSERT INTO values_table (run_id, tenant_id, series_id, valid_time, value_key, value, is_current) VALUES (%s, %s, %s, %s, %s, %s, true)",
-                (sample_run_id, sample_tenant_id, sample_series_id, sample_datetime, "mean", 100.0),
+                "INSERT INTO values_table (run_id, tenant_id, series_id, valid_time, value, is_current) VALUES (%s, %s, %s, %s, %s, true)",
+                (sample_run_id, sample_tenant_id, sample_series_id, sample_datetime, 100.0),
             )
     
     # Update the value (creates a new version)
     with psycopg.connect(clean_db_for_update) as conn:
-        update = RecordUpdate(
-            run_id=sample_run_id,
-            tenant_id=sample_tenant_id,
-            valid_time=sample_datetime,
-            series_id=sample_series_id,
-            value_key="mean",
-            value=101.0,
-            changed_by="test",
-        )
-        update_records(conn, [update])
+        update_dict = {
+            "run_id": sample_run_id,
+            "tenant_id": sample_tenant_id,
+            "valid_time": sample_datetime,
+            "series_id": sample_series_id,
+            "value": 101.0,
+            "changed_by": "test",
+        }
+        update.update_records(conn, updates=[update_dict])
     
     # Read with all_versions=True (note: read function uses main schema, so this test may need adjustment)
     # For now, we'll skip the read part since it uses a different schema

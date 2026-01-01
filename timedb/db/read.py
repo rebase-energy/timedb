@@ -77,6 +77,7 @@ def read_values_flat(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     all_versions: bool = False,
+    return_value_id: bool = False,
 ) -> pd.DataFrame:
     """
     Read time series values in flat mode (latest known_time per valid_time).
@@ -94,9 +95,10 @@ def read_values_flat(
         start_known: Start of known_time range (optional)
         end_known: End of known_time range (optional)
         all_versions: If True, include all versions (not just current). If False, only is_current=True (default: False)
+        return_value_id: If True, include value_id column in the result (default: False)
     
     Returns:
-        DataFrame with index (valid_time, series_id) and columns (value, series_key, series_unit)
+        DataFrame with index (valid_time, series_id) and columns (value, series_key, series_unit, [value_id if return_value_id=True])
     """
     where_clause, params = _build_where_clause(
         tenant_id=tenant_id,
@@ -111,9 +113,11 @@ def read_values_flat(
     # Flat mode: (valid_time, value, series_id, series_key, series_unit) with latest known_time per valid_time
     # Include valid_time_end in DISTINCT ON to handle interval values correctly
     # Use latest known_time to select which row when multiple exist for same (valid_time, series_id)
+    value_id_col = "v.value_id," if return_value_id else ""
     sql = f"""
     SELECT DISTINCT ON (v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id)
         v.valid_time,
+        {value_id_col}
         v.value,
         v.series_id,
         s.series_key,

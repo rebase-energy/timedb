@@ -7,7 +7,7 @@ Most time series systems assume a single immutable value per timestamp. **timedb
 **timedb** lets you: 
 
 - ⏱️ Retain "time-of-knowledge" history through a three-dimensional time series data model;
-- ✍️ Make versioned ad-hoc updates to the time series data with comments and tags; and 
+- ✍️ Make versioned ad-hoc updates to the time series data with annotations and tags; and 
 - 🔀 Represent both timestamp and time-interval time series simultaneously.
 
 ## Why timedb? 
@@ -57,9 +57,8 @@ TBD
 | `run_id` **(foreign key)** | attribute | References the run that produced this value (`runs_table.run_id`) |
 | `valid_time` | time dimension | Timestamp the value is valid for |
 | `valid_time_end` **(optional)** | time dimension | Optional interval end time; NULL means point-in-time at `valid_time` |
-| `value_key` | attribute | What the value represents (e.g. `mean`, `quantile:0.5`, `scenario:1`) |
 | `value` **(optional)** | measure | The numeric value (nullable; NULL can be a valid stored value) |
-| `comment` **(optional)** | attribute | Optional human annotation (whitespace-only disallowed) |
+| `annotation` **(optional)** | attribute | Optional human annotation (whitespace-only disallowed) |
 | `tags` **(optional)** | attribute | Optional semantic labels / quality flags (empty arrays disallowed; use NULL) |
 | `changed_by` **(optional)** | attribute | User or service responsible for the change |
 | `change_time` | time dimension | When this version row was created (default `now()`) |
@@ -99,9 +98,8 @@ Schema columns provides additional attributes to the values according to:
 | Column name   | Description                                                     |
 | ------------- | --------------------------------------------------------------- |
 | `value`       | The numeric value being stored (may be NULL)                    |
-| `value_key`   | Identifies what the value represents (e.g. mean, quantile, scenario) |
 | `tags`        | Semantic labels and quality flags applied to the value           |
-| `comment`     | Optional human annotation explaining the value or change         |
+| `annotation`     | Optional human annotation explaining the value or change         |
 | `run_id`      | Reference to the workflow run that produced the value            |
 | `run_params`  | Parameters and configuration associated with the producing run  |
 | `is_current`  | Indicates whether this row is the active version for its key     |

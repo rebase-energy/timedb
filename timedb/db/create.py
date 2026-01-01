@@ -10,9 +10,10 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 # This DDL creates:
 #   1) runs_table                → one row per run
-#   2) values_table              → versioned values (auditable)
-#   3) indexes                   → for performance and data integrity
-#   4) current_values_table view → safe default for querying "current" data
+#   2) series_table              → series metadata
+#   3) values_table              → versioned values (auditable)
+#   4) indexes                   → for performance and data integrity
+#   5) current_values_table view → safe default for querying "current" data
 #
 # The script is idempotent (safe to run multiple times).
 # -----------------------------------------------------------------------------

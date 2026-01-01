@@ -8,6 +8,50 @@ from typing import Optional
 import psycopg
 
 
+def create_series(
+    conn: psycopg.Connection,
+    *,
+    name: str,
+    description: Optional[str],
+    unit: str,
+) -> uuid.UUID:
+    """
+    Create a new time series.
+    
+    This function always creates a new series (unlike get_or_create_series which
+    may return an existing series). A new series_id is generated for each call.
+    
+    Args:
+        conn: Database connection
+        name: Human-readable identifier for the series (e.g., 'wind_power_forecast')
+        description: Optional description of the series
+        unit: Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')
+    
+    Returns:
+        The series_id (UUID) for the newly created series
+    
+    Raises:
+        ValueError: If name or unit is empty
+    """
+    if not name or not name.strip():
+        raise ValueError("name cannot be empty")
+    if not unit or not unit.strip():
+        raise ValueError("unit cannot be empty")
+    
+    new_series_id = uuid.uuid4()
+    with conn.cursor() as cur:
+        # Handle description: strip if provided, otherwise None
+        description_value = description.strip() if description and description.strip() else None
+        cur.execute(
+            """
+            INSERT INTO series_table (series_id, series_key, description, series_unit)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (new_series_id, name.strip(), description_value, unit.strip())
+        )
+    return new_series_id
+
+
 def get_or_create_series(
     conn: psycopg.Connection,
     *,

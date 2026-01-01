@@ -6,7 +6,7 @@ DataFrame conversion for time series data with unit handling using Pint Quantity
 """
 import os
 import uuid
-from typing import Optional, List, Tuple, NamedTuple, Dict, Union
+from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timezone
 import pandas as pd
 
@@ -297,6 +297,65 @@ def create() -> None:
     db.create.create_schema(conninfo)
 
 
+def create_series(
+    name: str,
+    description: Optional[str] = None,
+    unit: str = "dimensionless",
+) -> uuid.UUID:
+    """
+    Create a new time series.
+    
+    This function creates a new series with the specified name, description, and unit.
+    A new series_id is generated and returned.
+    
+    Args:
+        name: Human-readable identifier for the series (e.g., 'wind_power_forecast')
+        description: Optional description of the series
+        unit: Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')
+              Defaults to 'dimensionless' if not provided
+    
+    Returns:
+        The series_id (UUID) for the newly created series
+    
+    Raises:
+        ValueError: If name or unit is empty, or if database tables don't exist
+    
+    Example:
+        # Create a new series
+        series_id = td.create_series(
+            name="wind_power_forecast",
+            description="Wind power forecast for the next 24 hours",
+            unit="MW"
+        )
+    """
+    conninfo = _get_conninfo()
+    
+    try:
+        with psycopg.connect(conninfo) as conn:
+            return db.series.create_series(
+                conn,
+                name=name,
+                description=description,
+                unit=unit,
+            )
+    except (errors.UndefinedTable, errors.UndefinedObject) as e:
+        error_msg = str(e)
+        if "series_table" in error_msg or "does not exist" in error_msg:
+            raise ValueError(
+                "TimeDB tables do not exist. Please create the schema first by running:\n"
+                "  td.create()"
+            ) from None
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        if "series_table" in error_msg or "does not exist" in error_msg:
+            raise ValueError(
+                "TimeDB tables do not exist. Please create the schema first by running:\n"
+                "  td.create()"
+            ) from None
+        raise
+
+
 def delete() -> None:
     """
     Delete all TimeDB tables and views.
@@ -308,12 +367,191 @@ def delete() -> None:
     db.delete.delete_schema(conninfo)
 
 
+def check_api(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> bool:
+    """
+    Check if the TimeDB API server is running and display API information.
+    
+    This function checks if the API server is responding and prints detailed
+    information about the API including available endpoints.
+    
+    Args:
+        host: Host to check (default: "127.0.0.1")
+        port: Port to check (default: 8000)
+    
+    Returns:
+        True if the API server is running and responding, False otherwise
+    
+    Example:
+        if td.check_api():
+            # API is running and information was printed
+            pass
+        else:
+            # API is not running, error message was printed
+            pass
+    """
+    try:
+        import requests
+    except ImportError:
+        print("❌ Error: 'requests' library not installed. Install with: pip install requests")
+        return False
+    
+    try:
+        response = requests.get(f"http://{host}:{port}/", timeout=2)
+        response.raise_for_status()
+        api_info = response.json()
+        
+        print("✓ API is running")
+        print(f"  Name: {api_info['name']}")
+        print(f"  Version: {api_info['version']}")
+        print(f"\nAvailable endpoints:")
+        for endpoint, description in api_info['endpoints'].items():
+            print(f"  - {endpoint}: {description}")
+        
+        return True
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        print("❌ API is not running!")
+        print(f"   Please start it by running: td.start_api_background()")
+        print(f"   Or in a terminal: timedb api")
+        return False
+    except Exception as e:
+        print(f"❌ Error getting API information: {e}")
+        return False
+
+
+def start_api(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = False,
+) -> None:
+    """
+    Start the TimeDB REST API server.
+    
+    This function starts the FastAPI server using uvicorn. The server will run
+    until interrupted (Ctrl+C) or the process is terminated.
+    
+    Args:
+        host: Host to bind to (default: "127.0.0.1")
+        port: Port to bind to (default: 8000)
+        reload: Enable auto-reload for development (default: False)
+    
+    Example:
+        # Start API server
+        td.start_api()
+        
+        # Start with custom host/port
+        td.start_api(host="0.0.0.0", port=8080)
+        
+        # Start with auto-reload (development)
+        td.start_api(reload=True)
+    
+    Note:
+        This function blocks until the server is stopped. For non-blocking
+        execution in notebooks, use start_api_background() instead.
+    """
+    try:
+        import uvicorn
+    except ImportError as e:
+        raise ImportError(
+            "FastAPI dependencies not installed. Install with: pip install fastapi uvicorn[standard]"
+        ) from e
+    
+    print(f"Starting TimeDB API server on http://{host}:{port}")
+    print(f"API docs available at http://{host}:{port}/docs")
+    print("Press Ctrl+C to stop the server")
+    
+    uvicorn.run(
+        "timedb.api:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
+def start_api_background(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = False,
+    wait_seconds: float = 2.0,
+) -> bool:
+    """
+    Start the TimeDB REST API server in a background thread.
+    
+    This function starts the FastAPI server in a daemon thread, allowing
+    the calling code to continue execution. Useful for notebooks and scripts
+    where you want to start the server and continue working.
+    
+    Args:
+        host: Host to bind to (default: "127.0.0.1")
+        port: Port to bind to (default: 8000)
+        reload: Enable auto-reload for development (default: False)
+        wait_seconds: Seconds to wait after starting thread before checking if server is up (default: 2.0)
+    
+    Returns:
+        True if the server started successfully, False otherwise
+    
+    Example:
+        # Start API server in background
+        if td.start_api_background():
+            print("API server started")
+        else:
+            print("Failed to start API server")
+    
+    Note:
+        The server runs in a daemon thread, so it will stop when the main
+        process exits. To stop the server manually, restart the kernel/process.
+    """
+    import threading
+    import time
+    
+    # Silently check if server is already running (without printing)
+    try:
+        import requests
+        response = requests.get(f"http://{host}:{port}/", timeout=1)
+        if response.status_code == 200:
+            # Server is already running, use check_api to print info
+            check_api(host, port)
+            return True
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ImportError):
+        pass  # Server is not running, which is expected
+    
+    # Start the server in a background thread
+    print(f"Starting API server in background thread on http://{host}:{port}...")
+    api_thread = threading.Thread(
+        target=start_api,
+        args=(host, port, reload),
+        daemon=True,  # Thread will stop when main process exits
+    )
+    api_thread.start()
+    
+    # Wait a moment for server to start
+    time.sleep(wait_seconds)
+    
+    # Check if server started successfully and print info
+    if check_api(host, port):
+        print("✓ API server started successfully")
+        print(f"   Server running at http://{host}:{port}")
+        print(f"   API docs available at http://{host}:{port}/docs")
+        return True
+    else:
+        print("❌ API server failed to start")
+        print("   Try starting it manually:")
+        print("   - In a terminal: timedb api")
+        print("   - Or in Python: td.start_api()")
+        return False
+
+
 def read(
     series_id: Optional[uuid.UUID] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     return_mapping: bool = False,
+    all_versions: bool = False,
+    return_value_id: bool = False,
+    tags_and_annotations: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
     """
     Read time series values from TimeDB into a pandas DataFrame.
@@ -324,13 +562,19 @@ def read(
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
         return_mapping: If True, return both DataFrame and mapping dict (default: False)
+        all_versions: If True, include all versions (not just current). If False, only is_current=True (default: False)
+        return_value_id: If True, include value_id column in the result (default: False)
+        tags_and_annotations: If True, include tags and annotation columns (default: False)
     
     Returns:
         If return_mapping=False:
             DataFrame with:
-            - Index: valid_time
+            - Index: valid_time (or (valid_time, value_id) MultiIndex when all_versions=True and return_value_id=True)
             - Columns: series_id (one column per series_id)
             - Each column has pint-pandas dtype (e.g., dtype="pint[MW]") based on series_unit
+            - If return_value_id=True and single series (and not all_versions): includes 'value_id' column
+            - If all_versions=True: includes 'changed_by' column
+            - If tags_and_annotations=True: includes 'tags' and 'annotation' columns
         
         If return_mapping=True:
             Tuple of (DataFrame, mapping_dict) where mapping_dict maps series_id -> series_key
@@ -341,7 +585,9 @@ def read(
         tenant_id = DEFAULT_TENANT_ID
     
     # Build SQL query with series_id support
-    filters = ["v.tenant_id = %(tenant_id)s", "r.tenant_id = %(tenant_id)s", "v.is_current = true"]
+    filters = ["v.tenant_id = %(tenant_id)s", "r.tenant_id = %(tenant_id)s"]
+    if not all_versions:
+        filters.append("v.is_current = true")
     params = {"tenant_id": tenant_id}
     
     if series_id is not None:
@@ -358,22 +604,57 @@ def read(
     
     where_clause = "WHERE " + " AND ".join(filters)
     
+    # Include value_id in SELECT if requested
+    value_id_col = "v.value_id," if return_value_id else ""
+    
+    # Include changed_by and change_time when all_versions=True
+    changed_by_col = "v.changed_by," if all_versions else ""
+    change_time_col = "v.change_time," if all_versions else ""
+    
+    # Include tags and annotation when tags_and_annotations=True
+    tags_annotation_cols = ""
+    if tags_and_annotations:
+        tags_annotation_cols = "v.tags, v.annotation,"
+    
     # Include series metadata (series_key, series_unit) in SELECT
-    # Use DISTINCT ON to get only the latest version per (valid_time, series_id)
-    # Order by known_time DESC to ensure we get the most recent version
-    sql = f"""
-        SELECT DISTINCT ON (v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id)
-            v.valid_time,
-            v.value,
-            v.series_id,
-            s.series_key,
-            s.series_unit
-        FROM values_table v
-        JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
-        JOIN series_table s ON v.series_id = s.series_id
-        {where_clause}
-        ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, r.known_time DESC;
-    """
+    # When all_versions=True, don't use DISTINCT ON so we get all versions
+    # When all_versions=False, use DISTINCT ON to get only the latest version per (valid_time, series_id)
+    if all_versions:
+        # Get all versions - order by valid_time, series_id, and known_time DESC
+        sql = f"""
+            SELECT
+                v.valid_time,
+                {value_id_col}
+                {changed_by_col}
+                {change_time_col}
+                {tags_annotation_cols}
+                v.value,
+                v.series_id,
+                s.series_key,
+                s.series_unit
+            FROM values_table v
+            JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
+            JOIN series_table s ON v.series_id = s.series_id
+            {where_clause}
+            ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, r.known_time DESC;
+        """
+    else:
+        # Use DISTINCT ON to get only the latest version per (valid_time, series_id)
+        sql = f"""
+            SELECT DISTINCT ON (v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id)
+                v.valid_time,
+                {value_id_col}
+                {tags_annotation_cols}
+                v.value,
+                v.series_id,
+                s.series_key,
+                s.series_unit
+            FROM values_table v
+            JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
+            JOIN series_table s ON v.series_id = s.series_id
+            {where_clause}
+            ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, r.known_time DESC;
+        """
     
     try:
         # Use psycopg connection directly and suppress pandas warning
@@ -413,24 +694,158 @@ def read(
         else:
             return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC"))
     
-    # Pivot the DataFrame: valid_time as index, series_id as columns
+    # Handle value_id if requested - store it separately before pivoting
+    value_id_data = None
+    if return_value_id and 'value_id' in df.columns:
+        # Store value_id mapping: (valid_time, series_id) -> value_id
+        value_id_data = df.set_index(['valid_time', 'series_id'])['value_id'].to_dict()
+    
+    # Handle changed_by, change_time, tags, and annotation - store separately before pivoting
+    changed_by_data = None
+    change_time_data = None
+    tags_data = None
+    annotation_data = None
+    if all_versions:
+        if 'changed_by' in df.columns:
+            # Store changed_by mapping: (valid_time, value_id, series_id) -> changed_by
+            # When all_versions=True, we need value_id to distinguish versions
+            if return_value_id and 'value_id' in df.columns:
+                changed_by_data = df.set_index(['valid_time', 'value_id', 'series_id'])['changed_by'].to_dict()
+            else:
+                changed_by_data = df.set_index(['valid_time', 'series_id'])['changed_by'].to_dict()
+        if 'change_time' in df.columns:
+            # Store change_time mapping: (valid_time, value_id, series_id) -> change_time
+            if return_value_id and 'value_id' in df.columns:
+                change_time_data = df.set_index(['valid_time', 'value_id', 'series_id'])['change_time'].to_dict()
+            else:
+                change_time_data = df.set_index(['valid_time', 'series_id'])['change_time'].to_dict()
+    if tags_and_annotations:
+        if 'tags' in df.columns:
+            if return_value_id and 'value_id' in df.columns and all_versions:
+                tags_data = df.set_index(['valid_time', 'value_id', 'series_id'])['tags'].to_dict()
+            else:
+                tags_data = df.set_index(['valid_time', 'series_id'])['tags'].to_dict()
+        if 'annotation' in df.columns:
+            if return_value_id and 'value_id' in df.columns and all_versions:
+                annotation_data = df.set_index(['valid_time', 'value_id', 'series_id'])['annotation'].to_dict()
+            else:
+                annotation_data = df.set_index(['valid_time', 'series_id'])['annotation'].to_dict()
+    
     # Create mappings of series_id to series_unit and series_key for dtype assignment and mapping
     series_unit_map = df[['series_id', 'series_unit']].drop_duplicates().set_index('series_id')['series_unit'].to_dict()
     series_key_map = df[['series_id', 'series_key']].drop_duplicates().set_index('series_id')['series_key'].to_dict()
     
-    # Pivot the data
-    df_pivoted = df.pivot_table(
-        index='valid_time',
-        columns='series_id',
-        values='value',
-        aggfunc='first'  # In case of duplicates (shouldn't happen with DISTINCT ON)
-    )
-    
-    # Sort index
-    df_pivoted = df_pivoted.sort_index()
+    # When all_versions=True and return_value_id=True, use MultiIndex (valid_time, value_id) to preserve multiple versions
+    if all_versions and return_value_id and 'value_id' in df.columns:
+        # Use MultiIndex (valid_time, value_id) to preserve all versions
+        # Pivot with (valid_time, value_id) as index
+        df_pivoted = df.pivot_table(
+            index=['valid_time', 'value_id'],
+            columns='series_id',
+            values='value',
+            aggfunc='first'  # Shouldn't have duplicates with (valid_time, value_id, series_id)
+        )
+        
+        # Sort index
+        df_pivoted = df_pivoted.sort_index()
+        
+        # Don't add value_id as a column - it's already in the MultiIndex
+        # Add changed_by, change_time, tags, and annotation as columns if available
+        if len(df_pivoted.columns) == 1:
+            series_id_val = df_pivoted.columns[0]
+            # Add changed_by column
+            if changed_by_data:
+                changed_by_values = []
+                for idx in df_pivoted.index:
+                    valid_time, value_id = idx
+                    # Use (valid_time, value_id, series_id) if all_versions, else (valid_time, series_id)
+                    if return_value_id and all_versions:
+                        changed_by = changed_by_data.get((valid_time, value_id, series_id_val))
+                    else:
+                        changed_by = changed_by_data.get((valid_time, series_id_val))
+                    changed_by_values.append(changed_by)
+                df_pivoted['changed_by'] = changed_by_values
+            
+            # Add change_time column
+            if change_time_data:
+                change_time_values = []
+                for idx in df_pivoted.index:
+                    valid_time, value_id = idx
+                    if return_value_id and all_versions:
+                        change_time = change_time_data.get((valid_time, value_id, series_id_val))
+                    else:
+                        change_time = change_time_data.get((valid_time, series_id_val))
+                    change_time_values.append(change_time)
+                df_pivoted['change_time'] = change_time_values
+            
+            # Add tags and annotation columns
+            if tags_and_annotations:
+                if tags_data:
+                    tags_values = []
+                    for idx in df_pivoted.index:
+                        valid_time, value_id = idx
+                        if return_value_id and all_versions:
+                            tags = tags_data.get((valid_time, value_id, series_id_val))
+                        else:
+                            tags = tags_data.get((valid_time, series_id_val))
+                        tags_values.append(tags)
+                    df_pivoted['tags'] = tags_values
+                if annotation_data:
+                    annotation_values = []
+                    for idx in df_pivoted.index:
+                        valid_time, value_id = idx
+                        if return_value_id and all_versions:
+                            annotation = annotation_data.get((valid_time, value_id, series_id_val))
+                        else:
+                            annotation = annotation_data.get((valid_time, series_id_val))
+                        annotation_values.append(annotation)
+                    df_pivoted['annotation'] = annotation_values
+    else:
+        # Normal pivot: valid_time as index, series_id as columns
+        df_pivoted = df.pivot_table(
+            index='valid_time',
+            columns='series_id',
+            values='value',
+            aggfunc='first'  # In case of duplicates (shouldn't happen with DISTINCT ON when all_versions=False)
+        )
+        
+        # Sort index
+        df_pivoted = df_pivoted.sort_index()
+        
+        # Add value_id as a column if requested
+        # For single series, add as regular column. For multiple series, we'd need MultiIndex columns
+        # For simplicity, we'll support it for single series case (most common use case)
+        if return_value_id and value_id_data and len(df_pivoted.columns) == 1:
+            # Single series - add value_id as a column
+            series_id_val = df_pivoted.columns[0]
+            value_ids = []
+            for valid_time in df_pivoted.index:
+                value_id = value_id_data.get((valid_time, series_id_val))
+                value_ids.append(value_id)
+            df_pivoted['value_id'] = value_ids
+        
+        # Add tags and annotation columns if requested
+        if tags_and_annotations and len(df_pivoted.columns) == 1:
+            series_id_val = df_pivoted.columns[0]
+            if tags_data:
+                tags_values = []
+                for valid_time in df_pivoted.index:
+                    tags = tags_data.get((valid_time, series_id_val))
+                    tags_values.append(tags)
+                df_pivoted['tags'] = tags_values
+            if annotation_data:
+                annotation_values = []
+                for valid_time in df_pivoted.index:
+                    annotation = annotation_data.get((valid_time, series_id_val))
+                    annotation_values.append(annotation)
+                df_pivoted['annotation'] = annotation_values
     
     # Convert each column to pint-pandas dtype based on series_unit
+    # Skip metadata columns (value_id, changed_by, change_time, tags, annotation)
+    skip_columns = {'value_id', 'changed_by', 'change_time', 'tags', 'annotation'}
     for col_series_id in df_pivoted.columns:
+        if col_series_id in skip_columns:
+            continue  # Skip metadata columns
         series_unit = series_unit_map.get(col_series_id)
         if series_unit:
             # Convert to pint-pandas dtype
@@ -461,6 +876,7 @@ def read_values_flat(
     all_versions: bool = False,
     return_mapping: bool = False,
     units: bool = False,
+    return_value_id: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
     """
     Read time series values in flat mode (latest known_time per valid_time).
@@ -509,6 +925,7 @@ def read_values_flat(
         start_known=start_known,
         end_known=end_known,
         all_versions=all_versions,
+        return_value_id=return_value_id,
     )
     
     # If no data, return empty DataFrame with proper structure
@@ -524,6 +941,12 @@ def read_values_flat(
     # Create mappings
     series_key_map = df_reset[['series_id', 'series_key']].drop_duplicates().set_index('series_id')['series_key'].to_dict()
     
+    # Handle value_id if requested - store it separately before pivoting
+    value_id_data = None
+    if return_value_id and 'value_id' in df_reset.columns:
+        # Store value_id mapping: (valid_time, series_id) -> value_id
+        value_id_data = df_reset.set_index(['valid_time', 'series_id'])['value_id'].to_dict()
+    
     # Pivot the data: valid_time as index, series_id as columns
     df_pivoted = df_reset.pivot_table(
         index='valid_time',
@@ -535,11 +958,25 @@ def read_values_flat(
     # Sort index
     df_pivoted = df_pivoted.sort_index()
     
+    # Add value_id as a column if requested
+    # For single series, add as regular column. For multiple series, we'd need MultiIndex columns
+    # For simplicity, we'll support it for single series case (most common use case)
+    if return_value_id and value_id_data and len(df_pivoted.columns) == 1:
+        # Single series - add value_id as a column
+        series_id_val = df_pivoted.columns[0]
+        value_ids = []
+        for valid_time in df_pivoted.index:
+            value_id = value_id_data.get((valid_time, series_id_val))
+            value_ids.append(value_id)
+        df_pivoted['value_id'] = value_ids
+    
     # Handle units if requested
     if units:
         # Convert each column to pint-pandas dtype based on series_unit
         series_unit_map = df_reset[['series_id', 'series_unit']].drop_duplicates().set_index('series_id')['series_unit'].to_dict()
         for col_series_id in df_pivoted.columns:
+            if col_series_id == 'value_id':
+                continue  # Skip value_id column
             series_unit = series_unit_map.get(col_series_id)
             if series_unit:
                 # Convert to pint-pandas dtype
@@ -554,9 +991,12 @@ def read_values_flat(
         return df_pivoted, series_key_map
     else:
         # Rename columns from series_id to series_key using the mapping
-        df_pivoted.rename(columns=series_key_map, inplace=True)
-        # Update the column index name to "series_key" since columns are now series_key
-        df_pivoted.columns.name = "series_key"
+        # But keep value_id column as-is if it exists
+        cols_to_rename = {sid: series_key_map[sid] for sid in df_pivoted.columns if sid != 'value_id' and sid in series_key_map}
+        df_pivoted.rename(columns=cols_to_rename, inplace=True)
+        # Update the column index name to "series_key" since columns are now series_key (except value_id)
+        if 'value_id' not in df_pivoted.columns:
+            df_pivoted.columns.name = "series_key"
         return df_pivoted
 
 
@@ -697,6 +1137,8 @@ def insert_run(
     known_time: Optional[datetime] = None,
     run_params: Optional[dict] = None,
     series_key_overrides: Optional[Dict[str, str]] = None,
+    series_ids: Optional[Dict[str, uuid.UUID]] = None,
+    series_descriptions: Optional[Dict[str, str]] = None,
 ) -> InsertResult:
     """
     Insert a run with time series data from a pandas DataFrame.
@@ -716,7 +1158,7 @@ def insert_run(
               - Regular numeric columns (treated as dimensionless)
         tenant_id: Tenant UUID (optional, defaults to zeros UUID for single-tenant installations)
         run_id: Unique identifier for the run (optional, auto-generated if not provided)
-        workflow_id: Workflow identifier (optional, defaults to "sdk-insert" if not provided)
+        workflow_id: Workflow identifier (optional, defaults to "sdk-workflow" if not provided)
         run_start_time: Start time of the run (optional, defaults to datetime.now(timezone.utc))
         run_finish_time: Optional finish time of the run (must be timezone-aware if provided)
         valid_time_col: Column name for valid_time (default: 'valid_time')
@@ -726,6 +1168,12 @@ def insert_run(
         run_params: Optional dictionary of run parameters (will be stored as JSONB)
         series_key_overrides: Optional dict mapping column names to custom series_key values
                             (if not provided, column names are used as series_key)
+        series_ids: Optional dict mapping column names (or series_key) to series_id UUIDs.
+                   If provided for a series, that series_id will be used and no new series will be created.
+                   If not provided for a series, a new series will be created using create_series.
+        series_descriptions: Optional dict mapping column names (or series_key) to descriptions.
+                           Used when creating new series (when series_id is not provided).
+                           If not provided, description will be None for new series.
     
     Returns:
         InsertResult: Named tuple containing (run_id, workflow_id, series_ids, tenant_id).
@@ -792,7 +1240,7 @@ def insert_run(
         run_id = uuid.uuid4()
     
     if workflow_id is None:
-        workflow_id = "sdk-insert"
+        workflow_id = "sdk-workflow"
     
     if run_start_time is None:
         run_start_time = datetime.now(timezone.utc)
@@ -812,18 +1260,39 @@ def insert_run(
     
     if series_key_overrides is None:
         series_key_overrides = {}
+    if series_ids is None:
+        series_ids = {}
+    if series_descriptions is None:
+        series_descriptions = {}
     
     with psycopg.connect(conninfo) as conn:
         for col_name, canonical_unit in series_info.items():
             # Use override if provided, otherwise use column name
             series_key = series_key_overrides.get(col_name, col_name)
             
-            series_id = db.series.get_or_create_series(
-                conn,
-                series_key=series_key,
-                series_unit=canonical_unit,
-                series_id=None,  # Auto-generate
-            )
+            # Check if series_id is provided for this series
+            # Try both column name and series_key as keys
+            provided_series_id = series_ids.get(col_name) or series_ids.get(series_key)
+            
+            if provided_series_id is not None:
+                # Use provided series_id - verify it exists and matches
+                series_id = db.series.get_or_create_series(
+                    conn,
+                    series_key=series_key,
+                    series_unit=canonical_unit,
+                    series_id=provided_series_id,  # Verify this series_id exists
+                )
+            else:
+                # Create a new series using create_series
+                # Get description if provided (try both column name and series_key)
+                description = series_descriptions.get(col_name) or series_descriptions.get(series_key)
+                
+                series_id = db.series.create_series(
+                    conn,
+                    name=series_key,
+                    description=description,
+                    unit=canonical_unit,
+                )
             
             series_mapping[col_name] = series_id
             series_units[col_name] = canonical_unit
@@ -883,3 +1352,65 @@ def insert_run(
         series_ids=final_series_ids,
         tenant_id=tenant_id,
     )
+
+
+def update_records(
+    updates: List[Dict[str, Any]],
+) -> Dict[str, List]:
+    """
+    Update time series records (values, annotations, tags).
+    
+    This is a convenience wrapper around db.update.update_records that handles
+    the database connection internally.
+    
+    Args:
+        updates: List of update dictionaries. Each dictionary must contain EITHER:
+            Option 1 (by value_id - simplest, recommended):
+            - value_id (int): The value_id of the row to update
+            - value (float, optional): New value (omit to leave unchanged, None to clear)
+            - annotation (str, optional): New annotation (omit to leave unchanged, None to clear)
+            - tags (list[str], optional): New tags (omit to leave unchanged, None or [] to clear)
+            - changed_by (str, optional): Who made the change
+            
+            Option 2 (by key - for backwards compatibility):
+            - run_id (uuid.UUID): Run identifier
+            - tenant_id (uuid.UUID): Tenant identifier (optional, defaults to DEFAULT_TENANT_ID)
+            - valid_time (datetime): Time the value is valid for (must be timezone-aware)
+            - series_id (uuid.UUID): Series identifier
+            - value (float, optional): New value (omit to leave unchanged, None to clear)
+            - annotation (str, optional): New annotation (omit to leave unchanged, None to clear)
+            - tags (list[str], optional): New tags (omit to leave unchanged, None or [] to clear)
+            - changed_by (str, optional): Who made the change
+    
+    Returns:
+        Dictionary with keys:
+            - 'updated': List of dicts with keys (value_id, run_id, tenant_id, valid_time, series_id)
+            - 'skipped_no_ops': List of dicts with keys (value_id) or (run_id, tenant_id, valid_time, series_id)
+    
+    Examples:
+        # Update by value_id (simplest)
+        result = td.update_records([{
+            "value_id": 123,
+            "value": 25.5,
+            "annotation": "Corrected value",
+            "tags": ["reviewed"],
+        }])
+        
+        # Update by key (backwards compatible)
+        result = td.update_records([{
+            "run_id": run_id,
+            "valid_time": datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+            "series_id": series_id,
+            "value": 25.5,
+        }])
+    """
+    conninfo = _get_conninfo()
+    
+    # Set default tenant_id for updates by key if not provided
+    for update_dict in updates:
+        if "value_id" not in update_dict:
+            if "tenant_id" not in update_dict:
+                update_dict["tenant_id"] = DEFAULT_TENANT_ID
+    
+    with psycopg.connect(conninfo) as conn:
+        return db.update.update_records(conn, updates=updates)
