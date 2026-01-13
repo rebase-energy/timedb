@@ -63,6 +63,30 @@ jobs:
 #          # OR to use unpooled connection
 #          # DATABASE_URL: "${{ steps.create_neon_branch.outputs.db_url }}"
 
+run_migrations:
+    name: Run Python Migrations
+    needs: [setup, create_neon_branch]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install "psycopg[binary]"
+
+      - name: Run Schema Script
+        env:
+          # This grabs the URL created in the previous job
+          DATABASE_URL: ${{ needs.create_neon_branch.outputs.db_url_with_pooler }}
+        run: |
+          # You can point this to a specific script in your repo
+          python examples/init_db.py
+
 # Following the step above, which runs database migrations, you may want to check
 # for schema changes in your database. We recommend using the following action to
 # post a comment to your pull request with the schema diff. For this action to work,
