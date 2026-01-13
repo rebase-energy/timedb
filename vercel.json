@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/api/(.*)", "dest": "timedb/api.py" },
+    { "source": "/(.*)", "dest": "timedb/api.py" }
+]
+}
