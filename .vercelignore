@@ -1,0 +1,8 @@
+.venv/
+.git/
+tests/
+docs/
+examples/
+postgresql/
+*.db
+*.sqlite

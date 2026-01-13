@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "timedb/api.py": {
-      "excludeFiles": "{.venv,tests,docs,examples, postgresql,.pm,tests}/**"
+      "excludeFiles": "{.venv,node_modules,tests,docs,examples,postgresql,.pm}/**"
     }
   },
   "routes": [
