@@ -43,7 +43,7 @@ def main():
     # Create some sample time series data
     base_time = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
     value_rows = [
-        (tenant_id, base_time + timedelta(hours=i), series_id, "mean", 100.0 + i * 0.5)
+        (tenant_id, base_time + timedelta(hours=i), series_id, 100.0 + i * 0.5)
         for i in range(24)  # 24 hours of data
     ]
     

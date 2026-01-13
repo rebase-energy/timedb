@@ -30,6 +30,8 @@ dependencies = [
   "pint-pandas>=0.3",         # Pandas integration for Pint units
   "ipykernel>=6.31.0",
   "requests>=2.32.5",
+  "sphinx>=7.4.7",
+  "sphinx-rtd-theme>=3.1.0",
 ]
 
 # expose the CLI command 'timedb' which points to the Typer app in timedb/cli.py
