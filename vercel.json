@@ -1,15 +1,11 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "timedb/api.py",
-      "use": "@vercel/python"
+  "functions": {
+    "timedb/api.py": {
+      "excludeFiles": "{.venv,tests,docs,examples, postgresql,.pm,tests}/**"
     }
-  ],
+  },
   "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "timedb/api.py"
-    }
+    { "src": "/(.*)", "dest": "timedb/api.py" }
   ]
 }
