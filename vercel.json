@@ -1,6 +1,15 @@
 {
-  "rewrites": [
-    { "source": "/api/(.*)", "dest": "timedb/api.py" },
-    { "source": "/(.*)", "dest": "timedb/api.py" }
-]
+  "version": 2,
+  "builds": [
+    {
+      "src": "timedb/api.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "timedb/api.py"
+    }
+  ]
 }
