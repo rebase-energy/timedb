@@ -8,7 +8,7 @@ services:
     startCommand: uvicorn timedb.api:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11
+        value: 3.14.2
       - key: TIMEDB_DSN
         sync: false  # Set this in Render dashboard as a secret
       - key: DATABASE_URL
