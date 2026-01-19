@@ -1,11 +1,17 @@
 Installation
 ============
 
-timedb can be installed using pip:
+timedb can be installed using `pip <https://pypi.org/project/pip/>`_:
 
 .. code-block:: bash
 
    pip install timedb
+
+or if you are using `uv <https://docs.astral.sh/uv/>`_:
+
+.. code-block:: bash
+
+   uv add timedb
 
 Requirements
 ------------

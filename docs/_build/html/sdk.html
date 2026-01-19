@@ -8,14 +8,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SDK Usage &mdash; timedb 0.1.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
-      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
       <script src="_static/documentation_options.js?v=a58bc63e"></script>
-      <script src="_static/doctools.js?v=9bcbadda"></script>
-      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -49,7 +49,10 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">SDK Usage</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#getting-started">Getting Started</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#database-connection">Database Connection</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#creating-the-schema">Creating the Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#creating-the-schema">Creating the Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#creating-schema-with-users-table">Creating Schema with Users Table</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#deleting-the-schema">Deleting the Schema</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#inserting-data">Inserting Data</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#basic-example">Basic Example</a></li>
@@ -61,14 +64,31 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#reading-data">Reading Data</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#basic-read">Basic Read</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reading-with-tags-and-annotations">Reading with Tags and Annotations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reading-all-versions">Reading All Versions</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#flat-mode-read">Flat Mode Read</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#overlapping-mode-read">Overlapping Mode Read</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#updating-records">Updating Records</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#updating-records">Updating Records</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#viewing-version-history-after-updates">Viewing Version History After Updates</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#error-handling">Error Handling</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#best-practices">Best Practices</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#example-workflow">Example Workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#starting-the-api-server">Starting the API Server</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#starting-the-api-server-blocking">Starting the API Server (Blocking)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#starting-the-api-server-non-blocking">Starting the API Server (Non-blocking)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#checking-api-status">Checking API Status</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#authentication">Authentication</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#setting-up-authentication">Setting Up Authentication</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tenant-isolation">Tenant Isolation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#managing-users">Managing Users</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api_setup.html">API Setup</a></li>
@@ -126,6 +146,25 @@
 </pre></div>
 </div>
 <p>This creates all necessary tables. It’s safe to run multiple times.</p>
+<section id="creating-schema-with-users-table">
+<h3>Creating Schema with Users Table<a class="headerlink" href="#creating-schema-with-users-table" title="Link to this heading"></a></h3>
+<p>For multi-tenant authentication support, create the schema with a users table:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">timedb</span><span class="w"> </span><span class="kn">import</span> <span class="n">db</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">psycopg</span>
+
+<span class="n">conninfo</span> <span class="o">=</span> <span class="s2">&quot;postgresql://user:password@localhost:5432/timedb&quot;</span>
+<span class="n">conn</span> <span class="o">=</span> <span class="n">psycopg</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">conninfo</span><span class="p">)</span>
+
+<span class="n">db</span><span class="o">.</span><span class="n">create_with_users</span><span class="o">.</span><span class="n">create_schema_users</span><span class="p">(</span><span class="n">conn</span><span class="p">)</span>
+<span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Alternatively, use the CLI:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>timedb<span class="w"> </span>create<span class="w"> </span>tables<span class="w"> </span>--with-users
+</pre></div>
+</div>
+<p>This enables API key authentication and tenant isolation. See <span class="xref std std-ref">Authentication</span> for more details.</p>
+</section>
 </section>
 <section id="deleting-the-schema">
 <h2>Deleting the Schema<a class="headerlink" href="#deleting-the-schema" title="Link to this heading"></a></h2>
@@ -292,6 +331,55 @@
 </pre></div>
 </div>
 </section>
+<section id="reading-with-tags-and-annotations">
+<h3>Reading with Tags and Annotations<a class="headerlink" href="#reading-with-tags-and-annotations" title="Link to this heading"></a></h3>
+<p>Include tags and annotations as DataFrame columns:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">read</span><span class="p">(</span>
+    <span class="n">series_id</span><span class="o">=</span><span class="n">series_id</span><span class="p">,</span>
+    <span class="n">tags_and_annotations</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>The returned DataFrame includes additional columns:
+- <code class="docutils literal notranslate"><span class="pre">tags</span></code>: List of tags for each value
+- <code class="docutils literal notranslate"><span class="pre">annotation</span></code>: Annotation text for each value
+- <code class="docutils literal notranslate"><span class="pre">changed_by</span></code>: Email of the user who changed the value
+- <code class="docutils literal notranslate"><span class="pre">change_time</span></code>: When the value was last changed</p>
+</section>
+<section id="reading-all-versions">
+<h3>Reading All Versions<a class="headerlink" href="#reading-all-versions" title="Link to this heading"></a></h3>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">read()</span></code> returns only the latest version of each value. To see all historical versions:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">read</span><span class="p">(</span>
+    <span class="n">series_id</span><span class="o">=</span><span class="n">series_id</span><span class="p">,</span>
+    <span class="n">all_versions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">return_value_id</span><span class="o">=</span><span class="kc">True</span>  <span class="c1"># Include value_id to distinguish versions</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>When using <code class="docutils literal notranslate"><span class="pre">all_versions=True</span></code> with <code class="docutils literal notranslate"><span class="pre">return_value_id=True</span></code>, the DataFrame uses a MultiIndex <code class="docutils literal notranslate"><span class="pre">(valid_time,</span> <span class="pre">value_id)</span></code> to preserve multiple versions of the same <code class="docutils literal notranslate"><span class="pre">valid_time</span></code>.</p>
+<p>This is useful for:
+- Auditing changes to time series values
+- Viewing complete version history
+- Analyzing how values evolved over time</p>
+<p>Example: Reading version history with metadata:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">read</span><span class="p">(</span>
+    <span class="n">series_id</span><span class="o">=</span><span class="n">series_id</span><span class="p">,</span>
+    <span class="n">all_versions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">return_value_id</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">tags_and_annotations</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+
+<span class="c1"># Each row represents a version with:</span>
+<span class="c1"># - valid_time: The time period this value applies to</span>
+<span class="c1"># - value_id: Unique identifier for this version</span>
+<span class="c1"># - value: The actual value</span>
+<span class="c1"># - tags: Tags associated with this version</span>
+<span class="c1"># - annotation: Annotation for this version</span>
+<span class="c1"># - changed_by: Who made this change</span>
+<span class="c1"># - change_time: When this change was made</span>
+</pre></div>
+</div>
+</section>
 <section id="flat-mode-read">
 <h3>Flat Mode Read<a class="headerlink" href="#flat-mode-read" title="Link to this heading"></a></h3>
 <p>Read values in flat mode (latest known_time per valid_time):</p>
@@ -328,6 +416,36 @@
 </pre></div>
 </div>
 <p>Returns all versions of forecasts, showing how predictions evolve over time. Useful for analyzing forecast revisions and backtesting.</p>
+<p>Example: Analyzing forecast revisions:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create multiple forecasts at different known_times</span>
+<span class="n">base_time</span> <span class="o">=</span> <span class="n">datetime</span><span class="p">(</span><span class="mi">2025</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">tzinfo</span><span class="o">=</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
+    <span class="n">known_time</span> <span class="o">=</span> <span class="n">base_time</span> <span class="o">+</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">days</span><span class="o">=</span><span class="n">i</span><span class="p">)</span>
+    <span class="n">valid_times</span> <span class="o">=</span> <span class="p">[</span><span class="n">known_time</span> <span class="o">+</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">hours</span><span class="o">=</span><span class="n">j</span><span class="p">)</span> <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">72</span><span class="p">)]</span>
+
+    <span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span>
+        <span class="s2">&quot;valid_time&quot;</span><span class="p">:</span> <span class="n">valid_times</span><span class="p">,</span>
+        <span class="s2">&quot;power&quot;</span><span class="p">:</span> <span class="n">generate_forecast</span><span class="p">(</span><span class="n">valid_times</span><span class="p">)</span> <span class="o">*</span> <span class="n">ureg</span><span class="o">.</span><span class="n">MW</span>
+    <span class="p">})</span>
+
+    <span class="n">td</span><span class="o">.</span><span class="n">insert_run</span><span class="p">(</span>
+        <span class="n">df</span><span class="o">=</span><span class="n">df</span><span class="p">,</span>
+        <span class="n">run_start_time</span><span class="o">=</span><span class="n">known_time</span><span class="p">,</span>  <span class="c1"># known_time = when forecast was made</span>
+        <span class="n">workflow_id</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;forecast-run-</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span>
+    <span class="p">)</span>
+
+<span class="c1"># Read all forecast revisions (overlapping mode)</span>
+<span class="n">df_overlapping</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">read_values_overlapping</span><span class="p">(</span>
+    <span class="n">series_id</span><span class="o">=</span><span class="n">series_id</span><span class="p">,</span>
+    <span class="n">start_valid</span><span class="o">=</span><span class="n">base_time</span><span class="p">,</span>
+    <span class="n">end_valid</span><span class="o">=</span><span class="n">base_time</span> <span class="o">+</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">days</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># Each forecast revision appears as a separate column or row</span>
+<span class="c1"># showing how predictions for the same future time evolve</span>
+</pre></div>
+</div>
 </section>
 </section>
 <section id="updating-records">
@@ -361,6 +479,63 @@
 <li><p>Set to <code class="docutils literal notranslate"><span class="pre">None</span></code> (or <code class="docutils literal notranslate"><span class="pre">[]</span></code> for tags) to explicitly clear it</p></li>
 <li><p>Set to a value to update it</p></li>
 </ul>
+<p>Example: Batch updates with annotations and tags:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Update multiple values</span>
+<span class="n">updates</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="p">{</span>
+        <span class="s1">&#39;run_id&#39;</span><span class="p">:</span> <span class="n">run_id</span><span class="p">,</span>
+        <span class="s1">&#39;tenant_id&#39;</span><span class="p">:</span> <span class="n">tenant_id</span><span class="p">,</span>
+        <span class="s1">&#39;valid_time&#39;</span><span class="p">:</span> <span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">12</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">tzinfo</span><span class="o">=</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">),</span>
+        <span class="s1">&#39;series_id&#39;</span><span class="p">:</span> <span class="n">series_id</span><span class="p">,</span>
+        <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="mf">150.0</span><span class="p">,</span>
+        <span class="s1">&#39;annotation&#39;</span><span class="p">:</span> <span class="s1">&#39;Manually corrected after sensor check&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;tags&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;reviewed&#39;</span><span class="p">,</span> <span class="s1">&#39;corrected&#39;</span><span class="p">],</span>
+        <span class="s1">&#39;changed_by&#39;</span><span class="p">:</span> <span class="s1">&#39;operator@example.com&#39;</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="p">{</span>
+        <span class="s1">&#39;run_id&#39;</span><span class="p">:</span> <span class="n">run_id</span><span class="p">,</span>
+        <span class="s1">&#39;tenant_id&#39;</span><span class="p">:</span> <span class="n">tenant_id</span><span class="p">,</span>
+        <span class="s1">&#39;valid_time&#39;</span><span class="p">:</span> <span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">13</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">tzinfo</span><span class="o">=</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">),</span>
+        <span class="s1">&#39;series_id&#39;</span><span class="p">:</span> <span class="n">series_id</span><span class="p">,</span>
+        <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="mf">155.0</span><span class="p">,</span>
+        <span class="s1">&#39;tags&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;reviewed&#39;</span><span class="p">],</span>  <span class="c1"># Add tag</span>
+        <span class="s1">&#39;changed_by&#39;</span><span class="p">:</span> <span class="s1">&#39;operator@example.com&#39;</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="p">{</span>
+        <span class="s1">&#39;run_id&#39;</span><span class="p">:</span> <span class="n">run_id</span><span class="p">,</span>
+        <span class="s1">&#39;tenant_id&#39;</span><span class="p">:</span> <span class="n">tenant_id</span><span class="p">,</span>
+        <span class="s1">&#39;valid_time&#39;</span><span class="p">:</span> <span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">14</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">tzinfo</span><span class="o">=</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">),</span>
+        <span class="s1">&#39;series_id&#39;</span><span class="p">:</span> <span class="n">series_id</span><span class="p">,</span>
+        <span class="s1">&#39;annotation&#39;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>  <span class="c1"># Clear annotation</span>
+        <span class="s1">&#39;tags&#39;</span><span class="p">:</span> <span class="p">[],</span>  <span class="c1"># Clear tags</span>
+    <span class="p">}</span>
+<span class="p">]</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">update_records</span><span class="p">(</span><span class="n">updates</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="viewing-version-history-after-updates">
+<h3>Viewing Version History After Updates<a class="headerlink" href="#viewing-version-history-after-updates" title="Link to this heading"></a></h3>
+<p>After updating records, you can view the complete version history:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Read all versions to see the history</span>
+<span class="n">df_history</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">read</span><span class="p">(</span>
+    <span class="n">series_id</span><span class="o">=</span><span class="n">series_id</span><span class="p">,</span>
+    <span class="n">all_versions</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">return_value_id</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">tags_and_annotations</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+
+<span class="c1"># Each update creates a new version while keeping old versions</span>
+<span class="c1"># You can see:</span>
+<span class="c1"># - Original value</span>
+<span class="c1"># - Updated value</span>
+<span class="c1"># - Who made the change (changed_by)</span>
+<span class="c1"># - When it was changed (change_time)</span>
+<span class="c1"># - Why it was changed (annotation)</span>
+<span class="c1"># - Quality flags (tags)</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="error-handling">
 <h2>Error Handling<a class="headerlink" href="#error-handling" title="Link to this heading"></a></h2>
@@ -436,6 +611,148 @@
 <span class="nb">print</span><span class="p">(</span><span class="n">df_read</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
 </pre></div>
 </div>
+</section>
+<section id="starting-the-api-server">
+<h2>Starting the API Server<a class="headerlink" href="#starting-the-api-server" title="Link to this heading"></a></h2>
+<p>The SDK provides functions to start and check the TimeDB REST API server:</p>
+<section id="starting-the-api-server-blocking">
+<h3>Starting the API Server (Blocking)<a class="headerlink" href="#starting-the-api-server-blocking" title="Link to this heading"></a></h3>
+<p>Start the API server in the current process (blocks until stopped):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">td</span><span class="o">.</span><span class="n">start_api</span><span class="p">()</span>
+
+<span class="c1"># With custom host/port</span>
+<span class="n">td</span><span class="o">.</span><span class="n">start_api</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">8080</span><span class="p">)</span>
+
+<span class="c1"># With auto-reload (development)</span>
+<span class="n">td</span><span class="o">.</span><span class="n">start_api</span><span class="p">(</span><span class="n">reload</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The API will be available at <code class="docutils literal notranslate"><span class="pre">http://&lt;host&gt;:&lt;port&gt;</span></code> with interactive docs at <code class="docutils literal notranslate"><span class="pre">/docs</span></code>.</p>
+</section>
+<section id="starting-the-api-server-non-blocking">
+<h3>Starting the API Server (Non-blocking)<a class="headerlink" href="#starting-the-api-server-non-blocking" title="Link to this heading"></a></h3>
+<p>For use in notebooks or when you need the API to run in the background:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Start in background thread (non-blocking)</span>
+<span class="n">started</span> <span class="o">=</span> <span class="n">td</span><span class="o">.</span><span class="n">start_api_background</span><span class="p">()</span>
+
+<span class="k">if</span> <span class="n">started</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;API server started&quot;</span><span class="p">)</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;API server was already running&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The server runs in a separate thread and won’t block your Python process.</p>
+</section>
+<section id="checking-api-status">
+<h3>Checking API Status<a class="headerlink" href="#checking-api-status" title="Link to this heading"></a></h3>
+<p>Check if the API server is running and get information:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="n">td</span><span class="o">.</span><span class="n">check_api</span><span class="p">():</span>
+    <span class="c1"># API is running - information was printed to console</span>
+    <span class="k">pass</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="c1"># API is not running - start it</span>
+    <span class="n">td</span><span class="o">.</span><span class="n">start_api_background</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">check_api()</span></code> function prints API information including available endpoints.</p>
+<p>Example: Complete API workflow in a notebook:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">timedb</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">td</span>
+
+<span class="c1"># Start API server in background</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">td</span><span class="o">.</span><span class="n">check_api</span><span class="p">():</span>
+    <span class="n">td</span><span class="o">.</span><span class="n">start_api_background</span><span class="p">()</span>
+
+<span class="c1"># Now you can make API requests</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
+<span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;http://127.0.0.1:8000/values&quot;</span><span class="p">)</span>
+<span class="n">data</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>For detailed API usage, see <a class="reference internal" href="api_setup.html"><span class="doc">API Setup</span></a> and the API usage examples.</p>
+</section>
+</section>
+<section id="authentication">
+<h2>Authentication<a class="headerlink" href="#authentication" title="Link to this heading"></a></h2>
+<p>TimeDB supports multi-tenant authentication using API keys. When the users table exists, authentication is required for all API endpoints.</p>
+<section id="setting-up-authentication">
+<h3>Setting Up Authentication<a class="headerlink" href="#setting-up-authentication" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Create schema with users table (see <span class="xref std std-ref">Creating Schema with Users Table</span>)</p></li>
+<li><p>Create users with API keys:</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">timedb</span><span class="w"> </span><span class="kn">import</span> <span class="n">db</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">psycopg</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">uuid</span>
+
+<span class="n">conn</span> <span class="o">=</span> <span class="n">psycopg</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;postgresql://user:password@localhost:5432/timedb&quot;</span><span class="p">)</span>
+
+<span class="n">tenant_id</span> <span class="o">=</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span>  <span class="c1"># Or use an existing tenant ID</span>
+
+<span class="c1"># Create a user</span>
+<span class="n">user_result</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span>
+    <span class="n">conn</span><span class="p">,</span>
+    <span class="n">tenant_id</span><span class="o">=</span><span class="n">tenant_id</span><span class="p">,</span>
+    <span class="n">email</span><span class="o">=</span><span class="s2">&quot;user@example.com&quot;</span>
+<span class="p">)</span>
+
+<span class="c1"># user_result contains: api_key, user_id, email, tenant_id</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;API Key: </span><span class="si">{</span><span class="n">user_result</span><span class="o">.</span><span class="n">api_key</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;⚠️  Save this key - it&#39;s only shown once!&quot;</span><span class="p">)</span>
+
+<span class="n">conn</span><span class="o">.</span><span class="n">commit</span><span class="p">()</span>
+<span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+</pre></div>
+</div>
+<ol class="arabic simple" start="3">
+<li><p>Use API keys in requests:</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
+
+<span class="n">api_key</span> <span class="o">=</span> <span class="s2">&quot;your-api-key-here&quot;</span>
+<span class="n">headers</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;X-API-Key&quot;</span><span class="p">:</span> <span class="n">api_key</span><span class="p">}</span>
+
+<span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+    <span class="s2">&quot;http://127.0.0.1:8000/values&quot;</span><span class="p">,</span>
+    <span class="n">headers</span><span class="o">=</span><span class="n">headers</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="tenant-isolation">
+<h3>Tenant Isolation<a class="headerlink" href="#tenant-isolation" title="Link to this heading"></a></h3>
+<p>Each user’s API key is tied to a <code class="docutils literal notranslate"><span class="pre">tenant_id</span></code>. Users can only:
+- Read data for their own tenant
+- Write data for their own tenant
+- Update records for their own tenant</p>
+<p>Data from different tenants is completely isolated.</p>
+</section>
+<section id="managing-users">
+<h3>Managing Users<a class="headerlink" href="#managing-users" title="Link to this heading"></a></h3>
+<p>List users:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">users</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">list_users</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">tenant_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>  <span class="c1"># All users</span>
+<span class="c1"># or</span>
+<span class="n">users</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">list_users</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">tenant_id</span><span class="o">=</span><span class="n">tenant_id</span><span class="p">)</span>  <span class="c1"># Users for a tenant</span>
+</pre></div>
+</div>
+<p>Deactivate a user (revoke API access):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">db</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">deactivate_user</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">email</span><span class="o">=</span><span class="s2">&quot;user@example.com&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Activate a user (restore API access):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">db</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">activate_user</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">email</span><span class="o">=</span><span class="s2">&quot;user@example.com&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Regenerate API key:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">new_key</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">regenerate_api_key</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">email</span><span class="o">=</span><span class="s2">&quot;user@example.com&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;New API Key: </span><span class="si">{</span><span class="n">new_key</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="c1"># ⚠️  Old key is immediately invalid</span>
+</pre></div>
+</div>
+<p>For more details, see the authentication example notebooks:
+- <code class="docutils literal notranslate"><span class="pre">examples/nb_08_authentication.ipynb</span></code> - General authentication concepts
+- <code class="docutils literal notranslate"><span class="pre">examples/nb_08a_authentication_cli.ipynb</span></code> - Using CLI for user management
+- <code class="docutils literal notranslate"><span class="pre">examples/nb_08b_authentication_sdk.ipynb</span></code> - Using SDK for user management</p>
+</section>
 </section>
 </section>
 
