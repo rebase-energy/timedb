@@ -28,6 +28,7 @@ The python scripts require the DATABASE_URL environment variable to be set. On f
 
 ```bash
 set -x DATABASE_URL 'postgresql://devuser:devpassword@127.0.0.1:5432/devdb'
+set -Ux DATABASE_URL 'postgresql://devuser:devpassword@127.0.0.1:5432/devdb' # globally
 ```
 
 Inspect the database
@@ -42,6 +43,12 @@ psql postgresql://devuser:devpassword@127.0.0.1:5432/devdb
 docker compose down -v
 rm -rf ./pgdata
 docker compose up -d
+```
+
+# plot tables
+
+```bash
+docker run -p 8080:80 ghcr.io/chartdb/chartdb:latest
 ```
 
 # Fish helper scripts

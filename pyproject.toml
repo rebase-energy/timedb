@@ -30,7 +30,17 @@ dependencies = [
   "pint-pandas>=0.3",         # Pandas integration for Pint units
   "ipykernel>=6.31.0",
   "requests>=2.32.5",
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
   "modal>=1.2.6",
+=======
+  "jupyter>=1.1.1",
+  "notebook>=7.5.2",
+>>>>>>> Stashed changes
+=======
+  "jupyter>=1.1.1",
+  "notebook>=7.5.2",
+>>>>>>> Stashed changes
 ]
 
 # expose the CLI command 'timedb' which points to the Typer app in timedb/cli.py
