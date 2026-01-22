@@ -48,10 +48,10 @@ Documentation
    :caption: Contents:
 
    installation
-   examples
    cli
    sdk
    api_setup
+   examples
 
 Indices and tables
 ==================

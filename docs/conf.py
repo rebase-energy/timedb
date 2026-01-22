@@ -27,7 +27,12 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.intersphinx',
     'sphinx.ext.autosummary',
+    'nbsphinx',
 ]
+
+# nbsphinx configuration
+nbsphinx_execute = 'never'  # Don't execute notebooks during build
+nbsphinx_allow_errors = True  # Continue build even if notebooks have errors
 
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
