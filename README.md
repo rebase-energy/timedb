@@ -33,7 +33,32 @@ pip install timedb
 ```
 
 ## Basic usage
-TBD
+
+```python
+import timedb as td
+import pandas as pd
+from datetime import datetime, timezone, timedelta
+
+# Create database schema (requires TIMEDB_DSN or DATABASE_URL env var)
+td.create()
+
+# Create time series data
+base_time = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+df = pd.DataFrame({
+    'valid_time': [base_time + timedelta(hours=i) for i in range(24)],
+    'value': [20.0 + i * 0.3 for i in range(24)]
+})
+
+# Insert time series
+result = td.insert_run(df=df)
+print(f"Inserted series: {result.series_id}")
+
+# Read data back
+df_read = td.read()
+print(df_read)
+```
+
+See the [examples/](examples/) folder for interactive Jupyter notebooks demonstrating more advanced usage.
 
 ## Tables
 ## runs_table
