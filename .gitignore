@@ -67,3 +67,4 @@ Thumbs.db
 # Sphinx build artifacts
 # =========================
 docs/_build/
+docs/notebooks

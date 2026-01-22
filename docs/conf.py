@@ -9,6 +9,15 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('..'))
 
+# Create symlink to examples directory for nbsphinx
+# This works both locally and on ReadTheDocs
+_docs_dir = os.path.dirname(os.path.abspath(__file__))
+_examples_src = os.path.join(_docs_dir, '..', 'examples')
+_examples_link = os.path.join(_docs_dir, 'notebooks')
+
+if not os.path.exists(_examples_link):
+    os.symlink(_examples_src, _examples_link)
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 

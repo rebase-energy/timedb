@@ -28,8 +28,8 @@ Getting Started
 .. toctree::
    :maxdepth: 1
 
-   ../examples/nb_01_write_read_pandas
-   ../examples/nb_02_units_validation
+   notebooks/nb_01_write_read_pandas
+   notebooks/nb_02_units_validation
 
 Core Features
 -------------
@@ -37,9 +37,9 @@ Core Features
 .. toctree::
    :maxdepth: 1
 
-   ../examples/nb_03_forecast_revisions
-   ../examples/nb_04_timeseries_changes
-   ../examples/nb_05_multiple_series
+   notebooks/nb_03_forecast_revisions
+   notebooks/nb_04_timeseries_changes
+   notebooks/nb_05_multiple_series
 
 Advanced Topics
 ---------------
@@ -47,11 +47,11 @@ Advanced Topics
 .. toctree::
    :maxdepth: 1
 
-   ../examples/nb_06_advanced_querying
-   ../examples/nb_07_api_usage
-   ../examples/nb_08_authentication
-   ../examples/nb_08a_authentication_cli
-   ../examples/nb_08b_authentication_sdk
+   notebooks/nb_06_advanced_querying
+   notebooks/nb_07_api_usage
+   notebooks/nb_08_authentication
+   notebooks/nb_08a_authentication_cli
+   notebooks/nb_08b_authentication_sdk
 
 Workflow Examples
 -----------------
