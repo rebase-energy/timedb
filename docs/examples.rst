@@ -3,9 +3,6 @@ Examples
 
 TimeDB includes interactive Jupyter notebooks that demonstrate key features and usage patterns.
 
-Prerequisites
--------------
-
 Before running the examples locally, ensure you have:
 
 1. **PostgreSQL Database**: A PostgreSQL database (version 12+)
@@ -23,7 +20,7 @@ Before running the examples locally, ensure you have:
       pip install jupyter
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
 
    notebooks/nb_01_write_read_pandas
    notebooks/nb_02_units_validation
