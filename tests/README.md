@@ -55,7 +55,7 @@ The test suite uses fixtures defined in `conftest.py`:
 
 - `test_db_conninfo`: Provides the test database connection string
 - `clean_db`: Creates a fresh database schema for each test
-- `sample_run_id`: Generates a UUID for test runs
+- `sample_batch_id`: Generates a UUID for test runs
 - `sample_workflow_id`: Provides a test workflow ID
 - `sample_datetime`: Provides a sample datetime for testing
 
@@ -64,7 +64,7 @@ The test suite uses fixtures defined in `conftest.py`:
 When writing new tests:
 
 1. Use the `clean_db` fixture to get a clean database for each test
-2. Use the sample fixtures (`sample_run_id`, etc.) for consistent test data
+2. Use the sample fixtures (`sample_batch_id`, etc.) for consistent test data
 3. Follow the existing test patterns for consistency
 4. Add docstrings explaining what each test verifies
 

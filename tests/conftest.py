@@ -48,8 +48,8 @@ def clean_db_for_update(test_db_conninfo):
 
 
 @pytest.fixture
-def sample_run_id():
-    """Generate a sample run ID for testing."""
+def sample_batch_id():
+    """Generate a sample batch ID for testing."""
     return uuid.uuid4()
 
 

@@ -37,7 +37,7 @@ Quick Start
    })
 
    # Insert and read back
-   result = td.insert_run(df=df)
+   result = td.insert_batch(df=df)
    df_read = td.read()
 
 Documentation

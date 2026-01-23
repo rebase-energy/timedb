@@ -9,7 +9,7 @@ High-level SDK usage:
     # Create schema
     td.create()
     
-    # Insert run with DataFrame containing Pint Quantity columns
+    # Insert batch with DataFrame containing Pint Quantity columns
     # Each column (except time columns) becomes a separate series
     df = pd.DataFrame({
         "valid_time": times,
@@ -18,7 +18,7 @@ High-level SDK usage:
         "temperature": temp_vals_C * ureg.degC          # Series with degC unit
     })
     
-    result = td.insert_run(df=df)
+    result = td.insert_batch(df=df)
     # result.series_ids = {
     #     'power': <uuid>,
     #     'wind_speed': <uuid>,
@@ -26,7 +26,7 @@ High-level SDK usage:
     # }
     
     # With custom series keys
-    result = td.insert_run(
+    result = td.insert_batch(
         df=df,
         series_key_overrides={
             'power': 'wind_power_forecast',
@@ -35,8 +35,8 @@ High-level SDK usage:
     )
 """
 
-from .sdk import create, delete, start_api, start_api_background, check_api, insert_run, read, read_values_flat, read_values_overlapping, update_records, create_series, get_mapping, InsertResult, DEFAULT_TENANT_ID
+from .sdk import create, delete, start_api, start_api_background, check_api, insert_batch, read, read_values_flat, read_values_overlapping, update_records, create_series, get_mapping, InsertResult, DEFAULT_TENANT_ID
 from .units import IncompatibleUnitError
 
-__all__ = ['create', 'delete', 'start_api', 'start_api_background', 'check_api', 'insert_run', 'read', 'read_values_flat', 'read_values_overlapping', 'update_records', 'create_series', 'get_mapping', 'InsertResult', 'DEFAULT_TENANT_ID', 'IncompatibleUnitError']
+__all__ = ['create', 'delete', 'start_api', 'start_api_background', 'check_api', 'insert_batch', 'read', 'read_values_flat', 'read_values_overlapping', 'update_records', 'create_series', 'get_mapping', 'InsertResult', 'DEFAULT_TENANT_ID', 'IncompatibleUnitError']
 

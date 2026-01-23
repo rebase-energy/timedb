@@ -50,7 +50,7 @@ df = pd.DataFrame({
 })
 
 # Insert time series
-result = td.insert_run(df=df)
+result = td.insert_batch(df=df)
 print(f"Inserted series: {result.series_id}")
 
 # Read data back
@@ -97,11 +97,14 @@ See the [examples/](examples/) folder for interactive Jupyter notebooks demonstr
 | Field | Type | Purpose |
 |---|---|---|
 | `value_id` **(primary key)** | attribute | Unique identifier for each version of a value |
-| `run_id` **(foreign key)** | attribute | References the run that produced this value (`runs_table.run_id`) |
+| `batch_id` **(foreign key)** | attribute | References the batch that produced this value (`batches_table.batch_id`) |
+| `tenant_id` | attribute | Tenant identifier for multi-tenant support |
+| `series_id` **(foreign key)** | attribute | References the series (`series_table.series_id`) |
 | `valid_time` | time dimension | Timestamp the value is valid for |
 | `valid_time_end` **(optional)** | time dimension | Optional interval end time; NULL means point-in-time at `valid_time` |
 | `value` **(optional)** | measure | The numeric value (nullable; NULL can be a valid stored value) |
 | `annotation` **(optional)** | attribute | Optional human annotation (whitespace-only disallowed) |
+| `metadata` **(optional)** | attribute | Optional JSONB metadata (e.g., `{"quality": "good", "source": "manual"}`) |
 | `tags` **(optional)** | attribute | Optional semantic labels / quality flags (empty arrays disallowed; use NULL) |
 | `changed_by` **(optional)** | attribute | User or service responsible for the change |
 | `change_time` | time dimension | When this version row was created (default `now()`) |
@@ -114,8 +117,9 @@ See the [examples/](examples/) folder for interactive Jupyter notebooks demonstr
 | Field | Type | Purpose |
 |---|---|---|
 | `metadata_id` **(primary key)** | attribute | Surrogate primary key for metadata rows |
-| `run_id` **(foreign key)** | attribute | References run context (`runs_table.run_id`) |
-| `valid_time` | time dimension | Time context for the metadata (joins onto values via `(run_id, valid_time)`) |
+| `batch_id` **(foreign key)** | attribute | References batch context (`batches_table.batch_id`) |
+| `tenant_id` | attribute | Tenant identifier for multi-tenant support |
+| `valid_time` | time dimension | Time context for the metadata (joins onto values via `(batch_id, valid_time)`) |
 | `metadata_key` | attribute | Name of the metadata field (e.g. `contractId`, `deliveryStart`) |
 | `value_number` **(optional)** | attribute | Numeric metadata value (exactly one typed value must be set per row) |
 | `value_string` **(optional)** | attribute | String metadata value (mutually exclusive with other typed values) |
@@ -126,43 +130,52 @@ See the [examples/](examples/) folder for interactive Jupyter notebooks demonstr
 
 ## Changed
 ### Three-dimensional time series data model
-Every time series value is described using three independent timelines:
 
-| Time dimension    | Description                                  |
-| ----------------- | -------------------------------------------- |
-| `knowledge_time`  | The time when the value was known            |
-| `valid_time`      | The time the value represents a fact for     |
-| `change_time`     | The time when the value was changed          |
+Most time series databases are two-dimensional: they map a timestamp to a value. **timedb** adds a third dimension: **time-of-knowledge** (`known_time`).
+
+This allows you to store overlapping forecasts and revisions while preserving the full history of how values evolved. For example:
+- A forecast made on Monday for Tuesday can coexist with a forecast made on Tuesday for the same time
+- You can query "what did we know about Tuesday on Monday?" vs "what do we know now?"
+
+The key dimensions are:
+- **`valid_time`**: When the value is valid (the timestamp being forecasted/measured)
+- **`known_time`**: When this value became known (when the forecast was made or data arrived)
+- **`batch_id`**: Groups values that were inserted together in one batch
+
+This design naturally supports:
+- **Forecast revisions**: Multiple predictions for the same valid_time from different known_times
+- **Data corrections**: Updates that preserve the original value with full audit trail
+- **Backtesting**: Reconstruct what was known at any point in the past
 
 
 ### Additional attributes 
-Schema columns provides additional attributes to the values according to:  
 
-| Column name   | Description                                                     |
-| ------------- | --------------------------------------------------------------- |
-| `value`       | The numeric value being stored (may be NULL)                    |
-| `tags`        | Semantic labels and quality flags applied to the value           |
-| `annotation`     | Optional human annotation explaining the value or change         |
-| `run_id`      | Reference to the workflow run that produced the value            |
-| `run_params`  | Parameters and configuration associated with the producing run  |
-| `is_current`  | Indicates whether this row is the active version for its key     |
-| `changed_by`  | User or service responsible for the change                       |
+Beyond the core time dimensions, **timedb** includes attributes for human-in-the-loop corrections:
+- **`tags`**: Array of strings for quality flags (e.g., `["reviewed", "corrected"]`)
+- **`annotation`**: Text descriptions of changes
+- **`metadata`**: JSONB field for flexible metadata storage
+- **`changed_by`**: Who made the change
+- **`version`**: Incremented on each update to track history
+- **`is_current`**: Flag indicating if this is the active version
+
+Updates create new rows rather than overwriting, so you maintain a complete audit trail of all changes.
 
 ## Roadmap
-- [x] Decouple the knowledge time from the run_time
-- [ ] Python SDK that allows time series data manipulations, reads and writes
-- [ x ] RESTful API layer that serves data to users
-- [ ] Handle different time zones in the API layer while always storing in UTC in the database. 
+- [x] Decouple the knowledge time from the batch_start_time
+- [x] Python SDK that allows time series data manipulations, reads and writes
+- [x] RESTful API layer that serves data to users
+- [x] Built in authentication and multi-tenancy support
+- [x] Unit handling (e.g. MW, kW)
+- [ ] Handle different time zones in the API layer while always storing in UTC in the database
 - [ ] Support for postgres time intervals (tsrange/tstzrange)
 - [ ] Built in data retention, TTL, and archiving
-- [ ] Support for subscribing to database updates through the API 
-- [ x ] Unit handling (e.g. MW, kW)
-- [ ] Xarray integration for multidimensional time series. 
-- [ ] Polars integration for lazy computations. 
- - [ ] Parquet file integration
- - [ ] Real-Time Subscriptions through websocket subscription
- - [ ] Store time series with geographic coordinates. Query by spatial region (e.g., "all temperature sensors in this polygon")
- - [ ] Automatic alignment and interpolation of different time series resolutions. 
- - [ ] Symbolic time series + serialization
+- [ ] Support for subscribing to database updates through the API
+- [ ] Xarray integration for multidimensional time series
+- [ ] Polars integration for lazy computations
+- [ ] Parquet file integration
+- [ ] Real-Time Subscriptions through websocket subscription
+- [ ] Store time series with geographic coordinates. Query by spatial region (e.g., "all temperature sensors in this polygon")
+- [ ] Automatic alignment and interpolation of different time series resolutions
+- [ ] Symbolic time series + serialization
 
 

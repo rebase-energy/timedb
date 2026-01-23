@@ -173,7 +173,3 @@ def insert_batch_with_values_and_metadata(
             insert_metadata(conn, batch_id=batch_id, tenant_id=tenant_id, metadata_rows=metadata_rows)
 
     print("Inserted batch + values + metadata (atomic).")
-
-
-# Backward compatibility alias
-insert_run_with_values_and_metadata = insert_batch_with_values_and_metadata
