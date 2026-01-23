@@ -32,7 +32,7 @@ DEFAULT_TENANT_ID = uuid.UUID('00000000-0000-0000-0000-000000000000')
 
 
 class InsertResult(NamedTuple):
-    """Result from insert_run containing the IDs that were used."""
+    """Result from insert_batch containing the IDs that were used."""
     batch_id: uuid.UUID
     workflow_id: str
     series_ids: Dict[str, uuid.UUID]  # Maps name to series_id
@@ -1207,7 +1207,7 @@ def read_values_overlapping(
         return df_pivoted
 
 
-def insert_run(
+def insert_batch(
     df: pd.DataFrame,
     tenant_id: Optional[uuid.UUID] = None,
     batch_id: Optional[uuid.UUID] = None,
@@ -1223,7 +1223,7 @@ def insert_run(
     series_descriptions: Optional[Dict[str, str]] = None,
 ) -> InsertResult:
     """
-    Insert a run with time series data from a pandas DataFrame.
+    Insert a batch with time series data from a pandas DataFrame.
     
     This function automatically:
     - Detects series from DataFrame columns (each column except time columns becomes a series)
@@ -1239,15 +1239,15 @@ def insert_run(
               - pint-pandas Series with dtype="pint[unit]" (e.g., `pd.Series([1.2], dtype="pint[MW]")`)
               - Regular numeric columns (treated as dimensionless)
         tenant_id: Tenant UUID (optional, defaults to zeros UUID for single-tenant installations)
-        batch_id: Unique identifier for the run (optional, auto-generated if not provided)
+        batch_id: Unique identifier for the batch (optional, auto-generated if not provided)
         workflow_id: Workflow identifier (optional, defaults to "sdk-workflow" if not provided)
-        run_start_time: Start time of the run (optional, defaults to datetime.now(timezone.utc))
-        run_finish_time: Optional finish time of the run (must be timezone-aware if provided)
+        batch_start_time: Start time of the batch (optional, defaults to datetime.now(timezone.utc))
+        batch_finish_time: Optional finish time of the batch (must be timezone-aware if provided)
         valid_time_col: Column name for valid_time (default: 'valid_time')
         valid_time_end_col: Column name for valid_time_end for interval values (optional)
         known_time: Time of knowledge - when the data was known/available (optional, 
                     defaults to inserted_at in database if not provided)
-        run_params: Optional dictionary of run parameters (will be stored as JSONB)
+        batch_params: Optional dictionary of batch parameters (will be stored as JSONB)
         name_overrides: Optional dict mapping column names to custom name values
                             (if not provided, column names are used as name)
         series_ids: Optional dict mapping column names (or name) to series_id UUIDs.
@@ -1285,7 +1285,7 @@ def insert_run(
         })
         
         # Insert - automatically creates series from columns
-        result = td.insert_run(df=df)
+        result = td.insert_batch(df=df)
         # result.series_ids = {
         #     'power': <uuid>,
         #     'wind_speed': <uuid>,
@@ -1293,7 +1293,7 @@ def insert_run(
         # }
         
         # With custom series keys
-        result = td.insert_run(
+        result = td.insert_batch(
             df=df,
             name_overrides={
                 'power': 'wind_power_forecast',
@@ -1307,7 +1307,7 @@ def insert_run(
             "valid_time_end": end_times,
             "energy": energy_vals_MWh * ureg.MWh
         })
-        result = td.insert_run(
+        result = td.insert_batch(
             df=df_intervals,
             valid_time_end_col='valid_time_end'
         )
@@ -1390,9 +1390,9 @@ def insert_run(
         valid_time_end_col=valid_time_end_col,
     )
     
-    # Insert run with values
+    # Insert batch with values
     try:
-        db.insert.insert_run_with_values(
+        db.insert.insert_batch_with_values(
             conninfo=conninfo,
             batch_id=batch_id,
             tenant_id=tenant_id,

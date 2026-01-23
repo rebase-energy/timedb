@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS values_table (
 
   -- Context/Audit columns
   annotation       text,
+  metadata         jsonb,    -- Flexible metadata storage (e.g. {"quality": "good", "source": "manual"})
   tags             text[],   -- Use this for sparse metadata (e.g. ['interpolated'])
   changed_by       text,
   change_time      timestamptz NOT NULL DEFAULT now(),
@@ -146,6 +147,7 @@ CREATE INDEX IF NOT EXISTS values_batch_time_idx
 CREATE INDEX IF NOT EXISTS values_valid_time_idx ON values_table (valid_time);
 CREATE INDEX IF NOT EXISTS values_series_id_idx ON values_table (series_id);
 CREATE INDEX IF NOT EXISTS values_tags_gin_idx ON values_table USING GIN (tags);
+CREATE INDEX IF NOT EXISTS values_metadata_gin_idx ON values_table USING GIN (metadata);
 
 
 -- ============================================================================

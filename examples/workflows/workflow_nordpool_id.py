@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from dotenv import load_dotenv
 import modal
 
-from timedb.db.insert_with_metadata import insert_run_with_values_and_metadata
+from timedb.db.insert_with_metadata import insert_batch_with_values_and_metadata
 
 load_dotenv()
 
@@ -94,7 +94,7 @@ def workflow_nordpool_id_today():
         value_name="value",
     )
 
-    # Now build the value_rows list ready for insert_run_with_values_and_metadata:
+    # Now build the value_rows list ready for insert_batch_with_values_and_metadata:
     value_rows = list(df_values[["valid_time", "valid_time_end", "value_key", "value"]].itertuples(index=False, name=None))
     #value_rows = list(df_values[["valid_time", "value_key", "value"]].itertuples(index=False, name=None))
 
@@ -114,7 +114,7 @@ def workflow_nordpool_id_today():
     ]
 
     conninfo = os.environ["NEON_PG_URL3"]
-    insert_run_with_values_and_metadata(
+    insert_batch_with_values_and_metadata(
         conninfo,
         run_id=run_id,
         workflow_id=workflow_id,

@@ -52,7 +52,7 @@ To delete all tables and data (use with caution):
 Inserting Data
 --------------
 
-The main function for inserting data is ``insert_run()``. It automatically:
+The main function for inserting data is ``insert_batch()``. It automatically:
 
 - Detects series from DataFrame columns
 - Extracts units from Pint Quantity objects or pint-pandas Series
@@ -88,7 +88,7 @@ Basic Example
    })
 
    # Insert the data
-   result = td.insert_run(df=df)
+   result = td.insert_batch(df=df)
 
    # result.series_ids contains the mapping of series_key to series_id
    print(result.series_ids)
@@ -107,7 +107,7 @@ You can also use pint-pandas Series with dtype annotations:
        "wind_speed": pd.Series([5.0, 6.0, 7.0] * 8, dtype="pint[m/s]"),
    })
 
-   result = td.insert_run(df=df)
+   result = td.insert_batch(df=df)
 
 Custom Series Keys
 ~~~~~~~~~~~~~~~~~~
@@ -116,7 +116,7 @@ Override default series keys (column names):
 
 .. code-block:: python
 
-   result = td.insert_run(
+   result = td.insert_batch(
        df=df,
        series_key_overrides={
            'power': 'wind_power_forecast',
@@ -145,7 +145,7 @@ For interval-based time series (e.g., energy over a time period):
        "energy": [100.0, 105.0, 110.0] * 8 * ureg.MWh
    })
 
-   result = td.insert_run(
+   result = td.insert_batch(
        df=df_intervals,
        valid_time_end_col='valid_time_end'
    )
@@ -157,7 +157,7 @@ Full function signature:
 
 .. code-block:: python
 
-   result = td.insert_run(
+   result = td.insert_batch(
        df=pd.DataFrame(...),
        tenant_id=None,  # Optional, defaults to zeros UUID
        run_id=None,  # Optional, auto-generated if not provided
@@ -317,7 +317,7 @@ Example: Analyzing forecast revisions:
            "power": generate_forecast(valid_times) * ureg.MW
        })
 
-       td.insert_run(
+       td.insert_batch(
            df=df,
            known_time=known_time,  # When forecast was made
            workflow_id=f"forecast-run-{i}"
@@ -431,7 +431,7 @@ Example error handling:
    from timedb import IncompatibleUnitError
 
    try:
-       result = td.insert_run(df=df)
+       result = td.insert_batch(df=df)
    except ValueError as e:
        if "TimeDB tables do not exist" in str(e):
            print("Please create the schema first: td.create()")
@@ -478,7 +478,7 @@ Complete Example
    })
 
    # 3. Insert data
-   result = td.insert_run(
+   result = td.insert_batch(
        df=df,
        workflow_id="forecast-v1",
        run_params={"model": "wind-forecast-v2", "version": "1.0"}

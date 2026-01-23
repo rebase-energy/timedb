@@ -84,7 +84,7 @@ Fixtures are defined in `conftest.py`:
 - `test_db_conninfo`: Provides the test database connection string
 - `clean_db`: Creates a fresh database schema (main schema with `value_key`) for each test
 - `clean_db_for_update`: Creates a fresh database schema for update tests
-- `sample_run_id`: Generates a UUID for test runs
+- `sample_batch_id`: Generates a UUID for test runs
 - `sample_workflow_id`: Provides a test workflow ID
 - `sample_datetime`: Provides a sample datetime for testing
 
@@ -103,7 +103,7 @@ The test fixtures handle this automatically - both `clean_db` and `clean_db_for_
 ### Basic Test Structure
 
 ```python
-def test_feature_name(clean_db, sample_run_id, sample_workflow_id, sample_datetime):
+def test_feature_name(clean_db, sample_batch_id, sample_workflow_id, sample_datetime):
     """Test description."""
     # Your test code here
     pass
@@ -120,26 +120,26 @@ def test_feature_name(clean_db, sample_run_id, sample_workflow_id, sample_dateti
 ### Example Test
 
 ```python
-def test_insert_point_in_time_value(clean_db, sample_run_id, sample_workflow_id, sample_datetime):
+def test_insert_point_in_time_value(clean_db, sample_batch_id, sample_workflow_id, sample_datetime):
     """Test inserting a point-in-time value."""
     from timedb.db import insert
     
     with psycopg.connect(clean_db) as conn:
-        insert.insert_run(
+        insert.insert_batch(
             conn,
-            run_id=sample_run_id,
+            batch_id=sample_batch_id,
             workflow_id=sample_workflow_id,
             run_start_time=sample_datetime,
         )
         
         value_rows = [(sample_datetime, "mean", 100.5)]
-        insert.insert_values(conn, run_id=sample_run_id, value_rows=value_rows)
+        insert.insert_values(conn, batch_id=sample_batch_id, value_rows=value_rows)
         
         # Verify insertion
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM values_table WHERE run_id = %s",
-                (sample_run_id,)
+                "SELECT COUNT(*) FROM values_table WHERE batch_id = %s",
+                (sample_batch_id,)
             )
             assert cur.fetchone()[0] == 1
 ```

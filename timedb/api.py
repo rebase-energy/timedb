@@ -47,7 +47,7 @@ class ValueRow(BaseModel):
     model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
 
 
-class CreateRunRequest(BaseModel):
+class CreateBatchRequest(BaseModel):
     """Request to create a batch with values."""
     workflow_id: Optional[str] = Field(default="api-workflow", description="Workflow identifier (defaults to 'api-workflow')")
     batch_start_time: datetime
@@ -61,7 +61,7 @@ class CreateRunRequest(BaseModel):
     model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
 
 
-class CreateRunResponse(BaseModel):
+class CreateBatchResponse(BaseModel):
     """Response after creating a batch."""
     batch_id: str
     message: str
@@ -249,9 +249,9 @@ async def read_values(
         raise HTTPException(status_code=500, detail=f"Error reading values: {str(e)}")
 
 
-@app.post("/upload", response_model=CreateRunResponse)
+@app.post("/upload", response_model=CreateBatchResponse)
 async def upload_timeseries(
-    request: CreateRunRequest,
+    request: CreateBatchRequest,
     current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
@@ -321,13 +321,9 @@ async def upload_timeseries(
                     if row.series_id:
                         try:
                             provided_series_id = uuid.UUID(row.series_id)
-                            # Verify the series exists and use it
-                            series_id = db.series.get_or_create_series(
-                                conn,
-                                series_key=row.value_key,
-                                series_unit="dimensionless",  # API doesn't support units yet
-                                series_id=provided_series_id,  # Verify this series_id exists
-                            )
+                            # Verify the series exists - just fetch series info
+                            series_info = db.series.get_series_info(conn, provided_series_id)
+                            series_id = provided_series_id
                         except ValueError as e:
                             raise HTTPException(status_code=400, detail=f"Invalid series_id format: {e}")
                     else:
@@ -366,7 +362,7 @@ async def upload_timeseries(
             changed_by=current_user.email if current_user else None,
         )
         
-        return CreateRunResponse(
+        return CreateBatchResponse(
             batch_id=str(batch_id),
             message="Batch created successfully",
             series_ids=series_ids_dict
