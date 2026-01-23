@@ -6,7 +6,7 @@ DataFrame conversion for time series data with unit handling using Pint Quantity
 """
 import os
 import uuid
-from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any, FrozenSet
+from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timezone
 import pandas as pd
 
@@ -33,9 +33,9 @@ DEFAULT_TENANT_ID = uuid.UUID('00000000-0000-0000-0000-000000000000')
 
 class InsertResult(NamedTuple):
     """Result from insert_run containing the IDs that were used."""
-    batch_id: uuid.UUID
+    run_id: uuid.UUID
     workflow_id: str
-    series_ids: Dict[str, uuid.UUID]  # Maps name to series_id
+    series_ids: Dict[str, uuid.UUID]  # Maps series_key to series_id
     tenant_id: uuid.UUID
 
 
@@ -68,7 +68,7 @@ def _detect_series_from_dataframe(
         valid_time_end_col: Column name for valid_time_end (None for point-in-time)
     
     Returns:
-        Dictionary mapping name (column name) to unit (canonical unit string)
+        Dictionary mapping series_key (column name) to series_unit (canonical unit string)
     
     Raises:
         ValueError: If no series columns found or if units are inconsistent within a column
@@ -160,8 +160,8 @@ def _detect_series_from_dataframe(
 def _dataframe_to_value_rows(
     df: pd.DataFrame,
     tenant_id: uuid.UUID,
-    series_mapping: Dict[str, uuid.UUID],  # Maps name to series_id
-    units: Dict[str, str],  # Maps name to canonical unit
+    series_mapping: Dict[str, uuid.UUID],  # Maps series_key to series_id
+    series_units: Dict[str, str],  # Maps series_key to canonical unit
     valid_time_col: str = 'valid_time',
     valid_time_end_col: Optional[str] = None,
 ) -> List[Tuple]:
@@ -174,8 +174,8 @@ def _dataframe_to_value_rows(
     Args:
         df: DataFrame with time series data (columns should be Pint Quantity objects)
         tenant_id: Tenant UUID
-        series_mapping: Dictionary mapping name (column name) to series_id
-        units: Dictionary mapping name to canonical unit
+        series_mapping: Dictionary mapping series_key (column name) to series_id
+        series_units: Dictionary mapping series_key to canonical unit
         valid_time_col: Column name for valid_time (default: 'valid_time')
         valid_time_end_col: Column name for valid_time_end (None for point-in-time)
     
@@ -233,11 +233,11 @@ def _dataframe_to_value_rows(
                     raise ValueError(f"valid_time_end must be timezone-aware. Found timezone-naive datetime.")
         
         # Process each series column
-        for name in series_cols:
-            series_id = series_mapping[name]
-            canonical_unit = units[name]
+        for series_key in series_cols:
+            series_id = series_mapping[series_key]
+            canonical_unit = series_units[series_key]
             
-            value = row[name]
+            value = row[series_key]
             
             # Handle NaN/None values
             if pd.isna(value):
@@ -264,7 +264,7 @@ def _dataframe_to_value_rows(
                     raise
                 except Exception as e:
                     raise ValueError(
-                        f"Unit conversion error for series '{name}', value {value}: {e}"
+                        f"Unit conversion error for series '{series_key}', value {value}: {e}"
                     ) from e
             
             if has_intervals:
@@ -299,24 +299,20 @@ def create() -> None:
 
 def create_series(
     name: str,
-    unit: str = "dimensionless",
-    labels: Optional[Dict[str, str]] = None,
     description: Optional[str] = None,
+    unit: str = "dimensionless",
 ) -> uuid.UUID:
     """
     Create a new time series.
     
-    This function creates a new series with the specified name, unit, labels, and description.
-    A new series_id is generated and returned. The combination of name + labels
-    must be unique (unit is NOT part of the uniqueness constraint).
+    This function creates a new series with the specified name, description, and unit.
+    A new series_id is generated and returned.
     
     Args:
-        name: Parameter name (e.g., 'wind_power', 'temperature')
-        unit: Canonical unit for the series (e.g., 'MW', 'degC', 'dimensionless')
-              Defaults to 'dimensionless' if not provided
-        labels: Dictionary of labels that differentiate this series 
-                (e.g., {"site": "Gotland", "turbine": "T01"})
+        name: Human-readable identifier for the series (e.g., 'wind_power_forecast')
         description: Optional description of the series
+        unit: Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')
+              Defaults to 'dimensionless' if not provided
     
     Returns:
         The series_id (UUID) for the newly created series
@@ -325,12 +321,11 @@ def create_series(
         ValueError: If name or unit is empty, or if database tables don't exist
     
     Example:
-        # Create a new series with labels
+        # Create a new series
         series_id = td.create_series(
-            name="wind_power",
-            unit="MW",
-            labels={"site": "Gotland", "turbine": "T01"},
-            description="Wind power output for turbine T01 at Gotland"
+            name="wind_power_forecast",
+            description="Wind power forecast for the next 24 hours",
+            unit="MW"
         )
     """
     conninfo = _get_conninfo()
@@ -340,9 +335,8 @@ def create_series(
             return db.series.create_series(
                 conn,
                 name=name,
-                unit=unit,
-                labels=labels,
                 description=description,
+                unit=unit,
             )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         error_msg = str(e)
@@ -353,146 +347,6 @@ def create_series(
             ) from None
         raise
     except Exception as e:
-        error_msg = str(e)
-        if "series_table" in error_msg or "does not exist" in error_msg:
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
-
-
-def get_or_create_series(
-    name: str,
-    unit: str = "dimensionless",
-    labels: Optional[Dict[str, str]] = None,
-    description: Optional[str] = None,
-) -> uuid.UUID:
-    """
-    Get an existing series or create a new one if it doesn't exist.
-    
-    This function looks for a series with the given name and labels combination.
-    If found, it returns the existing series_id. If not found, it creates a new series
-    and returns the new series_id.
-    
-    Note: The unique constraint is on (name, labels) only - unit is NOT part of uniqueness.
-    If a series with the same name+labels exists but with a different unit, this function
-    will return the existing series and issue a warning.
-    
-    This is useful when you're not sure if a series already exists and want to avoid
-    UniqueViolation errors from duplicate series creation.
-    
-    Args:
-        name: Parameter name (e.g., 'wind_power', 'temperature')
-        unit: Canonical unit for the series (e.g., 'MW', 'degC', 'dimensionless')
-              Defaults to 'dimensionless' if not provided
-        labels: Dictionary of labels that differentiate this series 
-                (e.g., {"site": "Gotland", "turbine": "T01"})
-        description: Optional description of the series (only used when creating new series)
-    
-    Returns:
-        The series_id (UUID) for the existing or newly created series
-    
-    Raises:
-        ValueError: If name or unit is empty, or if database tables don't exist
-    
-    Example:
-        # Get or create a series with labels
-        series_id = td.get_or_create_series(
-            name="wind_power",
-            unit="MW",
-            labels={"site": "Gotland", "turbine": "T01"},
-            description="Wind power output for turbine T01 at Gotland"
-        )
-    """
-    conninfo = _get_conninfo()
-    
-    try:
-        with psycopg.connect(conninfo) as conn:
-            return db.series.get_or_create_series(
-                conn,
-                name=name,
-                unit=unit,
-                labels=labels,
-                description=description,
-            )
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        error_msg = str(e)
-        if "series_table" in error_msg or "does not exist" in error_msg:
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
-    except Exception as e:
-        error_msg = str(e)
-        if "series_table" in error_msg or "does not exist" in error_msg:
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
-
-
-def get_mapping(
-    name: Optional[str] = None,
-    unit: Optional[str] = None,
-    label_filter: Optional[Dict[str, str]] = None,
-) -> Dict[FrozenSet[Tuple[str, str]], uuid.UUID]:
-    """
-    Get a mapping of label sets to series_ids based on search criteria.
-    
-    This function enables discovery and filtering of series based on their labels.
-    The returned dictionary uses frozensets of (key, value) tuples as keys, allowing
-    you to distinguish between series with different label combinations.
-    
-    Note: While unit can be used as a filter, the unique constraint is on (name, labels) only.
-    
-    Args:
-        name: Filter by parameter name (optional, e.g., 'wind_power')
-        unit: Filter by unit (optional, e.g., 'MW')
-        label_filter: Dictionary of labels to filter by (optional, e.g., {"site": "Gotland"})
-                     Series must contain ALL specified labels to match
-    
-    Returns:
-        Dictionary mapping frozenset of (label_key, label_value) tuples to series_id
-    
-    Examples:
-        # Broad search - all turbines
-        mapping = td.get_mapping(label_filter={"type": "turbine"})
-        # Returns: {
-        #     frozenset([("type", "turbine"), ("site", "Gotland"), ("id", "T01")]): uuid1,
-        #     frozenset([("type", "turbine"), ("site", "Gotland"), ("id", "T02")]): uuid2,
-        #     frozenset([("type", "turbine"), ("site", "Skåne"), ("id", "S01")]): uuid3,
-        # }
-        
-        # Narrower search - turbines at specific site
-        mapping = td.get_mapping(label_filter={"type": "turbine", "site": "Gotland"})
-        # Returns only turbines at Gotland
-        
-        # Exact match - specific turbine
-        mapping = td.get_mapping(
-            name="wind_power",
-            label_filter={"type": "turbine", "site": "Gotland", "id": "T01"}
-        )
-        # Returns: {
-        #     frozenset([("type", "turbine"), ("site", "Gotland"), ("id", "T01")]): uuid1
-        # }
-        
-        # Get all series (no filters)
-        all_series = td.get_mapping()
-    """
-    conninfo = _get_conninfo()
-    
-    try:
-        with psycopg.connect(conninfo) as conn:
-            return db.series.get_mapping(
-                conn,
-                name=name,
-                unit=unit,
-                label_filter=label_filter,
-            )
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
         error_msg = str(e)
         if "series_table" in error_msg or "does not exist" in error_msg:
             raise ValueError(
@@ -717,13 +571,13 @@ def read(
             DataFrame with:
             - Index: valid_time (or (valid_time, value_id) MultiIndex when all_versions=True and return_value_id=True)
             - Columns: series_id (one column per series_id)
-            - Each column has pint-pandas dtype (e.g., dtype="pint[MW]") based on unit
+            - Each column has pint-pandas dtype (e.g., dtype="pint[MW]") based on series_unit
             - If return_value_id=True and single series (and not all_versions): includes 'value_id' column
             - If all_versions=True: includes 'changed_by' column
             - If tags_and_annotations=True: includes 'tags' and 'annotation' columns
         
         If return_mapping=True:
-            Tuple of (DataFrame, mapping_dict) where mapping_dict maps series_id -> name
+            Tuple of (DataFrame, mapping_dict) where mapping_dict maps series_id -> series_key
     """
     conninfo = _get_conninfo()
     
@@ -762,7 +616,7 @@ def read(
     if tags_and_annotations:
         tags_annotation_cols = "v.tags, v.annotation,"
     
-    # Include series metadata (name, unit) in SELECT
+    # Include series metadata (series_key, series_unit) in SELECT
     # When all_versions=True, don't use DISTINCT ON so we get all versions
     # When all_versions=False, use DISTINCT ON to get only the latest version per (valid_time, series_id)
     if all_versions:
@@ -776,10 +630,10 @@ def read(
                 {tags_annotation_cols}
                 v.value,
                 v.series_id,
-                s.name,
-                s.unit
+                s.series_key,
+                s.series_unit
             FROM values_table v
-            JOIN batches_table r ON v.batch_id = r.batch_id AND v.tenant_id = r.tenant_id
+            JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
             JOIN series_table s ON v.series_id = s.series_id
             {where_clause}
             ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, r.known_time DESC;
@@ -793,10 +647,10 @@ def read(
                 {tags_annotation_cols}
                 v.value,
                 v.series_id,
-                s.name,
-                s.unit
+                s.series_key,
+                s.series_unit
             FROM values_table v
-            JOIN batches_table r ON v.batch_id = r.batch_id AND v.tenant_id = r.tenant_id
+            JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
             JOIN series_table s ON v.series_id = s.series_id
             {where_clause}
             ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, r.known_time DESC;
@@ -814,7 +668,7 @@ def read(
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         # Check if it's a table-related error
         error_msg = str(e)
-        if "values_table" in error_msg or "batches_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
+        if "values_table" in error_msg or "runs_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
             raise ValueError(
                 "TimeDB tables do not exist. Please create the schema first by running:\n"
                 "  td.create()"
@@ -823,7 +677,7 @@ def read(
     except Exception as e:
         # Handle case where pandas wraps the psycopg error
         error_msg = str(e)
-        if "values_table" in error_msg or "batches_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
+        if "values_table" in error_msg or "runs_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
             raise ValueError(
                 "TimeDB tables do not exist. Please create the schema first by running:\n"
                 "  td.create()"
@@ -877,9 +731,9 @@ def read(
             else:
                 annotation_data = df.set_index(['valid_time', 'series_id'])['annotation'].to_dict()
     
-    # Create mappings of series_id to unit and name for dtype assignment and mapping
-    unit_map = df[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
-    name_map = df[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
+    # Create mappings of series_id to series_unit and series_key for dtype assignment and mapping
+    series_unit_map = df[['series_id', 'series_unit']].drop_duplicates().set_index('series_id')['series_unit'].to_dict()
+    series_key_map = df[['series_id', 'series_key']].drop_duplicates().set_index('series_id')['series_key'].to_dict()
     
     # When all_versions=True and return_value_id=True, use MultiIndex (valid_time, value_id) to preserve multiple versions
     if all_versions and return_value_id and 'value_id' in df.columns:
@@ -986,16 +840,16 @@ def read(
                     annotation_values.append(annotation)
                 df_pivoted['annotation'] = annotation_values
     
-    # Convert each column to pint-pandas dtype based on unit
+    # Convert each column to pint-pandas dtype based on series_unit
     # Skip metadata columns (value_id, changed_by, change_time, tags, annotation)
     skip_columns = {'value_id', 'changed_by', 'change_time', 'tags', 'annotation'}
     for col_series_id in df_pivoted.columns:
         if col_series_id in skip_columns:
             continue  # Skip metadata columns
-        unit = unit_map.get(col_series_id)
-        if unit:
+        series_unit = series_unit_map.get(col_series_id)
+        if series_unit:
             # Convert to pint-pandas dtype
-            pint_dtype = f"pint[{unit}]"
+            pint_dtype = f"pint[{series_unit}]"
             df_pivoted[col_series_id] = df_pivoted[col_series_id].astype(pint_dtype)
     
     # Return based on return_mapping flag
@@ -1003,12 +857,12 @@ def read(
         # Return DataFrame with series_id columns and the mapping
         # Keep the column index name as "series_id" since columns are series_id
         df_pivoted.columns.name = "series_id"
-        return df_pivoted, name_map
+        return df_pivoted, series_key_map
     else:
-        # Rename columns from series_id to name using the mapping
-        df_pivoted.rename(columns=name_map, inplace=True)
-        # Update the column index name to "name" since columns are now name
-        df_pivoted.columns.name = "name"
+        # Rename columns from series_id to series_key using the mapping
+        df_pivoted.rename(columns=series_key_map, inplace=True)
+        # Update the column index name to "series_key" since columns are now series_key
+        df_pivoted.columns.name = "series_key"
         return df_pivoted
 
 
@@ -1040,20 +894,20 @@ def read_values_flat(
         end_known: End of known_time range (optional)
         all_versions: If True, include all versions (not just current). If False, only is_current=True (default: False)
         return_mapping: If True, return both DataFrame and mapping dict (default: False)
-        units: If True, return pint-pandas DataFrame with units. If False, return normal pandas DataFrame without unit column (default: False)
+        units: If True, return pint-pandas DataFrame with units. If False, return normal pandas DataFrame without series_unit column (default: False)
     
     Returns:
         If return_mapping=False:
             DataFrame with:
             - Index: valid_time
-            - Columns: name (one column per series)
+            - Columns: series_key (one column per series)
             - If units=True: Each column has pint-pandas dtype (e.g., dtype="pint[MW]")
-            - If units=False: Normal pandas DataFrame without unit information
+            - If units=False: Normal pandas DataFrame without series_unit information
         
         If return_mapping=True:
             Tuple of (DataFrame, mapping_dict) where:
-            - DataFrame has series_id as columns (not renamed to name)
-            - mapping_dict maps series_id -> name
+            - DataFrame has series_id as columns (not renamed to series_key)
+            - mapping_dict maps series_id -> series_key
     """
     conninfo = _get_conninfo()
     
@@ -1085,7 +939,7 @@ def read_values_flat(
     df_reset = df.reset_index()
     
     # Create mappings
-    name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
+    series_key_map = df_reset[['series_id', 'series_key']].drop_duplicates().set_index('series_id')['series_key'].to_dict()
     
     # Handle value_id if requested - store it separately before pivoting
     value_id_data = None
@@ -1118,15 +972,15 @@ def read_values_flat(
     
     # Handle units if requested
     if units:
-        # Convert each column to pint-pandas dtype based on unit
-        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
+        # Convert each column to pint-pandas dtype based on series_unit
+        series_unit_map = df_reset[['series_id', 'series_unit']].drop_duplicates().set_index('series_id')['series_unit'].to_dict()
         for col_series_id in df_pivoted.columns:
             if col_series_id == 'value_id':
                 continue  # Skip value_id column
-            unit = unit_map.get(col_series_id)
-            if unit:
+            series_unit = series_unit_map.get(col_series_id)
+            if series_unit:
                 # Convert to pint-pandas dtype
-                pint_dtype = f"pint[{unit}]"
+                pint_dtype = f"pint[{series_unit}]"
                 df_pivoted[col_series_id] = df_pivoted[col_series_id].astype(pint_dtype)
     
     # Return based on return_mapping flag
@@ -1134,15 +988,15 @@ def read_values_flat(
         # Return DataFrame with series_id columns and the mapping
         # Keep the column index name as "series_id" since columns are series_id
         df_pivoted.columns.name = "series_id"
-        return df_pivoted, name_map
+        return df_pivoted, series_key_map
     else:
-        # Rename columns from series_id to name using the mapping
+        # Rename columns from series_id to series_key using the mapping
         # But keep value_id column as-is if it exists
-        cols_to_rename = {sid: name_map[sid] for sid in df_pivoted.columns if sid != 'value_id' and sid in name_map}
+        cols_to_rename = {sid: series_key_map[sid] for sid in df_pivoted.columns if sid != 'value_id' and sid in series_key_map}
         df_pivoted.rename(columns=cols_to_rename, inplace=True)
-        # Update the column index name to "name" since columns are now name (except value_id)
+        # Update the column index name to "series_key" since columns are now series_key (except value_id)
         if 'value_id' not in df_pivoted.columns:
-            df_pivoted.columns.name = "name"
+            df_pivoted.columns.name = "series_key"
         return df_pivoted
 
 
@@ -1172,21 +1026,21 @@ def read_values_overlapping(
         end_known: End of known_time range (optional)
         all_versions: If True, include all versions (not just current). If False, only is_current=True (default: False)
         return_mapping: If True, return both DataFrame and mapping dict (default: False)
-        units: If True, return pint-pandas DataFrame with units. If False, return normal pandas DataFrame without unit column (default: False)
+        units: If True, return pint-pandas DataFrame with units. If False, return normal pandas DataFrame without series_unit column (default: False)
     
     Returns:
         If return_mapping=False:
             DataFrame with:
             - Index: (known_time, valid_time) - double index
-            - Columns: name (one column per series)
+            - Columns: series_key (one column per series)
             - If units=True: Each column has pint-pandas dtype (e.g., dtype="pint[MW]")
-            - If units=False: Normal pandas DataFrame without unit information
+            - If units=False: Normal pandas DataFrame without series_unit information
         
         If return_mapping=True:
             Tuple of (DataFrame, mapping_dict) where:
-            - DataFrame has series_id as columns (not renamed to name)
+            - DataFrame has series_id as columns (not renamed to series_key)
             - Index: (known_time, valid_time) - double index
-            - mapping_dict maps series_id -> name
+            - mapping_dict maps series_id -> series_key
     
     Examples:
         # Read all forecast revisions for a series
@@ -1233,7 +1087,7 @@ def read_values_overlapping(
     df_reset = df.reset_index()
     
     # Create mappings
-    name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
+    series_key_map = df_reset[['series_id', 'series_key']].drop_duplicates().set_index('series_id')['series_key'].to_dict()
     
     # Pivot the data: (known_time, valid_time) as index, series_id as columns
     df_pivoted = df_reset.pivot_table(
@@ -1248,13 +1102,13 @@ def read_values_overlapping(
     
     # Handle units if requested
     if units:
-        # Convert each column to pint-pandas dtype based on unit
-        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
+        # Convert each column to pint-pandas dtype based on series_unit
+        series_unit_map = df_reset[['series_id', 'series_unit']].drop_duplicates().set_index('series_id')['series_unit'].to_dict()
         for col_series_id in df_pivoted.columns:
-            unit = unit_map.get(col_series_id)
-            if unit:
+            series_unit = series_unit_map.get(col_series_id)
+            if series_unit:
                 # Convert to pint-pandas dtype
-                pint_dtype = f"pint[{unit}]"
+                pint_dtype = f"pint[{series_unit}]"
                 df_pivoted[col_series_id] = df_pivoted[col_series_id].astype(pint_dtype)
     
     # Return based on return_mapping flag
@@ -1262,27 +1116,27 @@ def read_values_overlapping(
         # Return DataFrame with series_id columns and the mapping
         # Keep the column index name as "series_id" since columns are series_id
         df_pivoted.columns.name = "series_id"
-        return df_pivoted, name_map
+        return df_pivoted, series_key_map
     else:
-        # Rename columns from series_id to name using the mapping
-        df_pivoted.rename(columns=name_map, inplace=True)
-        # Update the column index name to "name" since columns are now name
-        df_pivoted.columns.name = "name"
+        # Rename columns from series_id to series_key using the mapping
+        df_pivoted.rename(columns=series_key_map, inplace=True)
+        # Update the column index name to "series_key" since columns are now series_key
+        df_pivoted.columns.name = "series_key"
         return df_pivoted
 
 
 def insert_run(
     df: pd.DataFrame,
     tenant_id: Optional[uuid.UUID] = None,
-    batch_id: Optional[uuid.UUID] = None,
+    run_id: Optional[uuid.UUID] = None,
     workflow_id: Optional[str] = None,
-    batch_start_time: Optional[datetime] = None,  # Defaults to datetime.now(timezone.utc) if None
-    batch_finish_time: Optional[datetime] = None,
+    run_start_time: Optional[datetime] = None,  # Defaults to datetime.now(timezone.utc) if None
+    run_finish_time: Optional[datetime] = None,
     valid_time_col: str = 'valid_time',
     valid_time_end_col: Optional[str] = None,
     known_time: Optional[datetime] = None,
-    batch_params: Optional[dict] = None,
-    name_overrides: Optional[Dict[str, str]] = None,
+    run_params: Optional[dict] = None,
+    series_key_overrides: Optional[Dict[str, str]] = None,
     series_ids: Optional[Dict[str, uuid.UUID]] = None,
     series_descriptions: Optional[Dict[str, str]] = None,
 ) -> InsertResult:
@@ -1292,7 +1146,7 @@ def insert_run(
     This function automatically:
     - Detects series from DataFrame columns (each column except time columns becomes a series)
     - Extracts units from Pint Quantity objects or pint-pandas Series in each column
-    - Creates/gets series with name = column name (or override) and unit from Pint
+    - Creates/gets series with series_key = column name (or override) and series_unit from Pint
     - Converts all values to canonical units before storage
     - Inserts both the run metadata and the time series values atomically.
     
@@ -1303,7 +1157,7 @@ def insert_run(
               - pint-pandas Series with dtype="pint[unit]" (e.g., `pd.Series([1.2], dtype="pint[MW]")`)
               - Regular numeric columns (treated as dimensionless)
         tenant_id: Tenant UUID (optional, defaults to zeros UUID for single-tenant installations)
-        batch_id: Unique identifier for the run (optional, auto-generated if not provided)
+        run_id: Unique identifier for the run (optional, auto-generated if not provided)
         workflow_id: Workflow identifier (optional, defaults to "sdk-workflow" if not provided)
         run_start_time: Start time of the run (optional, defaults to datetime.now(timezone.utc))
         run_finish_time: Optional finish time of the run (must be timezone-aware if provided)
@@ -1312,18 +1166,18 @@ def insert_run(
         known_time: Time of knowledge - when the data was known/available (optional, 
                     defaults to inserted_at in database if not provided)
         run_params: Optional dictionary of run parameters (will be stored as JSONB)
-        name_overrides: Optional dict mapping column names to custom name values
-                            (if not provided, column names are used as name)
-        series_ids: Optional dict mapping column names (or name) to series_id UUIDs.
+        series_key_overrides: Optional dict mapping column names to custom series_key values
+                            (if not provided, column names are used as series_key)
+        series_ids: Optional dict mapping column names (or series_key) to series_id UUIDs.
                    If provided for a series, that series_id will be used and no new series will be created.
                    If not provided for a series, a new series will be created using create_series.
-        series_descriptions: Optional dict mapping column names (or name) to descriptions.
+        series_descriptions: Optional dict mapping column names (or series_key) to descriptions.
                            Used when creating new series (when series_id is not provided).
                            If not provided, description will be None for new series.
     
     Returns:
-        InsertResult: Named tuple containing (batch_id, workflow_id, series_ids, tenant_id).
-                      series_ids is a dict mapping name to series_id.
+        InsertResult: Named tuple containing (run_id, workflow_id, series_ids, tenant_id).
+                      series_ids is a dict mapping series_key to series_id.
     
     Raises:
         IncompatibleUnitError: If unit conversion fails due to dimensionality mismatch
@@ -1359,7 +1213,7 @@ def insert_run(
         # With custom series keys
         result = td.insert_run(
             df=df,
-            name_overrides={
+            series_key_overrides={
                 'power': 'wind_power_forecast',
                 'wind_speed': 'wind_speed_measured'
             }
@@ -1382,16 +1236,16 @@ def insert_run(
     if tenant_id is None:
         tenant_id = DEFAULT_TENANT_ID
     
-    if batch_id is None:
-        batch_id = uuid.uuid4()
+    if run_id is None:
+        run_id = uuid.uuid4()
     
     if workflow_id is None:
         workflow_id = "sdk-workflow"
     
-    if batch_start_time is None:
-        batch_start_time = datetime.now(timezone.utc)
-    elif batch_start_time.tzinfo is None:
-        raise ValueError("batch_start_time must be timezone-aware")
+    if run_start_time is None:
+        run_start_time = datetime.now(timezone.utc)
+    elif run_start_time.tzinfo is None:
+        raise ValueError("run_start_time must be timezone-aware")
     
     # Detect series from DataFrame (extract units from Pint Quantities)
     series_info = _detect_series_from_dataframe(
@@ -1402,10 +1256,10 @@ def insert_run(
     
     # Get or create series for each detected series
     series_mapping = {}  # Maps column name to series_id
-    units = {}    # Maps column name to canonical unit
+    series_units = {}    # Maps column name to canonical unit
     
-    if name_overrides is None:
-        name_overrides = {}
+    if series_key_overrides is None:
+        series_key_overrides = {}
     if series_ids is None:
         series_ids = {}
     if series_descriptions is None:
@@ -1414,42 +1268,41 @@ def insert_run(
     with psycopg.connect(conninfo) as conn:
         for col_name, canonical_unit in series_info.items():
             # Use override if provided, otherwise use column name
-            name = name_overrides.get(col_name, col_name)
+            series_key = series_key_overrides.get(col_name, col_name)
             
             # Check if series_id is provided for this series
-            # Try both column name and name as keys
-            provided_series_id = series_ids.get(col_name) or series_ids.get(name)
+            # Try both column name and series_key as keys
+            provided_series_id = series_ids.get(col_name) or series_ids.get(series_key)
             
             if provided_series_id is not None:
-                # Use provided series_id - look up its metadata from database
-                try:
-                    series_info_db = db.series.get_series_info(conn, provided_series_id)
-                    series_id = provided_series_id
-                    # Use the unit from the database, not from the DataFrame
-                    canonical_unit = series_info_db['unit']
-                except ValueError as e:
-                    raise ValueError(f"series_id {provided_series_id} not found in database") from e
+                # Use provided series_id - verify it exists and matches
+                series_id = db.series.get_or_create_series(
+                    conn,
+                    series_key=series_key,
+                    series_unit=canonical_unit,
+                    series_id=provided_series_id,  # Verify this series_id exists
+                )
             else:
                 # Create a new series using create_series
-                # Get description if provided (try both column name and name)
-                description = series_descriptions.get(col_name) or series_descriptions.get(name)
+                # Get description if provided (try both column name and series_key)
+                description = series_descriptions.get(col_name) or series_descriptions.get(series_key)
                 
                 series_id = db.series.create_series(
                     conn,
-                    name=name,
+                    name=series_key,
                     description=description,
                     unit=canonical_unit,
                 )
             
             series_mapping[col_name] = series_id
-            units[col_name] = canonical_unit
+            series_units[col_name] = canonical_unit
     
     # Convert DataFrame to value_rows (with unit conversion)
     value_rows = _dataframe_to_value_rows(
         df=df,
         tenant_id=tenant_id,
         series_mapping=series_mapping,
-        units=units,
+        series_units=series_units,
         valid_time_col=valid_time_col,
         valid_time_end_col=valid_time_end_col,
     )
@@ -1458,19 +1311,19 @@ def insert_run(
     try:
         db.insert.insert_run_with_values(
             conninfo=conninfo,
-            batch_id=batch_id,
+            run_id=run_id,
             tenant_id=tenant_id,
             workflow_id=workflow_id,
-            batch_start_time=batch_start_time,
-            batch_finish_time=batch_finish_time,
+            run_start_time=run_start_time,
+            run_finish_time=run_finish_time,
             value_rows=value_rows,
             known_time=known_time,
-            batch_params=batch_params,
+            run_params=run_params,
         )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         # Check if it's a table-related error
         error_msg = str(e)
-        if "batches_table" in error_msg or "values_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
+        if "runs_table" in error_msg or "values_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
             raise ValueError(
                 "TimeDB tables do not exist. Please create the schema first by running:\n"
                 "  td.create()"
@@ -1479,22 +1332,22 @@ def insert_run(
     except Exception as e:
         # Handle case where the error might be wrapped
         error_msg = str(e)
-        if "batches_table" in error_msg or "values_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
+        if "runs_table" in error_msg or "values_table" in error_msg or "series_table" in error_msg or "does not exist" in error_msg:
             raise ValueError(
                 "TimeDB tables do not exist. Please create the schema first by running:\n"
                 "  td.create()"
             ) from None
         raise
     
-    # Build series_ids dict (using final name, not column names)
+    # Build series_ids dict (using final series_key, not column names)
     final_series_ids = {}
     for col_name, series_id in series_mapping.items():
-        name = name_overrides.get(col_name, col_name)
-        final_series_ids[name] = series_id
+        series_key = series_key_overrides.get(col_name, col_name)
+        final_series_ids[series_key] = series_id
     
     # Return the IDs that were used (including auto-generated ones)
     return InsertResult(
-        batch_id=batch_id,
+        run_id=run_id,
         workflow_id=workflow_id,
         series_ids=final_series_ids,
         tenant_id=tenant_id,
@@ -1520,7 +1373,7 @@ def update_records(
             - changed_by (str, optional): Who made the change
             
             Option 2 (by key - for backwards compatibility):
-            - batch_id (uuid.UUID): Run identifier
+            - run_id (uuid.UUID): Run identifier
             - tenant_id (uuid.UUID): Tenant identifier (optional, defaults to DEFAULT_TENANT_ID)
             - valid_time (datetime): Time the value is valid for (must be timezone-aware)
             - series_id (uuid.UUID): Series identifier
@@ -1531,8 +1384,8 @@ def update_records(
     
     Returns:
         Dictionary with keys:
-            - 'updated': List of dicts with keys (value_id, batch_id, tenant_id, valid_time, series_id)
-            - 'skipped_no_ops': List of dicts with keys (value_id) or (batch_id, tenant_id, valid_time, series_id)
+            - 'updated': List of dicts with keys (value_id, run_id, tenant_id, valid_time, series_id)
+            - 'skipped_no_ops': List of dicts with keys (value_id) or (run_id, tenant_id, valid_time, series_id)
     
     Examples:
         # Update by value_id (simplest)
@@ -1545,7 +1398,7 @@ def update_records(
         
         # Update by key (backwards compatible)
         result = td.update_records([{
-            "batch_id": batch_id,
+            "run_id": run_id,
             "valid_time": datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
             "series_id": series_id,
             "value": 25.5,

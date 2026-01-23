@@ -12,7 +12,7 @@ load_dotenv()
 #   3) metadata_table
 #   4) values_table
 #   5) series_table
-#   6) runs_table
+#   6) batches_table
 #
 # Uses CASCADE to handle foreign key dependencies automatically.
 # -----------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def delete_schema(conninfo: str) -> None:
             cur.execute("DROP TABLE IF EXISTS metadata_table CASCADE;")
             cur.execute("DROP TABLE IF EXISTS values_table CASCADE;")
             cur.execute("DROP TABLE IF EXISTS series_table CASCADE;")
-            cur.execute("DROP TABLE IF EXISTS runs_table CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS batches_table CASCADE;")
             
             conn.commit()
 

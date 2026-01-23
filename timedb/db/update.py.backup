@@ -136,7 +136,7 @@ def update_records(
             - changed_by (str, optional): Who made the change
             
             Option 2 (by key - for backwards compatibility):
-            - batch_id (uuid.UUID): Run identifier
+            - run_id (uuid.UUID): Run identifier
             - tenant_id (uuid.UUID): Tenant identifier
             - valid_time (datetime): Time the value is valid for (must be timezone-aware)
             - series_id (uuid.UUID): Series identifier
@@ -192,7 +192,7 @@ def _process_updates_by_value_id(
 ) -> None:
     """Process updates that specify value_id directly."""
     sql_lock = """
-        SELECT value_id, batch_id, tenant_id, valid_time, series_id, value, annotation, tags
+        SELECT value_id, run_id, tenant_id, valid_time, series_id, value, annotation, tags
         FROM values_table
         WHERE value_id = %(value_id)s
         FOR UPDATE
@@ -201,7 +201,7 @@ def _process_updates_by_value_id(
     sql_unset_current = """
         UPDATE values_table
         SET is_current = false
-        WHERE batch_id = %(batch_id)s
+        WHERE run_id = %(run_id)s
           AND tenant_id = %(tenant_id)s
           AND valid_time = %(valid_time)s
           AND series_id = %(series_id)s
@@ -210,12 +210,12 @@ def _process_updates_by_value_id(
     
     sql_insert_new = """
         INSERT INTO values_table (
-            batch_id, tenant_id, valid_time, series_id,
+            run_id, tenant_id, valid_time, series_id,
             value, annotation, tags,
             changed_by, is_current
         )
         VALUES (
-            %(batch_id)s, %(tenant_id)s, %(valid_time)s, %(series_id)s,
+            %(run_id)s, %(tenant_id)s, %(valid_time)s, %(series_id)s,
             %(value)s, %(annotation)s, %(tags)s,
             %(changed_by)s, true
         )
@@ -232,30 +232,7 @@ def _process_updates_by_value_id(
                 current = cur.fetchone()
                 
                 if current is None:
-                    # If value_id lookup fails, try batch_id/run_id fallback
-                    # Support both batch_id and run_id for backwards compatibility
-                    batch_id = u.get("batch_id") or u.get("run_id")
-                    if batch_id:
-                        sql_lock_by_key = """
-                            SELECT value_id, batch_id, tenant_id, valid_time, series_id, value, annotation, tags
-                            FROM values_table
-                            WHERE batch_id = %(batch_id)s
-                              AND tenant_id = %(tenant_id)s
-                              AND valid_time = %(valid_time)s
-                              AND series_id = %(series_id)s
-                              AND is_current = true
-                            FOR UPDATE
-                        """
-                        cur.execute(sql_lock_by_key, {
-                            "batch_id": batch_id,
-                            "tenant_id": u.get("tenant_id"),
-                            "valid_time": u.get("valid_time"),
-                            "series_id": u.get("series_id")
-                        })
-                        current = cur.fetchone()
-                
-                if current is None:
-                    raise ValueError(f"No row found with value_id={value_id} or matching batch_id/tenant_id/valid_time/series_id")
+                    raise ValueError(f"No row found with value_id={value_id}")
                 
                 # Get current values
                 current_value = current["value"]
@@ -296,7 +273,7 @@ def _process_updates_by_value_id(
                 
                 # Unset previous current row
                 cur.execute(sql_unset_current, {
-                    "batch_id": current["batch_id"],
+                    "run_id": current["run_id"],
                     "tenant_id": current["tenant_id"],
                     "valid_time": current["valid_time"],
                     "series_id": current["series_id"],
@@ -304,7 +281,7 @@ def _process_updates_by_value_id(
                 
                 # Insert new current version
                 cur.execute(sql_insert_new, {
-                    "batch_id": current["batch_id"],
+                    "run_id": current["run_id"],
                     "tenant_id": current["tenant_id"],
                     "valid_time": current["valid_time"],
                     "series_id": current["series_id"],
@@ -316,7 +293,7 @@ def _process_updates_by_value_id(
                 new_value_id = cur.fetchone()["value_id"]
                 updated.append({
                     "value_id": new_value_id,
-                    "batch_id": current["batch_id"],
+                    "run_id": current["run_id"],
                     "tenant_id": current["tenant_id"],
                     "valid_time": current["valid_time"],
                     "series_id": current["series_id"],
@@ -371,7 +348,7 @@ def _process_updates_by_key(
         
         # Store the update with _UNSET for omitted fields
         update_dict = {
-            "batch_id": batch_id,
+            "run_id": run_id,
             "tenant_id": tenant_id,
             "valid_time": valid_time,
             "series_id": series_id,
@@ -381,7 +358,7 @@ def _process_updates_by_key(
             "changed_by": u.get("changed_by"),
         }
         
-        collapsed[(batch_id, tenant_id, valid_time, series_id)] = update_dict
+        collapsed[(run_id, tenant_id, valid_time, series_id)] = update_dict
 
     # Deterministic order reduces deadlock risk
     ordered_items = sorted(
@@ -392,7 +369,7 @@ def _process_updates_by_key(
     sql_lock_current = """
         SELECT value_id, value, annotation, tags
         FROM values_table
-        WHERE batch_id = %(batch_id)s
+        WHERE run_id = %(run_id)s
           AND tenant_id = %(tenant_id)s
           AND valid_time = %(valid_time)s
           AND series_id = %(series_id)s
@@ -403,7 +380,7 @@ def _process_updates_by_key(
     sql_unset_current = """
         UPDATE values_table
         SET is_current = false
-        WHERE batch_id = %(batch_id)s
+        WHERE run_id = %(run_id)s
           AND tenant_id = %(tenant_id)s
           AND valid_time = %(valid_time)s
           AND series_id = %(series_id)s
@@ -412,12 +389,12 @@ def _process_updates_by_key(
 
     sql_insert_new = """
         INSERT INTO values_table (
-            batch_id, tenant_id, valid_time, series_id,
+            run_id, tenant_id, valid_time, series_id,
             value, annotation, tags,
             changed_by, is_current
         )
         VALUES (
-            %(batch_id)s, %(tenant_id)s, %(valid_time)s, %(series_id)s,
+            %(run_id)s, %(tenant_id)s, %(valid_time)s, %(series_id)s,
             %(value)s, %(annotation)s, %(tags)s,
             %(changed_by)s, true
         )
@@ -427,10 +404,10 @@ def _process_updates_by_key(
     # Run batch inside a transaction to maintain invariants
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
-            for (batch_id, tenant_id, valid_time, series_id), u in ordered_items:
+            for (run_id, tenant_id, valid_time, series_id), u in ordered_items:
                 # 1) Lock current row for this key (if it exists)
                 cur.execute(sql_lock_current, {
-                    "batch_id": batch_id,
+                    "run_id": run_id,
                     "tenant_id": tenant_id,
                     "valid_time": valid_time,
                     "series_id": series_id
@@ -472,7 +449,7 @@ def _process_updates_by_key(
                 # 4) If no current row exists, require `value` to be provided (explicitly, possibly None)
                 if current is None and u["value"] is _UNSET:
                     raise ValueError(
-                        f"No current row exists for (batch_id={batch_id}, tenant_id={tenant_id}, "
+                        f"No current row exists for (run_id={run_id}, tenant_id={tenant_id}, "
                         f"valid_time={valid_time}, series_id={series_id}). "
                         f"You must provide `value` (explicitly, possibly None) to create the first version."
                     )
@@ -480,7 +457,7 @@ def _process_updates_by_key(
                 # 5) No-op detection (compare canonicalized forms)
                 if (new_value == current_value) and (new_annotation == current_annotation_canon) and (new_tags == current_tags_canon):
                     skipped.append({
-                        "batch_id": batch_id,
+                        "run_id": run_id,
                         "tenant_id": tenant_id,
                         "valid_time": valid_time,
                         "series_id": series_id,
@@ -489,7 +466,7 @@ def _process_updates_by_key(
 
                 # 6) Unset previous current row (0 or 1 rows)
                 cur.execute(sql_unset_current, {
-                    "batch_id": batch_id,
+                    "run_id": run_id,
                     "tenant_id": tenant_id,
                     "valid_time": valid_time,
                     "series_id": series_id
@@ -497,7 +474,7 @@ def _process_updates_by_key(
 
                 # 7) Insert new current version
                 cur.execute(sql_insert_new, {
-                    "batch_id": batch_id,
+                    "run_id": run_id,
                     "tenant_id": tenant_id,
                     "valid_time": valid_time,
                     "series_id": series_id,
@@ -508,7 +485,7 @@ def _process_updates_by_key(
                 })
                 value_id = cur.fetchone()["value_id"]
                 updated.append({
-                    "batch_id": batch_id,
+                    "run_id": run_id,
                     "tenant_id": tenant_id,
                     "valid_time": valid_time,
                     "series_id": series_id,

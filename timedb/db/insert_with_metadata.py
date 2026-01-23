@@ -5,7 +5,7 @@ from typing import Optional, Iterable, Tuple, Any, Dict
 from datetime import datetime
 from importlib import resources
 
-from .insert import insert_run, insert_values
+from .insert import insert_batch, insert_values
 
 # Read packaged SQL
 SQL_INSERT_METADATA = resources.files("timedb").joinpath("sql", "pg_insert_table_with_metadata.sql").read_text(encoding="utf-8")
@@ -72,7 +72,7 @@ def _choose_typed_slots(val: Any):
 
 def insert_metadata(
     conn: psycopg.Connection,
-    run_id,
+    batch_id,
     tenant_id,
     metadata_rows: Optional[Iterable[Tuple[datetime, dict]]] = None,
 ) -> None:
@@ -80,14 +80,14 @@ def insert_metadata(
     Insert metadata for a run.
     
     Metadata is tenant-specific, so tenant_id is required to support different
-    metadata values for different tenants at the same (run_id, valid_time).
+    metadata values for different tenants at the same (batch_id, valid_time).
     """
 
     if metadata_rows is None:
         metadata_rows = []
 
     # prepare metadata insert tuples:
-    # (run_id, tenant_id, valid_time, metadata_key, value_number, value_string, value_bool, value_time, value_json)
+    # (batch_id, tenant_id, valid_time, metadata_key, value_number, value_string, value_bool, value_time, value_json)
     meta_inserts = []
     for valid_time, meta_dict in metadata_rows:
         if isinstance(valid_time, datetime) and valid_time.tzinfo is None:
@@ -101,7 +101,7 @@ def insert_metadata(
             if v_num is None and v_str is None and v_bool is None and v_time is None and v_json is None:
                 continue
             meta_inserts.append(
-                (run_id, tenant_id, valid_time, metadata_key, v_num, v_str, v_bool, v_time, v_json)
+                (batch_id, tenant_id, valid_time, metadata_key, v_num, v_str, v_bool, v_time, v_json)
             )
 
     # upsert metadata into metadata_table
@@ -112,21 +112,21 @@ def insert_metadata(
                 meta_inserts,
             )
 
-def insert_run_with_values_and_metadata(
+def insert_batch_with_values_and_metadata(
     conninfo: str,
     *,
-    run_id,
+    batch_id,
     tenant_id,
     workflow_id: str,
-    run_start_time: datetime,
-    run_finish_time: Optional[datetime],
+    batch_start_time: datetime,
+    batch_finish_time: Optional[datetime],
     value_rows: Iterable[Tuple],  # accepts (tenant_id, valid_time, series_id, value) or (tenant_id, valid_time, valid_time_end, series_id, value)
     known_time: Optional[datetime] = None,
-    run_params: Optional[Dict] = None,
+    batch_params: Optional[Dict] = None,
     metadata_rows: Optional[Iterable[Tuple[datetime, dict]]] = None,
 ) -> None:
     """
-    Atomically insert run, values and metadata.
+    Atomically insert batch, values and metadata.
 
     This function ensures atomicity: either all operations succeed and are committed,
     or all operations are rolled back if any error occurs. No partial writes are possible.
@@ -155,21 +155,25 @@ def insert_run_with_values_and_metadata(
         # If any exception occurs, the transaction will automatically rollback
         # This ensures either all operations succeed or none do (no partial writes)
         with conn.transaction():
-            # insert run (uses db.insert.insert_run)
-            insert_run(
+            # insert run (uses db.insert.insert_batch)
+            insert_batch(
                 conn,
-                run_id=run_id,
+                batch_id=batch_id,
                 tenant_id=tenant_id,
                 workflow_id=workflow_id,
-                run_start_time=run_start_time,
-                run_finish_time=run_finish_time,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
                 known_time=known_time,
-                run_params=run_params,
+                batch_params=batch_params,
             )
 
             # insert values (uses db.insert.insert_values)
-            insert_values(conn, run_id=run_id, value_rows=value_rows)
+            insert_values(conn, batch_id=batch_id, value_rows=value_rows)
 
-            insert_metadata(conn, run_id=run_id, tenant_id=tenant_id, metadata_rows=metadata_rows)
+            insert_metadata(conn, batch_id=batch_id, tenant_id=tenant_id, metadata_rows=metadata_rows)
 
-    print("Inserted run + values + metadata (atomic).")
+    print("Inserted batch + values + metadata (atomic).")
+
+
+# Backward compatibility alias
+insert_run_with_values_and_metadata = insert_batch_with_values_and_metadata

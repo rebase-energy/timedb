@@ -9,8 +9,8 @@ load_dotenv()
 
 # -----------------------------------------------------------------------------
 # This DDL creates:
-#   1) runs_table                → one row per run
-#   2) series_table              → series metadata
+#   1) batches_table             → one row per batch
+#   2) series_table              → series metadata (name, unit, labels)
 #   3) values_table              → versioned values (auditable)
 #   4) indexes                   → for performance and data integrity
 #   5) current_values_table view → safe default for querying "current" data

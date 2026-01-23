@@ -48,13 +48,13 @@ class ValueRow(BaseModel):
 
 
 class CreateRunRequest(BaseModel):
-    """Request to create a run with values."""
+    """Request to create a batch with values."""
     workflow_id: Optional[str] = Field(default="api-workflow", description="Workflow identifier (defaults to 'api-workflow')")
-    run_start_time: datetime
-    run_finish_time: Optional[datetime] = None
+    batch_start_time: datetime
+    batch_finish_time: Optional[datetime] = None
     known_time: Optional[datetime] = None  # Time of knowledge - defaults to inserted_at (now()) if not provided
     tenant_id: Optional[str] = None  # Tenant UUID (defaults to zeros UUID for single-tenant)
-    run_params: Optional[Dict[str, Any]] = None
+    batch_params: Optional[Dict[str, Any]] = None
     value_rows: List[ValueRow] = Field(default_factory=list)
     series_descriptions: Optional[Dict[str, str]] = Field(None, description="Optional dict mapping value_key to description. Used when creating new series.")
 
@@ -62,10 +62,10 @@ class CreateRunRequest(BaseModel):
 
 
 class CreateRunResponse(BaseModel):
-    """Response after creating a run."""
-    run_id: str
+    """Response after creating a batch."""
+    batch_id: str
     message: str
-    series_ids: Dict[str, str]  # Maps series_key to series_id (UUID as string)
+    series_ids: Dict[str, str]  # Maps name to series_id (UUID as string)
 
 
 class RecordUpdateRequest(BaseModel):
@@ -78,7 +78,7 @@ class RecordUpdateRequest(BaseModel):
     
     Note: changed_by is automatically set from the authenticated user's email.
     """
-    run_id: str
+    batch_id: str
     tenant_id: str
     valid_time: datetime
     series_id: str
@@ -255,29 +255,29 @@ async def upload_timeseries(
     current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
-    Upload time series data (create a new run with associated values).
+    Upload time series data (create a new batch with associated values).
     
-    This endpoint creates a run entry and inserts value rows. It returns
+    This endpoint creates a batch entry and inserts value rows. It returns
     the series_ids for all series that were uploaded, which can be used
     in subsequent API calls to query and update the data.
     """
     try:
         dsn = get_dsn()
-        run_id = uuid.uuid4()
+        batch_id = uuid.uuid4()
         
         # Ensure timezone-aware datetimes
-        if request.run_start_time.tzinfo is None:
-            run_start_time = request.run_start_time.replace(tzinfo=timezone.utc)
+        if request.batch_start_time.tzinfo is None:
+            batch_start_time = request.batch_start_time.replace(tzinfo=timezone.utc)
         else:
-            run_start_time = request.run_start_time
+            batch_start_time = request.batch_start_time
             
-        if request.run_finish_time is not None:
-            if request.run_finish_time.tzinfo is None:
-                run_finish_time = request.run_finish_time.replace(tzinfo=timezone.utc)
+        if request.batch_finish_time is not None:
+            if request.batch_finish_time.tzinfo is None:
+                batch_finish_time = request.batch_finish_time.replace(tzinfo=timezone.utc)
             else:
-                run_finish_time = request.run_finish_time
+                batch_finish_time = request.batch_finish_time
         else:
-            run_finish_time = None
+            batch_finish_time = None
         
         if request.known_time is not None:
             if request.known_time.tzinfo is None:
@@ -285,7 +285,7 @@ async def upload_timeseries(
             else:
                 known_time = request.known_time
         else:
-            known_time = None  # Will default to run_start_time in insert_run
+            known_time = None  # Will default to now() in insert_batch
         
         # Use tenant_id from authenticated user, or from request if no authentication
         if current_user:
@@ -353,26 +353,26 @@ async def upload_timeseries(
                 # Point-in-time value: (tenant_id, valid_time, series_id, value)
                 value_rows.append((tenant_id, row.valid_time, series_id, row.value))
         
-        db.insert.insert_run_with_values(
+        db.insert.insert_batch_with_values(
             conninfo=dsn,
-            run_id=run_id,
+            batch_id=batch_id,
             tenant_id=tenant_id,
             workflow_id=workflow_id,
-            run_start_time=run_start_time,
-            run_finish_time=run_finish_time,
+            batch_start_time=batch_start_time,
+            batch_finish_time=batch_finish_time,
             known_time=known_time,
             value_rows=value_rows,
-            run_params=request.run_params,
+            batch_params=request.batch_params,
             changed_by=current_user.email if current_user else None,
         )
         
         return CreateRunResponse(
-            run_id=str(run_id),
-            message="Run created successfully",
+            batch_id=str(batch_id),
+            message="Batch created successfully",
             series_ids=series_ids_dict
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating run: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating batch: {str(e)}")
 
 
 @app.put("/values", response_model=UpdateRecordsResponse)
@@ -396,7 +396,7 @@ async def update_records(
         for req_update in request.updates:
             # Parse UUIDs
             try:
-                run_id_uuid = uuid.UUID(req_update.run_id)
+                batch_id_uuid = uuid.UUID(req_update.batch_id)
                 tenant_id_uuid = uuid.UUID(req_update.tenant_id)
                 series_id_uuid = uuid.UUID(req_update.series_id)
             except ValueError as e:
@@ -413,7 +413,7 @@ async def update_records(
             
             # Build update dict - only include fields that were provided
             update_dict = {
-                "run_id": run_id_uuid,
+                "batch_id": batch_id_uuid,
                 "tenant_id": tenant_id_uuid,
                 "valid_time": valid_time,
                 "series_id": series_id_uuid,
@@ -449,7 +449,7 @@ async def update_records(
         # Convert response to JSON-serializable format
         updated = [
             {
-                "run_id": str(r["run_id"]),
+                "batch_id": str(r["batch_id"]),
                 "tenant_id": str(r["tenant_id"]),
                 "valid_time": r["valid_time"].isoformat(),
                 "series_id": str(r["series_id"]),
@@ -460,7 +460,7 @@ async def update_records(
         
         skipped = [
             {
-                "run_id": str(k["run_id"]),
+                "batch_id": str(k["batch_id"]),
                 "tenant_id": str(k["tenant_id"]),
                 "valid_time": k["valid_time"].isoformat(),
                 "series_id": str(k["series_id"])

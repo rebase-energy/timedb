@@ -1,80 +1,90 @@
 import uuid
 import json
-from typing import Optional, Sequence, Iterable, Tuple, Dict
+from typing import Optional, Iterable, Tuple, Dict
 from datetime import datetime
 import psycopg
 
 
-def insert_run(
+def insert_batch(
     conn: psycopg.Connection,
     *,
-    run_id: uuid.UUID,
+    batch_id: uuid.UUID,
     tenant_id: uuid.UUID,
-    workflow_id: str,
-    run_start_time: datetime,
-    run_finish_time: Optional[datetime] = None,
+    workflow_id: Optional[str] = None,
+    batch_start_time: Optional[datetime] = None,
+    batch_finish_time: Optional[datetime] = None,
     known_time: Optional[datetime] = None,
-    run_params: Optional[Dict] = None,
+    batch_params: Optional[Dict] = None,
 ) -> None:
     """
-    Insert one forecast run into runs_table.
+    Insert one batch into batches_table.
 
     Uses ON CONFLICT so retries are safe.
     
     Args:
+        batch_id: Unique identifier for the batch
+        tenant_id: Tenant identifier
+        workflow_id: Optional workflow/pipeline identifier (NULL for manual insertions)
+        batch_start_time: Optional start time of the batch
+        batch_finish_time: Optional finish time of the batch
         known_time: Time of knowledge - when the data was known/available.
-                   If not provided, defaults to inserted_at (now()) in the database.
+                   If not provided, defaults to now() in the database.
                    Useful for backfill operations where data is inserted later.
+        batch_params: Optional parameters/config used for this batch (e.g., model version, API args)
     """
+    batch_params_json = json.dumps(batch_params) if batch_params is not None else None
 
-    run_params = json.dumps(run_params) if run_params is not None else None
-
-    if run_start_time.tzinfo is None:
-        raise ValueError("run_start_time must be timezone-aware")
-    if run_finish_time is not None and run_finish_time.tzinfo is None:
-        raise ValueError("run_finish_time must be timezone-aware")
+    # Validate timezone-aware datetimes
+    if batch_start_time is not None and batch_start_time.tzinfo is None:
+        raise ValueError("batch_start_time must be timezone-aware")
+    if batch_finish_time is not None and batch_finish_time.tzinfo is None:
+        raise ValueError("batch_finish_time must be timezone-aware")
     if known_time is not None and known_time.tzinfo is None:
         raise ValueError("known_time must be timezone-aware")
 
     with conn.cursor() as cur:
         if known_time is not None:
-            # If known_time is provided, include it in the INSERT
             cur.execute(
                 """
-                INSERT INTO runs_table (run_id, tenant_id, workflow_id, run_start_time, run_finish_time, known_time, run_params)
+                INSERT INTO batches_table (
+                    batch_id, tenant_id, workflow_id, 
+                    batch_start_time, batch_finish_time, known_time, batch_params
+                )
                 VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT (run_id) DO NOTHING;
+                ON CONFLICT (batch_id) DO NOTHING;
                 """,
-                (run_id, tenant_id, workflow_id, run_start_time, run_finish_time, known_time, run_params),
+                (batch_id, tenant_id, workflow_id, batch_start_time, batch_finish_time, known_time, batch_params_json),
             )
         else:
-            # If known_time is not provided, let the database default to inserted_at (now())
             cur.execute(
                 """
-                INSERT INTO runs_table (run_id, tenant_id, workflow_id, run_start_time, run_finish_time, run_params)
+                INSERT INTO batches_table (
+                    batch_id, tenant_id, workflow_id, 
+                    batch_start_time, batch_finish_time, batch_params
+                )
                 VALUES (%s, %s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT (run_id) DO NOTHING;
+                ON CONFLICT (batch_id) DO NOTHING;
                 """,
-                (run_id, tenant_id, workflow_id, run_start_time, run_finish_time, run_params),
+                (batch_id, tenant_id, workflow_id, batch_start_time, batch_finish_time, batch_params_json),
             )
 
 
 def insert_values(
     conn: psycopg.Connection,
     *,
-    run_id: uuid.UUID,
+    batch_id: uuid.UUID,
     value_rows: Iterable[Tuple],
     changed_by: Optional[str] = None,
 ) -> None:
     """
-    Bulk insert forecast values for a run.
+    Bulk insert values for a batch.
 
     Accepts rows in either of two shapes:
       - (tenant_id, valid_time, series_id, value)                       # point-in-time
       - (tenant_id, valid_time, valid_time_end, series_id, value)       # interval
 
-    The function will prepend the provided run_id to each row
-    and insert tuples of shape (run_id, tenant_id, series_id, valid_time, valid_time_end, value).
+    The function will prepend the provided batch_id to each row
+    and insert tuples of shape (batch_id, tenant_id, series_id, valid_time, valid_time_end, value).
     
     Note: tenant_id is included in each row to support both multi-tenant scenarios
     (where different rows may have different tenant_ids) and single-tenant scenarios
@@ -82,8 +92,9 @@ def insert_values(
     
     Note: Values must already be in the canonical unit for the series (unit conversion
     should happen before calling this function).
+    
+    Note: series_id is REQUIRED - it must exist in series_table before calling this function.
     """
-
     rows_list = []
     for item in value_rows:
         # either 4-tuple (point-in-time) or 5-tuple (interval)
@@ -117,26 +128,24 @@ def insert_values(
             if not (valid_time_end > valid_time):
                 raise ValueError("valid_time_end must be strictly after valid_time")
 
-        rows_list.append((run_id, tenant_id, valid_time, valid_time_end, series_id, value))
+        rows_list.append((batch_id, tenant_id, valid_time, valid_time_end, series_id, value))
 
     if not rows_list:
         return
 
     with conn.cursor() as cur:
         # Insert with conflict check matching the unique index
-        # The unique index is on (run_id, tenant_id, valid_time, COALESCE(valid_time_end, valid_time), series_id) WHERE is_current
-        # We use WHERE NOT EXISTS to prevent duplicates, matching the index logic 
-        # It mirrors the index's uniqueness rule to avoid constraint violations.
+        # The unique index is on (batch_id, tenant_id, valid_time, COALESCE(valid_time_end, valid_time), series_id) WHERE is_current
         cur.executemany(
             """
             INSERT INTO values_table (
-                run_id, tenant_id, series_id, valid_time, valid_time_end, value,
+                batch_id, tenant_id, series_id, valid_time, valid_time_end, value,
                 changed_by, change_time, is_current
             )
             SELECT %s, %s, %s, %s, %s, %s, %s, now(), true
             WHERE NOT EXISTS (
                 SELECT 1 FROM values_table
-                WHERE run_id = %s
+                WHERE batch_id = %s
                   AND tenant_id = %s
                   AND valid_time = %s
                   AND COALESCE(valid_time_end, valid_time) = COALESCE(%s, %s)
@@ -148,21 +157,21 @@ def insert_values(
         )
 
 
-def insert_run_with_values(
+def insert_batch_with_values(
     conninfo: str,
     *,
-    run_id: uuid.UUID,
+    batch_id: uuid.UUID,
     tenant_id: uuid.UUID,
-    workflow_id: str,
-    run_start_time: datetime,
-    run_finish_time: Optional[datetime],
+    workflow_id: Optional[str] = None,
+    batch_start_time: Optional[datetime] = None,
+    batch_finish_time: Optional[datetime] = None,
     value_rows: Iterable[Tuple],  # accepts (tenant_id, valid_time, series_id, value) or (tenant_id, valid_time, valid_time_end, series_id, value)
     known_time: Optional[datetime] = None,
-    run_params: Optional[Dict] = None,
+    batch_params: Optional[Dict] = None,
     changed_by: Optional[str] = None,
 ) -> None:
     """
-    One-shot helper: inserts the run + all values atomically.
+    One-shot helper: inserts the batch + all values atomically.
 
     This function ensures atomicity: either all operations succeed and are committed,
     or all operations are rolled back if any error occurs. No partial writes are possible.
@@ -171,40 +180,51 @@ def insert_run_with_values(
       - (tenant_id, valid_time, series_id, value),                      # point-in-time
       - (tenant_id, valid_time, valid_time_end, series_id, value),      # interval
 
-    Note: The run's tenant_id parameter is used for the runs_table entry, but each value row
+    Note: The batch's tenant_id parameter is used for the batches_table entry, but each value row
     can specify its own tenant_id. For single-tenant installations, all rows will typically
     use the same default tenant_id value.
     
     Note: Values must already be in the canonical unit for the series (unit conversion
     should happen before calling this function).
     
+    Note: series_id is REQUIRED in each value row - it must exist in series_table.
+    
     Args:
-        tenant_id: Tenant ID for the run entry in runs_table (may differ from tenant_ids in value_rows)
+        batch_id: Unique identifier for the batch
+        tenant_id: Tenant ID for the batch entry in batches_table (may differ from tenant_ids in value_rows)
+        workflow_id: Optional workflow/pipeline identifier (NULL for manual insertions)
+        batch_start_time: Optional start time of the batch
+        batch_finish_time: Optional finish time of the batch
+        value_rows: Iterable of value tuples (see above)
         known_time: Time of knowledge - when the data was known/available.
-                   If not provided, defaults to inserted_at (now()) in the database.
+                   If not provided, defaults to now() in the database.
                    Useful for backfill operations where data is inserted later.
+        batch_params: Optional parameters/config (e.g., model version, API args)
+        changed_by: Optional user identifier who made the change
     
     Raises:
         Exception: Any exception raised during insertion will cause a complete rollback
                   of the transaction, ensuring no partial writes.
     """
-
     with psycopg.connect(conninfo) as conn:
         # Use transaction context manager to ensure atomicity
-        # If any exception occurs, the transaction will automatically rollback
-        # This ensures either all operations succeed or none do (no partial writes)
         with conn.transaction():
-            insert_run(
+            insert_batch(
                 conn,
-                run_id=run_id,
+                batch_id=batch_id,
                 tenant_id=tenant_id,
                 workflow_id=workflow_id,
-                run_start_time=run_start_time,
-                run_finish_time=run_finish_time,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
                 known_time=known_time,
-                run_params=run_params,
+                batch_params=batch_params,
             )
 
-            insert_values(conn, run_id=run_id, value_rows=value_rows, changed_by=changed_by)
+            insert_values(conn, batch_id=batch_id, value_rows=value_rows, changed_by=changed_by)
     
     print("Data values inserted successfully.")
+
+
+# Backward compatibility aliases
+insert_run = insert_batch
+insert_run_with_values = insert_batch_with_values

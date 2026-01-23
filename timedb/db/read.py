@@ -2,15 +2,11 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 import psycopg
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional, Literal
-from importlib import resources
 import uuid
 
 load_dotenv()
-
-# Read packaged SQL (legacy query, kept for backward compatibility)
-SQL_QUERY = resources.files("timedb").joinpath("sql", "pg_read_table.sql").read_text(encoding="utf-8")
 
 
 def _build_where_clause(
@@ -34,7 +30,7 @@ def _build_where_clause(
     # Tenant filter (required for multi-tenant, optional for single-tenant)
     if tenant_id is not None:
         filters.append("v.tenant_id = %(tenant_id)s")
-        filters.append("r.tenant_id = %(tenant_id)s")
+        filters.append("b.tenant_id = %(tenant_id)s")
         params["tenant_id"] = tenant_id
     
     # Series filter
@@ -50,10 +46,10 @@ def _build_where_clause(
         filters.append("v.valid_time < %(end_valid)s")
         params["end_valid"] = end_valid
     if start_known is not None:
-        filters.append("r.known_time >= %(start_known)s")
+        filters.append("b.known_time >= %(start_known)s")
         params["start_known"] = start_known
     if end_known is not None:
-        filters.append("r.known_time < %(end_known)s")
+        filters.append("b.known_time < %(end_known)s")
         params["end_known"] = end_known
     
     # is_current filter (only if all_versions is False)
@@ -98,7 +94,7 @@ def read_values_flat(
         return_value_id: If True, include value_id column in the result (default: False)
     
     Returns:
-        DataFrame with index (valid_time, series_id) and columns (value, series_key, series_unit, [value_id if return_value_id=True])
+        DataFrame with index (valid_time, series_id) and columns (value, name, unit, labels, [value_id if return_value_id=True])
     """
     where_clause, params = _build_where_clause(
         tenant_id=tenant_id,
@@ -110,9 +106,6 @@ def read_values_flat(
         all_versions=all_versions,
     )
     
-    # Flat mode: (valid_time, value, series_id, series_key, series_unit) with latest known_time per valid_time
-    # Include valid_time_end in DISTINCT ON to handle interval values correctly
-    # Use latest known_time to select which row when multiple exist for same (valid_time, series_id)
     value_id_col = "v.value_id," if return_value_id else ""
     sql = f"""
     SELECT DISTINCT ON (v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id)
@@ -120,13 +113,14 @@ def read_values_flat(
         {value_id_col}
         v.value,
         v.series_id,
-        s.series_key,
-        s.series_unit
+        s.name,
+        s.unit,
+        s.labels
     FROM values_table v
-    JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
+    JOIN batches_table b ON v.batch_id = b.batch_id AND v.tenant_id = b.tenant_id
     JOIN series_table s ON v.series_id = s.series_id
     {where_clause}
-    ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, r.known_time DESC;
+    ORDER BY v.valid_time, COALESCE(v.valid_time_end, v.valid_time), v.series_id, b.known_time DESC;
     """
     
     import warnings
@@ -172,7 +166,7 @@ def read_values_overlapping(
         all_versions: If True, include all versions (not just current). If False, only is_current=True (default: False)
     
     Returns:
-        DataFrame with index (known_time, valid_time, series_id) and columns (value, series_key, series_unit)
+        DataFrame with index (known_time, valid_time, series_id) and columns (value, name, unit, labels)
     """
     where_clause, params = _build_where_clause(
         tenant_id=tenant_id,
@@ -184,20 +178,20 @@ def read_values_overlapping(
         all_versions=all_versions,
     )
     
-    # Overlapping mode: (known_time, valid_time, value, series_id, series_key, series_unit)
     sql = f"""
     SELECT
-        r.known_time,
+        b.known_time,
         v.valid_time,
         v.value,
         v.series_id,
-        s.series_key,
-        s.series_unit
+        s.name,
+        s.unit,
+        s.labels
     FROM values_table v
-    JOIN runs_table r ON v.run_id = r.run_id AND v.tenant_id = r.tenant_id
+    JOIN batches_table b ON v.batch_id = b.batch_id AND v.tenant_id = b.tenant_id
     JOIN series_table s ON v.series_id = s.series_id
     {where_clause}
-    ORDER BY r.known_time, v.valid_time, v.series_id;
+    ORDER BY b.known_time, v.valid_time, v.series_id;
     """
     
     import warnings
@@ -210,7 +204,7 @@ def read_values_overlapping(
     df["known_time"] = pd.to_datetime(df["known_time"], utc=True)
     df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
     
-    # Set index on (known_time, valid_time, series_id) - keep raw structure for SDK to process
+    # Set index on (known_time, valid_time, series_id)
     df = df.set_index(["known_time", "valid_time", "series_id"]).sort_index()
     
     return df
@@ -233,20 +227,6 @@ def read_values_between(
     
     This function is kept for backward compatibility. New code should use
     `read_values_flat()` or `read_values_overlapping()` directly.
-    
-    Args:
-        conninfo: Database connection string
-        tenant_id: Tenant UUID (optional)
-        series_id: Series UUID (optional, filter by specific series)
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
-        start_known: Start of known_time range (optional)
-        end_known: End of known_time range (optional)
-        mode: Query mode - "flat" or "overlapping" (default: "flat")
-        all_versions: If True, include all versions (not just current). If False, only is_current=True (default: False)
-    
-    Returns:
-        DataFrame with columns and index based on mode. Always includes series_key and series_unit.
     """
     if mode == "flat":
         return read_values_flat(
@@ -275,29 +255,6 @@ def read_values_between(
 
 
 if __name__ == "__main__":
-    conninfo = os.environ["NEON_PG_URL"]
-
-    # Example 1: filter only on valid_time
-    df1 = read_values_between(
-        conninfo,
-        start_valid=datetime(2025, 12, 25, 0, 0, tzinfo=timezone.utc),
-        end_valid=datetime(2025, 12, 28, 0, 0, tzinfo=timezone.utc),
-    )
-
-    # Example 2: filter only on known_time
-    df2 = read_values_between(
-        conninfo,
-        start_known=datetime(2025, 12, 26, 0, 0, tzinfo=timezone.utc),
-        end_known=datetime(2025, 12, 27, 0, 0, tzinfo=timezone.utc),
-    )
-
-    # Example 3: filter on both valid_time and known_time
-    df3 = read_values_between(
-        conninfo,
-        start_valid=datetime(2025, 12, 25, 0, 0, tzinfo=timezone.utc),
-        end_valid=datetime(2025, 12, 28, 0, 0, tzinfo=timezone.utc),
-        start_known=datetime(2025, 12, 26, 0, 0, tzinfo=timezone.utc),
-        end_known=datetime(2025, 12, 27, 0, 0, tzinfo=timezone.utc),
-    )
-
-    print(df1.head())
+    conninfo = os.environ["DATABASE_URL"]
+    df = read_values_flat(conninfo)
+    print(df)
