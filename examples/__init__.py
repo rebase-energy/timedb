@@ -1,2 +1,0 @@
-"""Examples demonstrating timedb functionality."""
-

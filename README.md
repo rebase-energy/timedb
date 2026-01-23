@@ -33,7 +33,32 @@ pip install timedb
 ```
 
 ## Basic usage
-TBD
+
+```python
+import timedb as td
+import pandas as pd
+from datetime import datetime, timezone, timedelta
+
+# Create database schema (requires TIMEDB_DSN or DATABASE_URL env var)
+td.create()
+
+# Create time series data
+base_time = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+df = pd.DataFrame({
+    'valid_time': [base_time + timedelta(hours=i) for i in range(24)],
+    'value': [20.0 + i * 0.3 for i in range(24)]
+})
+
+# Insert time series
+result = td.insert_run(df=df)
+print(f"Inserted series: {result.series_id}")
+
+# Read data back
+df_read = td.read()
+print(df_read)
+```
+
+See the [examples/](examples/) folder for interactive Jupyter notebooks demonstrating more advanced usage.
 
 ## Tables
 ## runs_table
@@ -108,9 +133,18 @@ Schema columns provides additional attributes to the values according to:
 ## Roadmap
 - [x] Decouple the knowledge time from the run_time
 - [ ] Python SDK that allows time series data manipulations, reads and writes
-- [ ] RESTful API layer that serves data to users
+- [ x ] RESTful API layer that serves data to users
 - [ ] Handle different time zones in the API layer while always storing in UTC in the database. 
 - [ ] Support for postgres time intervals (tsrange/tstzrange)
 - [ ] Built in data retention, TTL, and archiving
 - [ ] Support for subscribing to database updates through the API 
-- [ ] Unit handling (e.g. MW, kW)
+- [ x ] Unit handling (e.g. MW, kW)
+- [ ] Xarray integration for multidimensional time series. 
+- [ ] Polars integration for lazy computations. 
+ - [ ] Parquet file integration
+ - [ ] Real-Time Subscriptions through websocket subscription
+ - [ ] Store time series with geographic coordinates. Query by spatial region (e.g., "all temperature sensors in this polygon")
+ - [ ] Automatic alignment and interpolation of different time series resolutions. 
+ - [ ] Symbolic time series + serialization
+
+

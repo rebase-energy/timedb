@@ -13,16 +13,45 @@ Most time series systems assume a single immutable value per timestamp. **timedb
 - ✍️ Make versioned ad-hoc updates to the time series data with annotations and tags
 - 🔀 Represent both timestamp and time-interval time series simultaneously
 
-This documentation is for **backend users** who want to set up their own timedb database and API. For API user documentation, see the separate API documentation page.
+Quick Start
+-----------
+
+.. code-block:: bash
+
+   pip install timedb
+
+.. code-block:: python
+
+   import timedb as td
+   import pandas as pd
+   from datetime import datetime, timezone, timedelta
+
+   # Create database schema
+   td.create()
+
+   # Create time series data
+   base_time = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+   df = pd.DataFrame({
+       'valid_time': [base_time + timedelta(hours=i) for i in range(24)],
+       'value': [20.0 + i * 0.3 for i in range(24)]
+   })
+
+   # Insert and read back
+   result = td.insert_run(df=df)
+   df_read = td.read()
+
+Documentation
+-------------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Contents:
 
    installation
    cli
    sdk
    api_setup
+   examples
 
 Indices and tables
 ==================

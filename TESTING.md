@@ -73,10 +73,9 @@ pytest -m "not slow"
 ### Test Files
 
 - `tests/conftest.py`: Pytest fixtures and configuration
-- `tests/test_create.py`: Tests for database schema creation
 - `tests/test_insert.py`: Tests for inserting runs and values
 - `tests/test_read.py`: Tests for reading values
-- `tests/test_update.py`: Tests for updating records (uses update schema)
+- `tests/test_update.py`: Tests for updating records
 
 ### Test Fixtures
 
@@ -95,7 +94,7 @@ Fixtures are defined in `conftest.py`:
 
 1. **Main schema** (`pg_create_table.sql`): Unified schema that supports inserts, reads, and updates. Includes support for `valid_time_end` for intervals, tags, annotations, and versioning.
    - Used by: `create`, `insert`, `read`, `update` modules
-   - Used in: All test files (`test_create.py`, `test_insert.py`, `test_read.py`, `test_update.py`)
+   - Used in: All test files (`test_insert.py`, `test_read.py`, `test_update.py`)
 
 The test fixtures handle this automatically - both `clean_db` and `clean_db_for_update` use the main schema.
 

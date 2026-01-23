@@ -1,19 +1,19 @@
 API Setup
 =========
 
-The timedb API server provides a REST API for accessing time series data. This documentation covers setting up and running the API server. For API user documentation (endpoints, request/response formats), see the separate API documentation page.
+The timedb API server provides a REST API for accessing time series data. This documentation covers setting up and running the API server.
 
 Prerequisites
 -------------
 
 Before setting up the API server, ensure:
 
-1. **Database is set up**: The timedb schema must be created (see :doc:`CLI <cli>`)
+1. **Database is set up**: The timedb schema must be created (see :doc:`CLI <cli>` or :doc:`SDK <sdk>`)
 2. **Database connection configured**: Set ``TIMEDB_DSN`` or ``DATABASE_URL`` environment variable
-3. **FastAPI dependencies installed**: Included in timedb package, but ensure ``fastapi`` and ``uvicorn[standard]`` are available
+3. **Dependencies installed**: FastAPI and uvicorn are included in timedb package
 
 Starting the API Server
-------------------------
+-----------------------
 
 Using the CLI
 ~~~~~~~~~~~~~
@@ -39,45 +39,36 @@ Examples:
    # Start on default host and port
    timedb api
 
-   # Start on custom host and port
+   # Start on custom host and port (accessible from network)
    timedb api --host 0.0.0.0 --port 8080
 
    # Start with auto-reload for development
    timedb api --reload
 
-Using Python Module
-~~~~~~~~~~~~~~~~~~~
+Using Python SDK
+~~~~~~~~~~~~~~~~
 
-You can also start the server directly using Python:
+Start the server programmatically:
 
-.. code-block:: bash
+.. code-block:: python
 
-   python -m timedb.api_server
+   import timedb as td
 
-Or using uvicorn directly:
+   # Blocking (runs until Ctrl+C)
+   td.start_api()
+
+   # Non-blocking (runs in background thread)
+   td.start_api_background()
+
+Using uvicorn directly
+~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
    uvicorn timedb.api:app --host 127.0.0.1 --port 8000
 
-Using uvicorn with reload:
-
-.. code-block:: bash
-
+   # With auto-reload
    uvicorn timedb.api:app --host 127.0.0.1 --port 8000 --reload
-
-Programmatic Usage
-~~~~~~~~~~~~~~~~~~
-
-You can also import and run the API programmatically:
-
-.. code-block:: python
-
-   import uvicorn
-   from timedb import api
-
-   if __name__ == "__main__":
-       uvicorn.run(api.app, host="127.0.0.1", port=8000, reload=True)
 
 Configuration
 -------------
@@ -109,27 +100,80 @@ Once the server is running, you can access:
 
 The interactive API docs at ``/docs`` provide a convenient way to explore and test the API endpoints.
 
+API Endpoints Overview
+----------------------
+
+The API provides the following endpoints:
+
+- ``GET /`` - API information and available endpoints
+- ``GET /values`` - Read time series values
+- ``POST /runs`` - Create a new run with values
+- ``PUT /values`` - Update existing records
+- ``POST /schema/create`` - Create database schema
+- ``DELETE /schema/delete`` - Delete database schema
+
+Visit ``/docs`` when the server is running for detailed endpoint documentation with request/response schemas.
+
+Authentication
+--------------
+
+TimeDB supports optional multi-tenant authentication using API keys.
+
+Setting Up Authentication
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. Create the schema with users table:
+
+   .. code-block:: bash
+
+      timedb create tables --with-users
+
+2. Create users with API keys:
+
+   .. code-block:: bash
+
+      timedb users create --tenant-id <uuid> --email user@example.com
+
+3. Use API keys in requests:
+
+   .. code-block:: python
+
+      import requests
+
+      api_key = "your-api-key-here"
+      headers = {"X-API-Key": api_key}
+
+      response = requests.get(
+          "http://127.0.0.1:8000/values",
+          headers=headers
+      )
+
+Tenant Isolation
+~~~~~~~~~~~~~~~~
+
+Each user's API key is tied to a ``tenant_id``. Users can only access data for their own tenant, providing complete data isolation between tenants.
+
+For more details on user management, see the :doc:`CLI documentation <cli>`.
+
 Production Deployment
 ---------------------
 
 For production deployment, consider:
 
-1. **Use a production ASGI server**: While uvicorn works for development, consider using gunicorn with uvicorn workers for production:
+1. **Use a production ASGI server**: Use gunicorn with uvicorn workers:
 
    .. code-block:: bash
 
       gunicorn timedb.api:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 
-2. **Set up reverse proxy**: Use nginx or another reverse proxy in front of the API server
+2. **Set up reverse proxy**: Use nginx or another reverse proxy
 3. **Enable HTTPS**: Use SSL/TLS certificates (e.g., via Let's Encrypt)
 4. **Configure logging**: Set up proper logging for production
-5. **Database connection pooling**: Configure appropriate connection pool settings
-6. **Environment variables**: Use secure methods for managing environment variables (e.g., secrets management)
+5. **Database connection pooling**: Consider using a connection pooler like PgBouncer
+6. **Environment variables**: Use secure methods for managing secrets
 
-Example Production Setup
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Using systemd service (Linux):
+Example: systemd Service
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 Create ``/etc/systemd/system/timedb-api.service``:
 
@@ -158,10 +202,8 @@ Then:
    sudo systemctl enable timedb-api
    sudo systemctl start timedb-api
 
-Using Docker
-~~~~~~~~~~~~
-
-Example Dockerfile:
+Example: Docker
+~~~~~~~~~~~~~~~
 
 .. code-block:: dockerfile
 
@@ -169,7 +211,6 @@ Example Dockerfile:
 
    WORKDIR /app
 
-   COPY . .
    RUN pip install timedb
 
    EXPOSE 8000
@@ -182,20 +223,6 @@ Build and run:
 
    docker build -t timedb-api .
    docker run -p 8000:8000 -e TIMEDB_DSN="postgresql://..." timedb-api
-
-API Endpoints Overview
-----------------------
-
-The API provides the following endpoints:
-
-- ``GET /`` - API information
-- ``GET /values`` - Read time series values
-- ``POST /runs`` - Create a new run with values
-- ``PUT /values`` - Update existing records
-- ``POST /schema/create`` - Create database schema
-- ``DELETE /schema/delete`` - Delete database schema
-
-For detailed API documentation (request/response formats, examples), see the separate API documentation page or visit ``/docs`` when the server is running.
 
 Troubleshooting
 ---------------
@@ -219,8 +246,6 @@ Performance issues
 ~~~~~~~~~~~~~~~~~~
 
 - **Connection pooling**: Consider using a connection pooler like PgBouncer
-- **Database indexes**: Ensure appropriate indexes are created (timedb creates these automatically)
+- **Database indexes**: TimeDB creates indexes automatically during schema creation
 - **Query optimization**: Use appropriate filters (time ranges, series IDs) to limit data returned
-
-For more help, check the API logs or visit the interactive API docs at ``/docs`` for endpoint-specific information.
 

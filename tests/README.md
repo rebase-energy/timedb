@@ -45,7 +45,6 @@ pytest tests/ -v
 ## Test Structure
 
 - `conftest.py`: Pytest fixtures and configuration
-- `test_create.py`: Tests for schema creation
 - `test_insert.py`: Tests for inserting runs and values
 - `test_read.py`: Tests for reading values
 - `test_update.py`: Tests for updating records

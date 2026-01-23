@@ -57,3 +57,14 @@ htmlcov/
 # =========================
 .DS_Store
 Thumbs.db
+
+# =========================
+# Personal tooling
+# =========================
+.pm/
+
+# =========================
+# Sphinx build artifacts
+# =========================
+docs/_build/
+docs/notebooks
