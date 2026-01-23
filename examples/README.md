@@ -1,6 +1,6 @@
 # timedb Examples
 
-This directory contains example scripts demonstrating how to use timedb.
+This directory contains interactive Jupyter notebooks demonstrating how to use timedb.
 
 ## Prerequisites
 
@@ -18,123 +18,83 @@ This directory contains example scripts demonstrating how to use timedb.
    pip install -e .
    ```
 
-## Examples
+4. **Install Jupyter**: The notebooks require Jupyter to run:
+   ```bash
+   pip install pandas matplotlib jupyter
+   ```
 
-### 1. Basic Usage (`01_basic_usage.py`)
-Demonstrates the fundamental operations:
-- Creating the database schema
-- Inserting a run with time series values
-- Reading the data back
+## Notebooks
 
-**Run it:**
-```bash
-python examples/01_basic_usage.py
-```
+### Notebook 1: Writing and Reading with Pandas (`nb_01_write_read_pandas.ipynb`)
+Learn the fundamentals of writing and reading time series data:
+- Writing time series data from pandas DataFrames
+- Reading data back into DataFrames
+- Working with series IDs
 
-### 2. Forecast Revisions (`02_forecast_revisions.py`)
-Shows how timedb handles multiple forecast runs for the same time period:
+### Notebook 2: Units Validation (`nb_02_units_validation.ipynb`)
+Working with physical units in timedb:
+- Using pint for unit handling
+- Validating units on insert and read
+- Unit conversions
+
+### Notebook 3: Forecast Revisions (`nb_03_forecast_revisions.ipynb`)
+Shows how timedb handles multiple forecast runs:
 - Creating multiple forecast runs
 - Understanding flat vs overlapping query modes
 - How timedb tracks "time of knowledge"
 
-**Run it:**
-```bash
-python examples/02_forecast_revisions.py
-```
-
-### 3. Updates and Annotations (`03_updates_and_annotations.py`)
+### Notebook 4: Time Series Changes (`nb_04_timeseries_changes.ipynb`)
 Demonstrates human-in-the-loop corrections:
 - Updating existing values with annotations
 - Adding quality flags using tags
 - Tracking who made changes and when
 
-**Run it:**
+### Notebook 5: Multiple Series (`nb_05_multiple_series.ipynb`)
+Working with multiple time series:
+- Managing multiple series in a single database
+- Querying and filtering by series
+
+### Notebook 6: Advanced Querying (`nb_06_advanced_querying.ipynb`)
+Advanced data retrieval patterns:
+- Complex filters and queries
+- Time range queries
+- Aggregations
+
+### Notebook 7: API Usage (`nb_07_api_usage.ipynb`)
+Using the REST API:
+- Starting the API server
+- Making HTTP requests
+- API authentication
+
+### Notebook 8: Authentication (`nb_08_authentication.ipynb`, `nb_08a_authentication_cli.ipynb`, `nb_08b_authentication_sdk.ipynb`)
+Authentication and authorization:
+- Setting up user authentication
+- CLI-based authentication
+- SDK-based authentication
+
+## Running Notebooks
+
+Open any notebook with:
+
 ```bash
-python examples/03_updates_and_annotations.py
-```
-
-### 4. Interval Values (`04_interval_values.py`)
-Shows how to work with time intervals:
-- Storing interval values (valid_time to valid_time_end)
-- Mixing point-in-time and interval values
-- Querying interval data
-
-**Run it:**
-```bash
-python examples/04_interval_values.py
-```
-
-## Jupyter Notebooks
-
-Interactive notebooks demonstrating pandas DataFrame integration with TimeDB:
-
-### Notebook 1: Writing DataFrames (`notebook_01_write_dataframe.ipynb`)
-Learn how to convert pandas DataFrames to TimeDB format and insert them:
-- Converting simple time series DataFrames
-- Handling multiple value keys (mean, quantiles, etc.)
-- Working with interval values
-- Helper functions for common conversions
-
-**Open it:**
-```bash
-jupyter notebook examples/notebook_01_write_dataframe.ipynb
+jupyter notebook examples/nb_01_write_read_pandas.ipynb
 # OR
-jupyter lab examples/notebook_01_write_dataframe.ipynb
+jupyter lab examples/nb_01_write_read_pandas.ipynb
 ```
 
-### Notebook 2: Reading DataFrames (`notebook_02_read_dataframe.ipynb`)
-Learn how to read data from TimeDB into pandas DataFrames:
-- Reading in flat vs overlapping modes
-- Converting long-format to wide-format (pivot)
-- Filtering and querying data
-- Analyzing forecast revisions
+## Workflow Examples
 
-**Open it:**
-```bash
-jupyter notebook examples/notebook_02_read_dataframe.ipynb
-# OR
-jupyter lab examples/notebook_02_read_dataframe.ipynb
-```
+The `workflows/` subdirectory contains real-world workflow examples:
 
-### Notebook 3: Complete Workflow (`notebook_03_complete_workflow.ipynb`)
-A complete end-to-end example combining all concepts:
-- Generate forecast data in a DataFrame
-- Write to TimeDB
-- Read back and analyze
-- Insert revised forecasts
-- Compare forecast revisions
-- Calculate accuracy metrics
+- `workflow_fingrid_wind_forecast.py` - Fetching and storing Fingrid wind forecast data
+- `workflow_nordpool_id.py` - Fetching and storing Nord Pool intraday market data
 
-**Open it:**
-```bash
-jupyter notebook examples/notebook_03_complete_workflow.ipynb
-# OR
-jupyter lab examples/notebook_03_complete_workflow.ipynb
-```
-
-**Note:** The notebooks require `pandas`, `matplotlib`, and `jupyter` to be installed:
-```bash
-pip install pandas matplotlib jupyter
-```
-
-## Running All Examples
-
-You can run all examples in sequence:
-
-```bash
-for example in examples/*.py; do
-    if [[ "$example" != *"__init__"* ]]; then
-        echo "Running $example..."
-        python "$example"
-        echo ""
-    fi
-done
-```
+These workflows demonstrate how to use timedb with external data sources and scheduled jobs using Modal.
 
 ## Notes
 
-- Each example creates its own schema, so you can run them independently
-- Examples use sample data - modify them to use your own data
+- Each notebook creates its own schema, so you can run them independently
+- Notebooks use sample data - modify them to use your own data
 - The examples are designed to be educational and may need adaptation for production use
 
 ## Next Steps
@@ -142,5 +102,3 @@ done
 After running these examples, you can:
 - Explore the test suite in `tests/` to see more detailed usage patterns
 - Check the API documentation in `timedb/api.py` for REST API usage
-- Review the workflow examples in `timedb/workflows/` for real-world use cases
-

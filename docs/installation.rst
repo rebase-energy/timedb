@@ -18,8 +18,8 @@ Requirements
 
 timedb requires:
 
-- Python 3.8 or higher
-- PostgreSQL database (with psycopg3 support)
+- Python 3.9 or higher
+- PostgreSQL database (version 12+)
 - For API functionality: FastAPI and uvicorn (included in dependencies)
 
 Dependencies
@@ -27,23 +27,27 @@ Dependencies
 
 timedb includes the following key dependencies:
 
-- ``psycopg[binary]>=3.1`` - PostgreSQL adapter
+- ``psycopg[binary]>=3.1`` - PostgreSQL adapter (psycopg3)
 - ``pandas>=2.0.0`` - Data manipulation
 - ``pint>=0.23`` - Unit handling and conversion
 - ``pint-pandas>=0.3`` - Pandas integration for Pint units
-- ``fastapi>=0.104.0`` - API framework (for API server)
-- ``uvicorn[standard]>=0.24.0`` - ASGI server (for API server)
-- ``click>=8.0`` - CLI framework
+- ``fastapi>=0.104.0`` - API framework (for REST API server)
+- ``uvicorn[standard]>=0.24.0`` - ASGI server (for REST API server)
+- ``typer>=0.9.0`` - CLI framework
 
 Database Setup
 --------------
 
-Before using timedb, you need a PostgreSQL database. You can use a local PostgreSQL instance or a remote database.
+Before using timedb, you need a PostgreSQL database. You can use:
+
+- A local PostgreSQL instance
+- A cloud-hosted database (e.g., Neon, Supabase, AWS RDS)
+- A Docker container running PostgreSQL
 
 Set up your database connection using one of these environment variables:
 
 - ``TIMEDB_DSN`` - Preferred connection string
-- ``DATABASE_URL`` - Alternative connection string (for compatibility)
+- ``DATABASE_URL`` - Alternative connection string (for compatibility with platforms like Heroku)
 
 Example connection strings:
 
@@ -72,14 +76,28 @@ After installation, verify that timedb is installed correctly:
 
    timedb --help
 
-You should see the timedb CLI help message.
+You should see the timedb CLI help message with available commands.
+
+Create the database schema:
+
+.. code-block:: bash
+
+   timedb create tables
+
+Or using Python:
+
+.. code-block:: python
+
+   import timedb as td
+   td.create()
 
 Next Steps
 ----------
 
 Once installed, you can:
 
-1. :doc:`Create the database schema <cli>` using the CLI
-2. :doc:`Use the SDK <sdk>` to interact with your database
-3. :doc:`Set up the API server <api_setup>` to serve data via REST API
+1. Explore the :doc:`Examples <examples>` to learn by doing
+2. Use the :doc:`CLI <cli>` to manage your database schema
+3. Use the :doc:`SDK <sdk>` to interact with your database from Python
+4. :doc:`Set up the API server <api_setup>` to serve data via REST API
 
