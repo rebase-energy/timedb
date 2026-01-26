@@ -35,8 +35,43 @@ High-level SDK usage:
     )
 """
 
-from .sdk import create, delete, start_api, start_api_background, check_api, insert_batch, read, read_values_flat, read_values_overlapping, update_records, create_series, get_mapping, InsertResult, DEFAULT_TENANT_ID
+from .sdk import (
+    create,
+    delete,
+    start_api,
+    start_api_background,
+    check_api,
+    insert_batch,
+    read,
+    read_values_flat,
+    read_values_overlapping,
+    update_records,
+    create_series,
+    get_mapping,
+    InsertResult,
+    DEFAULT_TENANT_ID,
+    TimeDataClient,
+)
 from .units import IncompatibleUnitError
+
+__all__ = [
+    'create',
+    'delete',
+    'start_api',
+    'start_api_background',
+    'check_api',
+    'insert_batch',
+    'read',
+    'read_values_flat',
+    'read_values_overlapping',
+    'update_records',
+    'create_series',
+    'get_mapping',
+    'InsertResult',
+    'DEFAULT_TENANT_ID',
+    'IncompatibleUnitError',
+    'TimeDataClient',
+]
 
 __all__ = ['create', 'delete', 'start_api', 'start_api_background', 'check_api', 'insert_batch', 'read', 'read_values_flat', 'read_values_overlapping', 'update_records', 'create_series', 'get_mapping', 'InsertResult', 'DEFAULT_TENANT_ID', 'IncompatibleUnitError']
 

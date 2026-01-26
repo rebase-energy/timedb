@@ -39,6 +39,559 @@ class InsertResult(NamedTuple):
     tenant_id: uuid.UUID
 
 
+class SeriesCollection:
+    """
+    A lazy collection of time series that matches a set of filters.
+    
+    This class acts as a proxy for one or more series, allowing fluent
+    filtering and operations without requiring the user to manage series IDs.
+    Resolution of series IDs happens just-in-time when an action is performed.
+    """
+    
+    def __init__(
+        self,
+        conninfo: str,
+        name: Optional[str] = None,
+        unit: Optional[str] = None,
+        label_filters: Optional[Dict[str, str]] = None,
+        _id_cache: Optional[Dict[FrozenSet[Tuple[str, str]], uuid.UUID]] = None,
+    ):
+        """
+        Initialize a SeriesCollection.
+        
+        Args:
+            conninfo: Database connection string
+            name: Series name filter (optional)
+            unit: Series unit filter (optional)
+            label_filters: Dictionary of label filters (optional)
+            _id_cache: Internal cache of resolved series IDs (private)
+        """
+        self._conninfo = conninfo
+        self._name = name
+        self._unit = unit
+        self._label_filters = label_filters or {}
+        self._id_cache = _id_cache or {}
+        self._resolved = False
+    
+    def where(self, **labels) -> 'SeriesCollection':
+        """
+        Add additional label filters to narrow down the collection.
+        
+        Returns a new SeriesCollection with the combined filters (immutable).
+        
+        Args:
+            **labels: Label key-value pairs to filter by
+        
+        Returns:
+            New SeriesCollection with additional filters
+        
+        Example:
+            # Start broad
+            wind = td.series("wind_power")
+            
+            # Narrow down step by step
+            gotland_wind = wind.where(site="Gotland")
+            onshore_gotland = gotland_wind.where(type="onshore")
+            
+            # Or chain them
+            specific = wind.where(site="Gotland").where(turbine="T01")
+        """
+        # Combine existing filters with new ones
+        new_filters = {**self._label_filters, **labels}
+        
+        return SeriesCollection(
+            conninfo=self._conninfo,
+            name=self._name,
+            unit=self._unit,
+            label_filters=new_filters,
+            _id_cache=self._id_cache.copy(),  # Share cache across filters
+        )
+    
+    def _resolve_ids(self) -> List[uuid.UUID]:
+        """
+        Resolve series IDs that match the current filters.
+        
+        This is called just-in-time when an action is performed.
+        Uses internal cache to avoid repeated database queries.
+        
+        Returns:
+            List of series UUIDs that match the filters
+        """
+        if not self._resolved:
+            # Query database for matching series
+            with psycopg.connect(self._conninfo) as conn:
+                mapping = db.series.get_mapping(
+                    conn,
+                    name=self._name,
+                    unit=self._unit,
+                    label_filter=self._label_filters if self._label_filters else None,
+                )
+            
+            # Update cache with newly resolved IDs
+            self._id_cache.update(mapping)
+            self._resolved = True
+        
+        # Return list of IDs that match current filters
+        if not self._label_filters:
+            # No label filters - return all cached IDs
+            return list(self._id_cache.values())
+        
+        # Filter cached IDs by current label filters
+        matching_ids = []
+        filter_set = set(self._label_filters.items())
+        
+        for label_set, series_id in self._id_cache.items():
+            # Check if all filter labels are present in this series
+            if filter_set.issubset(label_set):
+                matching_ids.append(series_id)
+        
+        return matching_ids
+    
+    def _get_single_id(self) -> uuid.UUID:
+        """
+        Get a single series ID. Raises error if filters match multiple series.
+        
+        Returns:
+            Single series UUID
+        
+        Raises:
+            ValueError: If filters match zero or multiple series
+        """
+        ids = self._resolve_ids()
+        
+        if len(ids) == 0:
+            raise ValueError(
+                f"No series found matching filters: name={self._name}, "
+                f"unit={self._unit}, labels={self._label_filters}"
+            )
+        
+        if len(ids) > 1:
+            raise ValueError(
+                f"Multiple series ({len(ids)}) match the filters. "
+                f"Use more specific filters or call bulk operations. "
+                f"Filters: name={self._name}, unit={self._unit}, labels={self._label_filters}"
+            )
+        
+        return ids[0]
+    
+    def insert_batch(
+        self,
+        df: pd.DataFrame,
+        tenant_id: Optional[uuid.UUID] = None,
+        batch_id: Optional[uuid.UUID] = None,
+        workflow_id: Optional[str] = None,
+        batch_start_time: Optional[datetime] = None,
+        batch_finish_time: Optional[datetime] = None,
+        valid_time_col: str = 'valid_time',
+        valid_time_end_col: Optional[str] = None,
+        known_time: Optional[datetime] = None,
+        batch_params: Optional[dict] = None,
+    ) -> InsertResult:
+        """
+        Insert time series data for this collection.
+        
+        If the collection matches a single series, inserts data for that series.
+        If it matches multiple series, the DataFrame must contain columns matching
+        the series names or you must provide explicit column-to-series mapping.
+        
+        Args:
+            df: DataFrame with time series data
+            tenant_id: Tenant UUID (optional)
+            batch_id: Batch UUID (optional)
+            workflow_id: Workflow identifier (optional)
+            batch_start_time: Start time (optional)
+            batch_finish_time: Finish time (optional)
+            valid_time_col: Valid time column name
+            valid_time_end_col: Valid time end column (for intervals)
+            known_time: Time of knowledge (optional)
+            batch_params: Batch parameters (optional)
+        
+        Returns:
+            InsertResult with batch_id, workflow_id, series_ids, tenant_id
+        
+        Examples:
+            # Single series (filters resolve to one series)
+            td.series("wind_power").where(site="Gotland", turbine="T01").insert_batch(df)
+            
+            # Multiple series (DataFrame columns must match)
+            gotland = td.series("wind_power").where(site="Gotland")
+            gotland.insert_batch(df)  # df should have columns for each turbine
+        """
+        # Resolve series IDs just-in-time
+        series_ids = self._resolve_ids()
+        
+        if len(series_ids) == 0:
+            raise ValueError(
+                f"No series found matching filters: name={self._name}, "
+                f"unit={self._unit}, labels={self._label_filters}"
+            )
+        
+        if len(series_ids) == 1:
+            # Single series - simple case
+            series_id = series_ids[0]
+            
+            # Detect series info from DataFrame
+            series_info = _detect_series_from_dataframe(
+                df=df,
+                valid_time_col=valid_time_col,
+                valid_time_end_col=valid_time_end_col,
+            )
+            
+            if len(series_info) != 1:
+                raise ValueError(
+                    f"DataFrame has {len(series_info)} series columns, "
+                    f"but collection resolves to 1 series. "
+                    f"Expected exactly 1 data column (excluding time columns)."
+                )
+            
+            # Get the single data column name
+            col_name = list(series_info.keys())[0]
+            
+            # Use the global insert_batch with explicit series_id
+            return insert_batch(
+                df=df,
+                tenant_id=tenant_id,
+                batch_id=batch_id,
+                workflow_id=workflow_id,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
+                valid_time_col=valid_time_col,
+                valid_time_end_col=valid_time_end_col,
+                known_time=known_time,
+                batch_params=batch_params,
+                series_ids={col_name: series_id},
+            )
+        
+        else:
+            # Multiple series - DataFrame should have columns for each
+            # For now, delegate to global insert_batch
+            # It will auto-detect or use name_overrides if needed
+            return insert_batch(
+                df=df,
+                tenant_id=tenant_id,
+                batch_id=batch_id,
+                workflow_id=workflow_id,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
+                valid_time_col=valid_time_col,
+                valid_time_end_col=valid_time_end_col,
+                known_time=known_time,
+                batch_params=batch_params,
+            )
+    
+    def read(
+        self,
+        tenant_id: Optional[uuid.UUID] = None,
+        start_valid: Optional[datetime] = None,
+        end_valid: Optional[datetime] = None,
+        return_mapping: bool = False,
+        all_versions: bool = False,
+        return_value_id: bool = False,
+        tags_and_annotations: bool = False,
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+        """
+        Read time series data for this collection.
+        
+        If collection matches a single series, returns data for that series.
+        If multiple series, returns data for all matching series.
+        
+        Args:
+            tenant_id: Tenant UUID filter (optional)
+            start_valid: Start of valid time range (optional)
+            end_valid: End of valid time range (optional)
+            return_mapping: Return (DataFrame, mapping_dict) if True
+            all_versions: Include all versions if True
+            return_value_id: Include value_id column if True
+            tags_and_annotations: Include tags and annotation columns if True
+        
+        Returns:
+            DataFrame (or tuple of DataFrame and mapping dict)
+        
+        Examples:
+            # Read single series
+            df = td.series("wind_power").where(site="Gotland", turbine="T01").read()
+            
+            # Read all matching series
+            df = td.series("wind_power").where(site="Gotland").read()
+        """
+        # Resolve series IDs just-in-time
+        series_ids = self._resolve_ids()
+        
+        if len(series_ids) == 0:
+            raise ValueError(
+                f"No series found matching filters: name={self._name}, "
+                f"unit={self._unit}, labels={self._label_filters}"
+            )
+        
+        if len(series_ids) == 1:
+            # Single series - use read() with series_id
+            return read(
+                series_id=series_ids[0],
+                tenant_id=tenant_id,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                return_mapping=return_mapping,
+                all_versions=all_versions,
+                return_value_id=return_value_id,
+                tags_and_annotations=tags_and_annotations,
+            )
+        else:
+            # Multiple series - read without series_id filter
+            # This will return all series, then we filter to our IDs
+            # For now, just read all and filter
+            df_all = read(
+                series_id=None,
+                tenant_id=tenant_id,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                return_mapping=True,
+                all_versions=all_versions,
+                return_value_id=return_value_id,
+                tags_and_annotations=tags_and_annotations,
+            )
+            
+            if isinstance(df_all, tuple):
+                df, mapping = df_all
+                # Filter to only our series (columns are UUIDs)
+                our_cols = [col for col in df.columns if isinstance(col, uuid.UUID) and col in series_ids]
+                df_filtered = df[our_cols]
+                
+                if return_mapping:
+                    filtered_mapping = {col: mapping[col] for col in our_cols}
+                    return df_filtered, filtered_mapping
+                else:
+                    # Rename columns to names
+                    df_filtered.rename(columns=mapping, inplace=True)
+                    df_filtered.columns.name = "name"
+                    return df_filtered
+            else:
+                # Shouldn't happen, but handle it
+                return df_all
+    
+    def read_values_overlapping(
+        self,
+        tenant_id: Optional[uuid.UUID] = None,
+        start_valid: Optional[datetime] = None,
+        end_valid: Optional[datetime] = None,
+        start_known: Optional[datetime] = None,
+        end_known: Optional[datetime] = None,
+        all_versions: bool = False,
+        return_mapping: bool = False,
+        units: bool = True,
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+        """
+        Read time series data in overlapping mode (all forecast revisions).
+        
+        Returns all versions of forecasts, showing how predictions evolve over time.
+        This is useful for analyzing forecast revisions and backtesting.
+        
+        Args:
+            tenant_id: Tenant UUID filter (optional)
+            start_valid: Start of valid time range (optional)
+            end_valid: End of valid time range (optional)
+            start_known: Start of known_time range (optional)
+            end_known: End of known_time range (optional)
+            all_versions: Include all versions if True
+            return_mapping: Return (DataFrame, mapping_dict) if True
+            units: Return pint-pandas DataFrame with units if True
+        
+        Returns:
+            DataFrame with (known_time, valid_time) MultiIndex
+            (or tuple of DataFrame and mapping dict if return_mapping=True)
+        
+        Examples:
+            # Read all forecast revisions for a specific series
+            df = td.series("forecast").where(type="power").read_values_overlapping()
+            
+            # Read with time filters
+            df = td.series("forecast").read_values_overlapping(
+                start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                end_valid=datetime(2025, 1, 4, tzinfo=timezone.utc)
+            )
+        """
+        # Resolve series IDs just-in-time
+        series_ids = self._resolve_ids()
+        
+        if len(series_ids) == 0:
+            raise ValueError(
+                f"No series found matching filters: name={self._name}, "
+                f"unit={self._unit}, labels={self._label_filters}"
+            )
+        
+        if len(series_ids) == 1:
+            # Single series - use global read_values_overlapping with series_id
+            return read_values_overlapping(
+                series_id=series_ids[0],
+                tenant_id=tenant_id,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                start_known=start_known,
+                end_known=end_known,
+                all_versions=all_versions,
+                return_mapping=return_mapping,
+                units=units,
+            )
+        else:
+            # Multiple series - read without series_id filter
+            df_all = read_values_overlapping(
+                series_id=None,
+                tenant_id=tenant_id,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                start_known=start_known,
+                end_known=end_known,
+                all_versions=all_versions,
+                return_mapping=True,
+                units=units,
+            )
+            
+            if isinstance(df_all, tuple):
+                df, mapping = df_all
+                # Filter to only our series (columns are UUIDs)
+                our_cols = [col for col in df.columns if isinstance(col, uuid.UUID) and col in series_ids]
+                df_filtered = df[our_cols]
+                
+                if return_mapping:
+                    filtered_mapping = {col: mapping[col] for col in our_cols}
+                    return df_filtered, filtered_mapping
+                else:
+                    # Rename columns to names
+                    df_filtered.rename(columns=mapping, inplace=True)
+                    df_filtered.columns.name = "name"
+                    return df_filtered
+            else:
+                return df_all
+    
+    def list_labels(self, label_key: str) -> List[str]:
+        """
+        List all unique values for a specific label key in this collection.
+        
+        Useful for exploration and discovering what series exist.
+        
+        Args:
+            label_key: The label key to list values for
+        
+        Returns:
+            List of unique label values
+        
+        Example:
+            # See all sites with wind power
+            sites = td.series("wind_power").list_labels("site")
+            # ['Gotland', 'Skåne', ...]
+            
+            # See all turbines at Gotland
+            turbines = td.series("wind_power").where(site="Gotland").list_labels("turbine")
+            # ['T01', 'T02', ...]
+        """
+        # Force resolution to get all matching series
+        self._resolve_ids()
+        
+        # Extract label values from cache
+        values = set()
+        for label_set in self._id_cache.keys():
+            for key, value in label_set:
+                if key == label_key:
+                    values.add(value)
+        
+        return sorted(list(values))
+    
+    def count(self) -> int:
+        """
+        Count how many series match the current filters.
+        
+        Returns:
+            Number of matching series
+        
+        Example:
+            # How many wind turbines at Gotland?
+            count = td.series("wind_power").where(site="Gotland").count()
+        """
+        return len(self._resolve_ids())
+    
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"SeriesCollection(name={self._name!r}, unit={self._unit!r}, "
+            f"labels={self._label_filters!r}, resolved={self._resolved})"
+        )
+
+
+class TimeDataClient:
+    """
+    High-level client for TimeDB with fluent API for series selection.
+    
+    This class provides a clean interface for working with time series
+    without requiring users to manage series IDs directly.
+    """
+    
+    def __init__(self):
+        """Initialize the TimeDB client."""
+        self._conninfo = _get_conninfo()
+    
+    def series(
+        self,
+        name: Optional[str] = None,
+        unit: Optional[str] = None,
+    ) -> SeriesCollection:
+        """
+        Start building a series collection by name and/or unit.
+        
+        Returns a SeriesCollection that can be further filtered using .where().
+        
+        Args:
+            name: Series name (e.g., 'wind_power')
+            unit: Series unit (e.g., 'MW')
+        
+        Returns:
+            SeriesCollection that can be filtered and used for operations
+        
+        Examples:
+            # Get a collection of all wind power series
+            wind = td.series("wind_power")
+            
+            # Filter by unit
+            wind_mw = td.series("wind_power", unit="MW")
+            
+            # Further filter by labels
+            gotland = wind.where(site="Gotland")
+            
+            # Chain filters
+            specific = wind.where(site="Gotland").where(turbine="T01")
+            
+            # Perform actions
+            specific.insert_batch(df)
+            df = gotland.read()
+        """
+        return SeriesCollection(
+            conninfo=self._conninfo,
+            name=name,
+            unit=unit,
+        )
+    
+    def create(self) -> None:
+        """Create database schema."""
+        create()
+    
+    def delete(self) -> None:
+        """Delete database schema."""
+        delete()
+    
+    def create_series(
+        self,
+        name: str,
+        unit: str = "dimensionless",
+        labels: Optional[Dict[str, str]] = None,
+        description: Optional[str] = None,
+    ) -> uuid.UUID:
+        """Create a new series (delegates to global function)."""
+        return create_series(
+            name=name,
+            unit=unit,
+            labels=labels,
+            description=description,
+        )
+
+
 def _get_conninfo() -> str:
     """Get database connection string from environment variables."""
     conninfo = os.environ.get("TIMEDB_DSN") or os.environ.get("DATABASE_URL")
