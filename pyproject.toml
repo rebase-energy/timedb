@@ -33,6 +33,8 @@ dependencies = [
   "modal>=1.2.6",
   "jupyter>=1.1.1",
   "notebook>=7.5.2",
+  "pytest>=8.4.2",
+  "seaborn>=0.13.2",
 ]
 
 # expose the CLI command 'timedb' which points to the Typer app in timedb/cli.py
