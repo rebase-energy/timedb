@@ -1,8 +1,9 @@
 """Tests for updating records."""
+import os
 import pytest
 import psycopg
 from datetime import datetime, timezone
-from timedb.db import update
+from timedb import TimeDataClient
 
 
 def test_update_record_value(clean_db_for_update, sample_batch_id, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
@@ -15,6 +16,11 @@ def test_update_record_value(clean_db_for_update, sample_batch_id, sample_tenant
                 "INSERT INTO batches_table (batch_id, tenant_id, workflow_id, batch_start_time) VALUES (%s, %s, %s, %s)",
                 (sample_batch_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
+            # Ensure series metadata exists
+            cur.execute(
+                "INSERT INTO series_table (series_id, name, unit, labels) VALUES (%s, %s, %s, %s::jsonb)",
+                (sample_series_id, "mean", "dimensionless", "{}"),
+            )
             # Insert value
             cur.execute(
                 """
@@ -24,20 +30,21 @@ def test_update_record_value(clean_db_for_update, sample_batch_id, sample_tenant
                 (sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime, 100.0),
             )
     
-    # Update the value
-    with psycopg.connect(clean_db_for_update) as conn:
-        record_update = {
-            "batch_id": sample_batch_id,
-            "tenant_id": sample_tenant_id,
-            "valid_time": sample_datetime,
-            "series_id": sample_series_id,
-            "value": 150.0,
-            "changed_by": "test-user",
-        }
-        result = update.update_records(conn, updates=[record_update])
-        
-        assert len(result["updated"]) == 1
-        assert len(result["skipped_no_ops"]) == 0
+    # Update the value using SDK (uses TIMEDB_DSN env var)
+    os.environ["TIMEDB_DSN"] = clean_db_for_update
+    td = TimeDataClient()
+    record_update = {
+        "batch_id": sample_batch_id,
+        "tenant_id": sample_tenant_id,
+        "valid_time": sample_datetime,
+        "series_id": sample_series_id,
+        "value": 150.0,
+        "changed_by": "test-user",
+    }
+    result = td.update_records(updates=[record_update])
+
+    assert len(result["updated"]) == 1
+    assert len(result["skipped_no_ops"]) == 0
     
     # Verify the update
     with psycopg.connect(clean_db_for_update) as conn:
@@ -67,6 +74,10 @@ def test_update_record_annotation_only(clean_db_for_update, sample_batch_id, sam
                 (sample_batch_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
             cur.execute(
+                "INSERT INTO series_table (series_id, name, unit, labels) VALUES (%s, %s, %s, %s::jsonb)",
+                (sample_series_id, "mean", "dimensionless", "{}"),
+            )
+            cur.execute(
                 """
                 INSERT INTO values_table (batch_id, tenant_id, series_id, valid_time, value, is_current)
                 VALUES (%s, %s, %s, %s, %s, true)
@@ -74,19 +85,20 @@ def test_update_record_annotation_only(clean_db_for_update, sample_batch_id, sam
                 (sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime, 100.0),
             )
     
-    # Update only annotation
-    with psycopg.connect(clean_db_for_update) as conn:
-        record_update = {
-            "batch_id": sample_batch_id,
-            "tenant_id": sample_tenant_id,
-            "valid_time": sample_datetime,
-            "series_id": sample_series_id,
-            "annotation": "Updated annotation",
-            "changed_by": "test-user",
-        }
-        result = update.update_records(conn, updates=[record_update])
-        
-        assert len(result["updated"]) == 1
+    # Update only annotation via SDK
+    os.environ["TIMEDB_DSN"] = clean_db_for_update
+    td = TimeDataClient()
+    record_update = {
+        "batch_id": sample_batch_id,
+        "tenant_id": sample_tenant_id,
+        "valid_time": sample_datetime,
+        "series_id": sample_series_id,
+        "annotation": "Updated annotation",
+        "changed_by": "test-user",
+    }
+    result = td.update_records(updates=[record_update])
+
+    assert len(result["updated"]) == 1
     
     # Verify value unchanged, annotation updated
     with psycopg.connect(clean_db_for_update) as conn:
@@ -114,6 +126,10 @@ def test_update_record_tags(clean_db_for_update, sample_batch_id, sample_tenant_
                 (sample_batch_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
             cur.execute(
+                "INSERT INTO series_table (series_id, name, unit, labels) VALUES (%s, %s, %s, %s::jsonb)",
+                (sample_series_id, "mean", "dimensionless", "{}"),
+            )
+            cur.execute(
                 """
                 INSERT INTO values_table (batch_id, tenant_id, series_id, valid_time, value, is_current)
                 VALUES (%s, %s, %s, %s, %s, true)
@@ -121,19 +137,20 @@ def test_update_record_tags(clean_db_for_update, sample_batch_id, sample_tenant_
                 (sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime, 100.0),
             )
     
-    # Update with tags
-    with psycopg.connect(clean_db_for_update) as conn:
-        record_update = {
-            "batch_id": sample_batch_id,
-            "tenant_id": sample_tenant_id,
-            "valid_time": sample_datetime,
-            "series_id": sample_series_id,
-            "tags": ["reviewed", "validated"],
-            "changed_by": "test-user",
-        }
-        result = update.update_records(conn, updates=[record_update])
-        
-        assert len(result["updated"]) == 1
+    # Update with tags via SDK
+    os.environ["TIMEDB_DSN"] = clean_db_for_update
+    td = TimeDataClient()
+    record_update = {
+        "batch_id": sample_batch_id,
+        "tenant_id": sample_tenant_id,
+        "valid_time": sample_datetime,
+        "series_id": sample_series_id,
+        "tags": ["reviewed", "validated"],
+        "changed_by": "test-user",
+    }
+    result = td.update_records(updates=[record_update])
+
+    assert len(result["updated"]) == 1
     
     # Verify tags were set
     with psycopg.connect(clean_db_for_update) as conn:
@@ -161,6 +178,10 @@ def test_update_record_clear_tags(clean_db_for_update, sample_batch_id, sample_t
                 (sample_batch_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
             cur.execute(
+                "INSERT INTO series_table (series_id, name, unit, labels) VALUES (%s, %s, %s, %s::jsonb)",
+                (sample_series_id, "mean", "dimensionless", "{}"),
+            )
+            cur.execute(
                 """
                 INSERT INTO values_table (batch_id, tenant_id, series_id, valid_time, value, is_current)
                 VALUES (%s, %s, %s, %s, %s, true)
@@ -168,28 +189,30 @@ def test_update_record_clear_tags(clean_db_for_update, sample_batch_id, sample_t
                 (sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime, 100.0),
             )
     
-    # First add tags
-    with psycopg.connect(clean_db_for_update) as conn:
-        update.update_records(conn, updates=[{
-            "batch_id": sample_batch_id,
-            "tenant_id": sample_tenant_id,
-            "valid_time": sample_datetime,
-            "series_id": sample_series_id,
-            "tags": ["tag1", "tag2"],
-        }])
-    
-    # Then clear tags
-    with psycopg.connect(clean_db_for_update) as conn:
-        record_update = {
-            "batch_id": sample_batch_id,
-            "tenant_id": sample_tenant_id,
-            "valid_time": sample_datetime,
-            "series_id": sample_series_id,
-            "tags": [],  # Empty list clears tags
-        }
-        result = update.update_records(conn, updates=[record_update])
-        
-        assert len(result["updated"]) == 1
+    # First add tags via SDK
+    os.environ["TIMEDB_DSN"] = clean_db_for_update
+    td = TimeDataClient()
+    td.update_records(updates=[{
+        "batch_id": sample_batch_id,
+        "tenant_id": sample_tenant_id,
+        "valid_time": sample_datetime,
+        "series_id": sample_series_id,
+        "tags": ["tag1", "tag2"],
+    }])
+
+    # Then clear tags via SDK
+    os.environ["TIMEDB_DSN"] = clean_db_for_update
+    td = TimeDataClient()
+    record_update = {
+        "batch_id": sample_batch_id,
+        "tenant_id": sample_tenant_id,
+        "valid_time": sample_datetime,
+        "series_id": sample_series_id,
+        "tags": [],  # Empty list clears tags
+    }
+    result = td.update_records(updates=[record_update])
+
+    assert len(result["updated"]) == 1
     
     # Verify tags are cleared (NULL)
     with psycopg.connect(clean_db_for_update) as conn:
@@ -216,6 +239,10 @@ def test_update_no_op_skipped(clean_db_for_update, sample_batch_id, sample_tenan
                 (sample_batch_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
             cur.execute(
+                "INSERT INTO series_table (series_id, name, unit, labels) VALUES (%s, %s, %s, %s::jsonb)",
+                (sample_series_id, "mean", "dimensionless", "{}"),
+            )
+            cur.execute(
                 """
                 INSERT INTO values_table (batch_id, tenant_id, series_id, valid_time, value, is_current)
                 VALUES (%s, %s, %s, %s, %s, true)
@@ -224,19 +251,20 @@ def test_update_no_op_skipped(clean_db_for_update, sample_batch_id, sample_tenan
             )
     
     # Try to update with same value (no-op)
-    with psycopg.connect(clean_db_for_update) as conn:
-        record_update = {
-            "batch_id": sample_batch_id,
-            "tenant_id": sample_tenant_id,
-            "valid_time": sample_datetime,
-            "series_id": sample_series_id,
-            "value": 100.0,  # Same value
-        }
-        result = update.update_records(conn, updates=[record_update])
-        
-        # Should be skipped
-        assert len(result["updated"]) == 0
-        assert len(result["skipped_no_ops"]) == 1
+    os.environ["TIMEDB_DSN"] = clean_db_for_update
+    td = TimeDataClient()
+    record_update = {
+        "batch_id": sample_batch_id,
+        "tenant_id": sample_tenant_id,
+        "valid_time": sample_datetime,
+        "series_id": sample_series_id,
+        "value": 100.0,  # Same value
+    }
+    result = td.update_records(updates=[record_update])
+
+    # Should be skipped
+    assert len(result["updated"]) == 0
+    assert len(result["skipped_no_ops"]) == 1
 
 
 def test_update_create_new_record(clean_db_for_update, sample_batch_id, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
@@ -248,19 +276,28 @@ def test_update_create_new_record(clean_db_for_update, sample_batch_id, sample_t
                 "INSERT INTO batches_table (batch_id, tenant_id, workflow_id, batch_start_time) VALUES (%s, %s, %s, %s)",
                 (sample_batch_id, sample_tenant_id, sample_workflow_id, sample_datetime),
             )
+            cur.execute(
+                "INSERT INTO series_table (series_id, name, unit, labels) VALUES (%s, %s, %s, %s::jsonb)",
+                (sample_series_id, "mean", "dimensionless", "{}"),
+            )
         
         # Try to update non-existent record without value - should fail
+        # Attempt to update non-existent record without value - should fail
+        os.environ["TIMEDB_DSN"] = clean_db_for_update
+        td = TimeDataClient()
+        record_update = {
+            "batch_id": sample_batch_id,
+            "tenant_id": sample_tenant_id,
+            "valid_time": sample_datetime,
+            "series_id": sample_series_id,
+            "annotation": "annotation only",  # No value provided
+        }
         with pytest.raises(ValueError, match="No current row exists"):
-            record_update = {
-                "batch_id": sample_batch_id,
-                "tenant_id": sample_tenant_id,
-                "valid_time": sample_datetime,
-                "series_id": sample_series_id,
-                "annotation": "annotation only",  # No value provided
-            }
-            update.update_records(conn, updates=[record_update])
-        
+            td.update_records(updates=[record_update])
+
         # But should work if value is provided
+        os.environ["TIMEDB_DSN"] = clean_db_for_update
+        td = TimeDataClient()
         record_update = {
             "batch_id": sample_batch_id,
             "tenant_id": sample_tenant_id,
@@ -269,5 +306,5 @@ def test_update_create_new_record(clean_db_for_update, sample_batch_id, sample_t
             "value": 100.0,  # Value provided
             "annotation": "annotation",
         }
-        result = update.update_records(conn, updates=[record_update])
+        result = td.update_records(updates=[record_update])
         assert len(result["updated"]) == 1

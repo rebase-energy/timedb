@@ -294,7 +294,65 @@ class SeriesCollection:
                 known_time=known_time,
                 batch_params=batch_params,
             )
-    
+
+    def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
+        """
+        Collection-scoped wrapper around the module-level `update_records` helper.
+
+        Behavior:
+        - If the collection resolves to a single series and an update does not
+          include `series_id`, it will be filled automatically from the collection.
+        - For key-based updates (not using `value_id`), `tenant_id` will default
+          to `DEFAULT_TENANT_ID` when not provided (consistent with module-level helper).
+        - Updates that specify `value_id` are forwarded unchanged.
+
+        Args:
+            updates: List of update dictionaries (see module-level `update_records` docstring)
+
+        Returns:
+            The same dictionary structure as `update_records`:
+            {'updated': [...], 'skipped_no_ops': [...]}.
+        """
+        if not updates:
+            return {"updated": [], "skipped_no_ops": []}
+
+        # Resolve series IDs according to current collection filters
+        series_ids = self._resolve_ids()
+        if len(series_ids) == 0:
+            raise ValueError(
+                f"No series found matching filters: name={self._name}, unit={self._unit}, labels={self._label_filters}"
+            )
+
+        single_series = len(series_ids) == 1
+        filled_updates: List[Dict[str, Any]] = []
+
+        for u in updates:
+            u_copy = u.copy()
+
+            # If value_id is provided, forward the update unchanged
+            if "value_id" in u_copy:
+                filled_updates.append(u_copy)
+                continue
+
+            # Key-based updates must include a series_id. If the collection resolves
+            # to a single series and no series_id is provided, fill it in for the user.
+            if "series_id" not in u_copy:
+                if single_series:
+                    u_copy["series_id"] = series_ids[0]
+                else:
+                    raise ValueError(
+                        "For collections matching multiple series, each update must include 'series_id' or use 'value_id'."
+                    )
+
+            # Default tenant_id for key-based updates when omitted
+            if "tenant_id" not in u_copy:
+                u_copy["tenant_id"] = DEFAULT_TENANT_ID
+
+            filled_updates.append(u_copy)
+
+        # Delegate to module-level update_records which handles DB connection and execution
+        return update_records(filled_updates)
+
     def read(
         self,
         tenant_id: Optional[uuid.UUID] = None,
@@ -569,6 +627,16 @@ class TimeDataClient:
             labels=labels,
             description=description,
         )
+
+    def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
+        """
+        Instance-level wrapper around the module-level `update_records` helper.
+
+        Allows calling `td = TimeDataClient()` and then `td.update_records(updates=[...])`.
+        This preserves the same behavior as the module-level function but makes the
+        usage consistent with the rest of the client-based API.
+        """
+        return update_records(updates)
 
 
 def _get_conninfo() -> str:
