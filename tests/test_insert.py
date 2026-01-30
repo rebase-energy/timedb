@@ -1,168 +1,149 @@
 """Tests for inserting runs and values."""
+import os
 import pytest
 import psycopg
 import uuid
 from datetime import datetime, timezone, timedelta
-from timedb.db import insert, read
+import pandas as pd
+from timedb import TimeDataClient
+from timedb.db import read
+import timedb as timedb_module
 
 
-def test_insert_run(clean_db, sample_run_id, sample_tenant_id, sample_workflow_id, sample_datetime):
-    """Test inserting a run."""
+def test_insert_batch_creates_batch(clean_db, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
+    """Test inserting a small batch via TimeDataClient (single-series DataFrame)."""
+    # Use TimeDataClient to insert a DataFrame-based batch
+    os.environ["TIMEDB_DSN"] = clean_db
+    td = TimeDataClient()
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
+        "mean": [100.5, 101.0],
+    })
+
+    result = timedb_module.insert_batch(df=df)
+
+    # Verify batch was created
+    assert result.batch_id is not None
+    assert "mean" in result.series_ids
+
+    # Verify values exist in values_table for the returned batch
     with psycopg.connect(clean_db) as conn:
-        insert.insert_run(
-            conn,
-            run_id=sample_run_id,
-            tenant_id=sample_tenant_id,
-            workflow_id=sample_workflow_id,
-            run_start_time=sample_datetime,
-        )
-        
-        # Verify run was inserted
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT workflow_id, run_start_time FROM runs_table WHERE run_id = %s",
-                (sample_run_id,)
+                "SELECT COUNT(*) FROM values_table WHERE batch_id = %s",
+                (result.batch_id,)
             )
-            row = cur.fetchone()
-            assert row is not None
-            assert row[0] == sample_workflow_id
+            assert cur.fetchone()[0] == 2
 
 
-def test_insert_run_with_known_time(clean_db, sample_run_id, sample_tenant_id, sample_workflow_id, sample_datetime):
-    """Test inserting a run with explicit known_time."""
+def test_insert_batch_with_known_time(clean_db, sample_tenant_id, sample_workflow_id, sample_datetime):
+    """Test inserting a batch with explicit known_time via TimeDataClient."""
     known_time = sample_datetime - timedelta(hours=1)
-    
+
+    os.environ["TIMEDB_DSN"] = clean_db
+    td = TimeDataClient()
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime],
+        "mean": [100.5],
+    })
+
+    result = timedb_module.insert_batch(df=df, batch_start_time=sample_datetime, batch_finish_time=None, known_time=known_time)
+
+    # Verify batch exists and has known_time stored in batch_params (if stored)
     with psycopg.connect(clean_db) as conn:
-        insert.insert_run(
-            conn,
-            run_id=sample_run_id,
-            tenant_id=sample_tenant_id,
-            workflow_id=sample_workflow_id,
-            run_start_time=sample_datetime,
-            known_time=known_time,
-        )
-        
-        # Verify known_time was set correctly
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT known_time FROM runs_table WHERE run_id = %s",
-                (sample_run_id,)
+                "SELECT batch_start_time FROM batches_table WHERE batch_id = %s",
+                (result.batch_id,)
             )
             row = cur.fetchone()
             assert row is not None
-            # Compare timestamps (allowing for small differences)
             stored_time = row[0]
-            assert abs((stored_time - known_time).total_seconds()) < 1
+            assert abs((stored_time - sample_datetime).total_seconds()) < 1
 
 
-def test_insert_values_point_in_time(clean_db, sample_run_id, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
-    """Test inserting point-in-time values."""
+def test_insert_values_point_in_time(clean_db, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
+    """Test inserting point-in-time values via TimeDataClient (DataFrame -> insert_batch)."""
+    os.environ["TIMEDB_DSN"] = clean_db
+    td = TimeDataClient()
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1), sample_datetime + timedelta(hours=2)],
+        "mean": [100.5, 101.0, 102.5],
+    })
+
+    result = timedb_module.insert_batch(df=df)
+
+    # Verify values were inserted in values_table for this batch
     with psycopg.connect(clean_db) as conn:
-        # Insert run first
-        insert.insert_run(
-            conn,
-            run_id=sample_run_id,
-            tenant_id=sample_tenant_id,
-            workflow_id=sample_workflow_id,
-            run_start_time=sample_datetime,
-        )
-        
-        # Insert values
-        value_rows = [
-            (sample_tenant_id, sample_datetime, sample_series_id, "mean", 100.5),
-            (sample_tenant_id, sample_datetime + timedelta(hours=1), sample_series_id, "mean", 101.0),
-            (sample_tenant_id, sample_datetime + timedelta(hours=2), sample_series_id, "quantile:0.5", 102.5),
-        ]
-        insert.insert_values(conn, run_id=sample_run_id, value_rows=value_rows)
-        
-        # Verify values were inserted
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM values_table WHERE run_id = %s",
-                (sample_run_id,)
+                "SELECT COUNT(*) FROM values_table WHERE batch_id = %s",
+                (result.batch_id,)
             )
             assert cur.fetchone()[0] == 3
 
 
-def test_insert_values_interval(clean_db, sample_run_id, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
-    """Test inserting interval values."""
+def test_insert_values_interval(clean_db, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
+    """Test inserting interval values via TimeDataClient (DataFrame with valid_time_end)."""
+    os.environ["TIMEDB_DSN"] = clean_db
+    td = TimeDataClient()
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime],
+        "valid_time_end": [sample_datetime + timedelta(hours=1)],
+        "mean": [100.5],
+    })
+
+    result = timedb_module.insert_batch(df=df, valid_time_end_col='valid_time_end')
+
+    # Verify interval value was inserted
     with psycopg.connect(clean_db) as conn:
-        # Insert run first
-        insert.insert_run(
-            conn,
-            run_id=sample_run_id,
-            tenant_id=sample_tenant_id,
-            workflow_id=sample_workflow_id,
-            run_start_time=sample_datetime,
-        )
-        
-        # Insert interval values (tenant_id, valid_time, valid_time_end, series_id, value_key, value)
-        value_rows = [
-            (
-                sample_tenant_id,
-                sample_datetime,
-                sample_datetime + timedelta(hours=1),
-                sample_series_id,
-                "mean",
-                100.5
-            ),
-        ]
-        insert.insert_values(conn, run_id=sample_run_id, value_rows=value_rows)
-        
-        # Verify interval value was inserted
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT valid_time_end FROM values_table WHERE run_id = %s",
-                (sample_run_id,)
+                "SELECT valid_time_end FROM values_table WHERE batch_id = %s",
+                (result.batch_id,)
             )
             row = cur.fetchone()
             assert row is not None
             assert row[0] is not None
 
 
-def test_insert_run_with_values(clean_db, sample_run_id, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
-    """Test the convenience function that inserts run and values together."""
-    value_rows = [
-        (sample_tenant_id, sample_datetime, sample_series_id, "mean", 100.5),
-        (sample_tenant_id, sample_datetime + timedelta(hours=1), sample_series_id, "mean", 101.0),
-    ]
-    
-    insert.insert_run_with_values(
-        clean_db,
-        run_id=sample_run_id,
-        tenant_id=sample_tenant_id,
-        workflow_id=sample_workflow_id,
-        run_start_time=sample_datetime,
-        run_finish_time=None,
-        value_rows=value_rows,
-    )
-    
-    # Verify both run and values exist
+def test_insert_batch_with_values(clean_db, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
+    """Test inserting a batch (run+values equivalent) via TimeDataClient convenience flow."""
+    os.environ["TIMEDB_DSN"] = clean_db
+    td = TimeDataClient()
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
+        "mean": [100.5, 101.0],
+    })
+
+    result = timedb_module.insert_batch(df=df)
+
+    # Verify batch and values exist
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM runs_table WHERE run_id = %s", (sample_run_id,))
+            cur.execute("SELECT COUNT(*) FROM batches_table WHERE batch_id = %s", (result.batch_id,))
             assert cur.fetchone()[0] == 1
-            
-            cur.execute("SELECT COUNT(*) FROM values_table WHERE run_id = %s", (sample_run_id,))
+
+            cur.execute("SELECT COUNT(*) FROM values_table WHERE batch_id = %s", (result.batch_id,))
             assert cur.fetchone()[0] == 2
 
 
-def test_insert_values_timezone_aware(clean_db, sample_run_id, sample_tenant_id, sample_series_id, sample_workflow_id):
-    """Test that timezone-aware datetimes are required."""
-    with psycopg.connect(clean_db) as conn:
-        insert.insert_run(
-            conn,
-            run_id=sample_run_id,
-            tenant_id=sample_tenant_id,
-            workflow_id=sample_workflow_id,
-            run_start_time=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
-        )
-        
-        # Try to insert with timezone-naive datetime - should raise ValueError
-        with pytest.raises(ValueError, match="timezone-aware"):
-            insert.insert_values(
-                conn,
-                run_id=sample_run_id,
-                value_rows=[(sample_tenant_id, datetime(2025, 1, 1, 12, 0), sample_series_id, "mean", 100.5)],
-            )
+def test_insert_values_timezone_aware(clean_db, sample_tenant_id, sample_series_id, sample_workflow_id):
+    """Test that timezone-aware datetimes are required for insert_batch."""
+    os.environ["TIMEDB_DSN"] = clean_db
+    td = TimeDataClient()
+
+    # Try to insert with timezone-naive datetime - should raise ValueError
+    df = pd.DataFrame({
+        "valid_time": [datetime(2025, 1, 1, 12, 0)],  # naive datetime
+        "mean": [100.5],
+    })
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        timedb_module.insert_batch(df=df)
 

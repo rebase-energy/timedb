@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import pandas as pd
 import psycopg
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, List, Union
 import uuid
 
 load_dotenv()
@@ -11,7 +11,7 @@ load_dotenv()
 
 def _build_where_clause(
     tenant_id: Optional[uuid.UUID] = None,
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -20,23 +20,35 @@ def _build_where_clause(
 ) -> tuple[str, dict]:
     """
     Build WHERE clause and parameters for time series queries.
-    
+
+    Supports filtering by an iterable `List[uuid.UUID]` of series IDs. A single
+    UUID may also be provided and will be treated as a single-element list.
+
     Returns:
         Tuple of (where_clause_string, params_dict)
     """
     filters = []
     params = {}
-    
+
     # Tenant filter (required for multi-tenant, optional for single-tenant)
     if tenant_id is not None:
         filters.append("v.tenant_id = %(tenant_id)s")
         filters.append("b.tenant_id = %(tenant_id)s")
         params["tenant_id"] = tenant_id
-    
-    # Series filter
-    if series_id is not None:
-        filters.append("v.series_id = %(series_id)s")
-        params["series_id"] = series_id
+
+    # Series filter (list of UUIDs, or a single UUID which is wrapped)
+    if series_ids is not None:
+        # Accept a single UUID or an iterable of UUIDs
+        if isinstance(series_ids, uuid.UUID):
+            id_list = [series_ids]
+        elif isinstance(series_ids, (list, tuple, set)):
+            id_list = list(series_ids)
+        else:
+            raise ValueError("series_ids must be a UUID or an iterable of UUIDs")
+
+        # Use PostgreSQL ANY(array) for matching; works with one or many IDs
+        filters.append("v.series_id = ANY(%(series_ids)s)")
+        params["series_ids"] = id_list
     
     # Time range filters
     if start_valid is not None:
@@ -67,7 +79,7 @@ def read_values_flat(
     conninfo: str,
     *,
     tenant_id: Optional[uuid.UUID] = None,
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -98,7 +110,7 @@ def read_values_flat(
     """
     where_clause, params = _build_where_clause(
         tenant_id=tenant_id,
-        series_id=series_id,
+        series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
@@ -142,7 +154,7 @@ def read_values_overlapping(
     conninfo: str,
     *,
     tenant_id: Optional[uuid.UUID] = None,
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -158,7 +170,7 @@ def read_values_overlapping(
     Args:
         conninfo: Database connection string
         tenant_id: Tenant UUID (optional)
-        series_id: Series UUID (optional, if not provided reads all series)
+        series_ids: Series UUID or list of Series UUIDs (optional, if not provided reads all series)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
         start_known: Start of known_time range (optional)
@@ -170,7 +182,7 @@ def read_values_overlapping(
     """
     where_clause, params = _build_where_clause(
         tenant_id=tenant_id,
-        series_id=series_id,
+        series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
@@ -214,7 +226,7 @@ def read_values_between(
     conninfo: str,
     *,
     tenant_id: Optional[uuid.UUID] = None,
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -224,15 +236,16 @@ def read_values_between(
 ) -> pd.DataFrame:
     """
     Read time series values from the database (legacy wrapper function).
-    
+
     This function is kept for backward compatibility. New code should use
-    `read_values_flat()` or `read_values_overlapping()` directly.
+    `read_values_flat()` or `read_values_overlapping()` directly. Accepts
+    `series_ids` as a UUID or iterable of UUIDs (single-element list is fine).
     """
     if mode == "flat":
         return read_values_flat(
             conninfo,
             tenant_id=tenant_id,
-            series_id=series_id,
+            series_ids=series_ids,
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,
@@ -243,7 +256,7 @@ def read_values_between(
         return read_values_overlapping(
             conninfo,
             tenant_id=tenant_id,
-            series_id=series_id,
+            series_ids=series_ids,
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,

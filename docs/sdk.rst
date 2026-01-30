@@ -184,7 +184,7 @@ Read time series values:
 .. code-block:: python
 
    df = td.read(
-       series_id=None,  # Optional, filter by series ID
+       series_ids=None,  # Optional, filter by series IDs (pass a list; single-element list is fine)
        tenant_id=None,  # Optional, defaults to zeros UUID
        start_valid=None,  # Optional, start of valid time range
        end_valid=None,  # Optional, end of valid time range
@@ -209,7 +209,7 @@ Example:
 
    # Read specific series
    series_id = result.series_ids['power']
-   df = td.read(series_id=series_id)
+   df = td.read(series_ids=[series_id])
 
    # Read with time range
    df = td.read(
@@ -228,7 +228,7 @@ Include tags and annotations as DataFrame columns:
 .. code-block:: python
 
    df = td.read(
-       series_id=series_id,
+       series_ids=[series_id],
        tags_and_annotations=True
    )
 
@@ -247,7 +247,7 @@ By default, ``read()`` returns only the latest version of each value. To see all
 .. code-block:: python
 
    df = td.read(
-       series_id=series_id,
+       series_ids=[series_id],
        all_versions=True,
        return_value_id=True  # Include value_id to distinguish versions
    )
@@ -266,7 +266,7 @@ Read values in flat mode (latest known_time per valid_time):
 .. code-block:: python
 
    df = td.read_values_flat(
-       series_id=None,
+       series_ids=None,
        tenant_id=None,
        start_valid=None,
        end_valid=None,
@@ -288,7 +288,7 @@ Read values in overlapping mode (all forecast revisions):
 .. code-block:: python
 
    df = td.read_values_overlapping(
-       series_id=None,
+       series_ids=None,
        tenant_id=None,
        start_valid=None,
        end_valid=None,
@@ -325,7 +325,7 @@ Example: Analyzing forecast revisions:
 
    # Read all forecast revisions (overlapping mode)
    df_overlapping = td.read_values_overlapping(
-       series_id=series_id,
+       series_ids=[series_id],
        start_valid=base_time,
        end_valid=base_time + timedelta(days=5)
    )
@@ -486,7 +486,7 @@ Complete Example
 
    # 4. Read data
    df_read = td.read(
-       series_id=result.series_ids['power'],
+       series_ids=[result.series_ids['power']],
        start_valid=times[0],
        end_valid=times[-1]
    )

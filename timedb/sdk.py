@@ -118,17 +118,33 @@ class SeriesCollection:
             List of series UUIDs that match the filters
         """
         if not self._resolved:
-            # Query database for matching series
+            # Query `series_table` directly for discovery (no SDK-level get_mapping)
+            import psycopg
+            import json
             with psycopg.connect(self._conninfo) as conn:
-                mapping = db.series.get_mapping(
-                    conn,
-                    name=self._name,
-                    unit=self._unit,
-                    label_filter=self._label_filters if self._label_filters else None,
-                )
-            
-            # Update cache with newly resolved IDs
-            self._id_cache.update(mapping)
+                with conn.cursor() as cur:
+                    sql = "SELECT series_id, labels FROM series_table"
+                    clauses: list = []
+                    params: list = []
+                    if self._name:
+                        clauses.append("name = %s")
+                        params.append(self._name)
+                    if self._unit:
+                        clauses.append("unit = %s")
+                        params.append(self._unit)
+                    if self._label_filters:
+                        clauses.append("labels @> %s::jsonb")
+                        params.append(json.dumps(self._label_filters))
+                    if clauses:
+                        sql += " WHERE " + " AND ".join(clauses)
+                    sql += " ORDER BY name, unit, series_id"
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+
+            # Update cache with newly resolved IDs (map frozenset(label tuples) -> series_id)
+            for series_id, labels in rows:
+                label_set = frozenset((k, v) for k, v in (labels or {}).items())
+                self._id_cache[label_set] = series_id
             self._resolved = True
         
         # Return list of IDs that match current filters
@@ -278,7 +294,65 @@ class SeriesCollection:
                 known_time=known_time,
                 batch_params=batch_params,
             )
-    
+
+    def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
+        """
+        Collection-scoped wrapper around the module-level `update_records` helper.
+
+        Behavior:
+        - If the collection resolves to a single series and an update does not
+          include `series_id`, it will be filled automatically from the collection.
+        - For key-based updates (not using `value_id`), `tenant_id` will default
+          to `DEFAULT_TENANT_ID` when not provided (consistent with module-level helper).
+        - Updates that specify `value_id` are forwarded unchanged.
+
+        Args:
+            updates: List of update dictionaries (see module-level `update_records` docstring)
+
+        Returns:
+            The same dictionary structure as `update_records`:
+            {'updated': [...], 'skipped_no_ops': [...]}.
+        """
+        if not updates:
+            return {"updated": [], "skipped_no_ops": []}
+
+        # Resolve series IDs according to current collection filters
+        series_ids = self._resolve_ids()
+        if len(series_ids) == 0:
+            raise ValueError(
+                f"No series found matching filters: name={self._name}, unit={self._unit}, labels={self._label_filters}"
+            )
+
+        single_series = len(series_ids) == 1
+        filled_updates: List[Dict[str, Any]] = []
+
+        for u in updates:
+            u_copy = u.copy()
+
+            # If value_id is provided, forward the update unchanged
+            if "value_id" in u_copy:
+                filled_updates.append(u_copy)
+                continue
+
+            # Key-based updates must include a series_id. If the collection resolves
+            # to a single series and no series_id is provided, fill it in for the user.
+            if "series_id" not in u_copy:
+                if single_series:
+                    u_copy["series_id"] = series_ids[0]
+                else:
+                    raise ValueError(
+                        "For collections matching multiple series, each update must include 'series_id' or use 'value_id'."
+                    )
+
+            # Default tenant_id for key-based updates when omitted
+            if "tenant_id" not in u_copy:
+                u_copy["tenant_id"] = DEFAULT_TENANT_ID
+
+            filled_updates.append(u_copy)
+
+        # Delegate to module-level update_records which handles DB connection and execution
+        return update_records(filled_updates)
+
     def read(
         self,
         tenant_id: Optional[uuid.UUID] = None,
@@ -324,9 +398,9 @@ class SeriesCollection:
             )
         
         if len(series_ids) == 1:
-            # Single series - use read() with series_id
+            # Single series - call read with a single-item list
             return read(
-                series_id=series_ids[0],
+                series_ids=[series_ids[0]],
                 tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
@@ -336,37 +410,17 @@ class SeriesCollection:
                 tags_and_annotations=tags_and_annotations,
             )
         else:
-            # Multiple series - read without series_id filter
-            # This will return all series, then we filter to our IDs
-            # For now, just read all and filter
-            df_all = read(
-                series_id=None,
+            # Multiple series - request only our series by ID list to avoid downloading unrelated data
+            return read(
+                series_ids=series_ids,
                 tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
-                return_mapping=True,
+                return_mapping=return_mapping,
                 all_versions=all_versions,
                 return_value_id=return_value_id,
                 tags_and_annotations=tags_and_annotations,
             )
-            
-            if isinstance(df_all, tuple):
-                df, mapping = df_all
-                # Filter to only our series (columns are UUIDs)
-                our_cols = [col for col in df.columns if isinstance(col, uuid.UUID) and col in series_ids]
-                df_filtered = df[our_cols]
-                
-                if return_mapping:
-                    filtered_mapping = {col: mapping[col] for col in our_cols}
-                    return df_filtered, filtered_mapping
-                else:
-                    # Rename columns to names
-                    df_filtered.rename(columns=mapping, inplace=True)
-                    df_filtered.columns.name = "name"
-                    return df_filtered
-            else:
-                # Shouldn't happen, but handle it
-                return df_all
     
     def read_values_overlapping(
         self,
@@ -419,9 +473,9 @@ class SeriesCollection:
             )
         
         if len(series_ids) == 1:
-            # Single series - use global read_values_overlapping with series_id
+            # Single series - call with a single-item list
             return read_values_overlapping(
-                series_id=series_ids[0],
+                series_ids=[series_ids[0]],
                 tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
@@ -432,35 +486,18 @@ class SeriesCollection:
                 units=units,
             )
         else:
-            # Multiple series - read without series_id filter
-            df_all = read_values_overlapping(
-                series_id=None,
+            # Multiple series - request only our series by ID list to avoid downloading unrelated data
+            return read_values_overlapping(
+                series_ids=series_ids,
                 tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
                 start_known=start_known,
                 end_known=end_known,
                 all_versions=all_versions,
-                return_mapping=True,
+                return_mapping=return_mapping,
                 units=units,
             )
-            
-            if isinstance(df_all, tuple):
-                df, mapping = df_all
-                # Filter to only our series (columns are UUIDs)
-                our_cols = [col for col in df.columns if isinstance(col, uuid.UUID) and col in series_ids]
-                df_filtered = df[our_cols]
-                
-                if return_mapping:
-                    filtered_mapping = {col: mapping[col] for col in our_cols}
-                    return df_filtered, filtered_mapping
-                else:
-                    # Rename columns to names
-                    df_filtered.rename(columns=mapping, inplace=True)
-                    df_filtered.columns.name = "name"
-                    return df_filtered
-            else:
-                return df_all
     
     def list_labels(self, label_key: str) -> List[str]:
         """
@@ -590,6 +627,16 @@ class TimeDataClient:
             labels=labels,
             description=description,
         )
+
+    def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
+        """
+        Instance-level wrapper around the module-level `update_records` helper.
+
+        Allows calling `td = TimeDataClient()` and then `td.update_records(updates=[...])`.
+        This preserves the same behavior as the module-level function but makes the
+        usage consistent with the rest of the client-based API.
+        """
+        return update_records(updates)
 
 
 def _get_conninfo() -> str:
@@ -923,72 +970,13 @@ def create_series(
         raise
 
 
-def get_mapping(
-    name: Optional[str] = None,
-    unit: Optional[str] = None,
-    label_filter: Optional[Dict[str, str]] = None,
-) -> Dict[FrozenSet[Tuple[str, str]], uuid.UUID]:
-    """
-    Get a mapping of label sets to series_ids based on search criteria.
-    
-    This function enables discovery and filtering of series based on their labels.
-    The returned dictionary uses frozensets of (key, value) tuples as keys, allowing
-    you to distinguish between series with different label combinations.
-    
-    Note: While unit can be used as a filter, the unique constraint is on (name, labels) only.
-    
-    Args:
-        name: Filter by parameter name (optional, e.g., 'wind_power')
-        unit: Filter by unit (optional, e.g., 'MW')
-        label_filter: Dictionary of labels to filter by (optional, e.g., {"site": "Gotland"})
-                     Series must contain ALL specified labels to match
-    
-    Returns:
-        Dictionary mapping frozenset of (label_key, label_value) tuples to series_id
-    
-    Examples:
-        # Broad search - all turbines
-        mapping = td.get_mapping(label_filter={"type": "turbine"})
-        # Returns: {
-        #     frozenset([("type", "turbine"), ("site", "Gotland"), ("id", "T01")]): uuid1,
-        #     frozenset([("type", "turbine"), ("site", "Gotland"), ("id", "T02")]): uuid2,
-        #     frozenset([("type", "turbine"), ("site", "Skåne"), ("id", "S01")]): uuid3,
-        # }
-        
-        # Narrower search - turbines at specific site
-        mapping = td.get_mapping(label_filter={"type": "turbine", "site": "Gotland"})
-        # Returns only turbines at Gotland
-        
-        # Exact match - specific turbine
-        mapping = td.get_mapping(
-            name="wind_power",
-            label_filter={"type": "turbine", "site": "Gotland", "id": "T01"}
-        )
-        # Returns: {
-        #     frozenset([("type", "turbine"), ("site", "Gotland"), ("id", "T01")]): uuid1
-        # }
-        
-        # Get all series (no filters)
-        all_series = td.get_mapping()
-    """
-    conninfo = _get_conninfo()
-    
-    try:
-        with psycopg.connect(conninfo) as conn:
-            return db.series.get_mapping(
-                conn,
-                name=name,
-                unit=unit,
-                label_filter=label_filter,
-            )
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        error_msg = str(e)
-        if "series_table" in error_msg or "does not exist" in error_msg:
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
+# The `get_mapping` SDK convenience function has been removed.
+# Use the fluent SeriesCollection API for discovery, e.g.:
+#   td.series("wind_power").where(site="Gotland").count()
+#   td.series("wind_power").where(site="Gotland").list_labels("turbine")
+# If programmatic access is required, query `series_table` directly or use
+# `get_series_info(conn, series_id)` for specific series metadata.
+
 
 
 def delete() -> None:
@@ -1179,7 +1167,7 @@ def start_api_background(
 
 
 def read(
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[List[uuid.UUID]] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
@@ -1225,9 +1213,10 @@ def read(
         filters.append("v.is_current = true")
     params = {"tenant_id": tenant_id}
     
-    if series_id is not None:
-        filters.append("v.series_id = %(series_id)s")
-        params["series_id"] = series_id
+    # Series filtering: provide `series_ids` (list or iterable). Single UUID may be wrapped in a list by the caller.
+    if series_ids is not None:
+        params["series_ids"] = list(series_ids)
+        filters.append("v.series_id = ANY(%(series_ids)s)")
     
     if start_valid is not None:
         filters.append("v.valid_time >= %(start_valid)s")
@@ -1502,7 +1491,7 @@ def read(
 
 
 def read_values_flat(
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[List[uuid.UUID]] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
@@ -1513,6 +1502,7 @@ def read_values_flat(
     units: bool = False,
     return_value_id: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+
     """
     Read time series values in flat mode (latest known_time per valid_time).
     
@@ -1554,7 +1544,7 @@ def read_values_flat(
     df = db.read.read_values_flat(
         conninfo,
         tenant_id=tenant_id,
-        series_id=series_id,
+        series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
@@ -1636,7 +1626,7 @@ def read_values_flat(
 
 
 def read_values_overlapping(
-    series_id: Optional[uuid.UUID] = None,
+    series_ids: Optional[List[uuid.UUID]] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
@@ -1646,6 +1636,7 @@ def read_values_overlapping(
     return_mapping: bool = False,
     units: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+
     """
     Read time series values in overlapping mode (all forecast revisions).
     
@@ -1680,14 +1671,14 @@ def read_values_overlapping(
     Examples:
         # Read all forecast revisions for a series
         df = td.read_values_overlapping(
-            series_id=my_series_id,
+            series_ids=[my_series_id],
             start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
             end_valid=datetime(2025, 1, 4, tzinfo=timezone.utc)
         )
         
         # Read only forecasts made in a specific time range
         df = td.read_values_overlapping(
-            series_id=my_series_id,
+            series_ids=[my_series_id],
             start_known=datetime(2025, 1, 1, tzinfo=timezone.utc),
             end_known=datetime(2025, 1, 2, tzinfo=timezone.utc)
         )
@@ -1702,7 +1693,7 @@ def read_values_overlapping(
     df = db.read.read_values_overlapping(
         conninfo,
         tenant_id=tenant_id,
-        series_id=series_id,
+        series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,

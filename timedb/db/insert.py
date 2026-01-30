@@ -221,5 +221,3 @@ def insert_batch_with_values(
             )
 
             insert_values(conn, batch_id=batch_id, value_rows=value_rows, changed_by=changed_by)
-    
-    print("Data values inserted successfully.")
