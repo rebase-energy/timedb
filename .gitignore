@@ -62,6 +62,7 @@ Thumbs.db
 # Personal tooling
 # =========================
 .pm/
+CLAUDE.md
 
 # =========================
 # Sphinx build artifacts

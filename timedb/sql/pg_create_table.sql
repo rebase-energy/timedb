@@ -85,17 +85,17 @@ CREATE TABLE IF NOT EXISTS values_table (
 );
 
 -- PRIMARY OPERATIONAL INDEX:
--- 1. Enforces uniqueness for current values.
--- 2. Optimized for 'DISTINCT ON' logic to avoid memory-heavy sorts.
--- 3. INCLUDE allows fetching values directly from the index (Index-Only Scan).
+-- 1. Enforces uniqueness for current values (now scoped per batch).
+-- 2. Optimized for lookups by tenant/series/time.
 CREATE UNIQUE INDEX IF NOT EXISTS values_current_optimized_idx
   ON values_table (
     tenant_id,
+    series_id,
     valid_time,
     (COALESCE(valid_time_end, valid_time)),
-    series_id
+    batch_id  -- <--- Moved HERE to make it part of the Unique Key
   )
-  INCLUDE (batch_id, value)
+  INCLUDE (value) -- value stays here to enable fast Index-Only Scans
   WHERE is_current;
 
 -- HISTORICAL LOOKUP INDEX:
