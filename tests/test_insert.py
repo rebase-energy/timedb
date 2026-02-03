@@ -7,7 +7,6 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 from timedb import TimeDataClient
 from timedb.db import read
-import timedb as timedb_module
 
 
 def test_insert_batch_creates_batch(clean_db, sample_tenant_id, sample_series_id, sample_workflow_id, sample_datetime):
@@ -16,12 +15,15 @@ def test_insert_batch_creates_batch(clean_db, sample_tenant_id, sample_series_id
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
+    # Create series first
+    td.create_series(name="mean", unit="dimensionless")
+
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "mean": [100.5, 101.0],
     })
 
-    result = timedb_module.insert_batch(df=df)
+    result = td.series("mean").insert_batch(df=df)
 
     # Verify batch was created
     assert result.batch_id is not None
@@ -44,12 +46,15 @@ def test_insert_batch_with_known_time(clean_db, sample_tenant_id, sample_workflo
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
+    # Create series first
+    td.create_series(name="mean", unit="dimensionless")
+
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
         "mean": [100.5],
     })
 
-    result = timedb_module.insert_batch(df=df, batch_start_time=sample_datetime, batch_finish_time=None, known_time=known_time)
+    result = td.series("mean").insert_batch(df=df, batch_start_time=sample_datetime, batch_finish_time=None, known_time=known_time)
 
     # Verify batch exists and has known_time stored in batch_params (if stored)
     with psycopg.connect(clean_db) as conn:
@@ -69,12 +74,15 @@ def test_insert_values_point_in_time(clean_db, sample_tenant_id, sample_series_i
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
+    # Create series first
+    td.create_series(name="mean", unit="dimensionless")
+
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1), sample_datetime + timedelta(hours=2)],
         "mean": [100.5, 101.0, 102.5],
     })
 
-    result = timedb_module.insert_batch(df=df)
+    result = td.series("mean").insert_batch(df=df)
 
     # Verify values were inserted in values_table for this batch
     with psycopg.connect(clean_db) as conn:
@@ -91,13 +99,16 @@ def test_insert_values_interval(clean_db, sample_tenant_id, sample_series_id, sa
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
+    # Create series first
+    td.create_series(name="mean", unit="dimensionless")
+
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
         "valid_time_end": [sample_datetime + timedelta(hours=1)],
         "mean": [100.5],
     })
 
-    result = timedb_module.insert_batch(df=df, valid_time_end_col='valid_time_end')
+    result = td.series("mean").insert_batch(df=df, valid_time_end_col='valid_time_end')
 
     # Verify interval value was inserted
     with psycopg.connect(clean_db) as conn:
@@ -116,12 +127,15 @@ def test_insert_batch_with_values(clean_db, sample_tenant_id, sample_series_id, 
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
+    # Create series first
+    td.create_series(name="mean", unit="dimensionless")
+
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "mean": [100.5, 101.0],
     })
 
-    result = timedb_module.insert_batch(df=df)
+    result = td.series("mean").insert_batch(df=df)
 
     # Verify batch and values exist
     with psycopg.connect(clean_db) as conn:
@@ -138,6 +152,9 @@ def test_insert_values_timezone_aware(clean_db, sample_tenant_id, sample_series_
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
+    # Create series first
+    td.create_series(name="mean", unit="dimensionless")
+
     # Try to insert with timezone-naive datetime - should raise ValueError
     df = pd.DataFrame({
         "valid_time": [datetime(2025, 1, 1, 12, 0)],  # naive datetime
@@ -145,5 +162,5 @@ def test_insert_values_timezone_aware(clean_db, sample_tenant_id, sample_series_
     })
 
     with pytest.raises(ValueError, match="timezone-aware"):
-        timedb_module.insert_batch(df=df)
+        td.series("mean").insert_batch(df=df)
 

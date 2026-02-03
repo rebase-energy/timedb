@@ -110,6 +110,9 @@ class CreateSeriesRequest(BaseModel):
     name: str = Field(..., description="Human-readable identifier for the series (e.g., 'wind_power_forecast')")
     description: Optional[str] = Field(None, description="Optional description of the series")
     unit: str = Field(default="dimensionless", description="Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')")
+    labels: Dict[str, str] = Field(default_factory=dict, description="Labels to differentiate series with the same name (e.g., {'site': 'Gotland', 'turbine': 'T01'})")
+    data_class: str = Field(default="actual", description="'actual' for immutable facts or 'projection' for versioned forecasts")
+    storage_tier: str = Field(default="medium", description="'short', 'medium', or 'long' retention (only relevant for projections)")
 
 
 class CreateSeriesResponse(BaseModel):
@@ -120,9 +123,12 @@ class CreateSeriesResponse(BaseModel):
 
 class SeriesInfo(BaseModel):
     """Information about a time series."""
-    series_key: str
+    name: str
     description: Optional[str] = None
     unit: str
+    labels: Dict[str, str] = Field(default_factory=dict)
+    data_class: str = "actual"
+    storage_tier: str = "medium"
 
 
 # FastAPI app
@@ -167,28 +173,25 @@ async def read_values(
     start_known: Optional[datetime] = Query(None, description="Start of known_time range (ISO format)"),
     end_known: Optional[datetime] = Query(None, description="End of known_time range (ISO format)"),
     mode: str = Query("flat", description="Query mode: 'flat' or 'overlapping'"),
-    all_versions: bool = Query(False, description="Include all versions (not just current)"),
     current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
     Read time series values from the database.
-    
+
     Returns values filtered by valid_time and/or known_time ranges.
     All datetime parameters should be in ISO format (e.g., 2025-01-01T00:00:00Z).
-    
+
     Modes:
-    - "flat": Returns (valid_time, value_key, value) with latest known_time per valid_time
-    - "overlapping": Returns (known_time, valid_time, value_key, value) - all rows with known_time
-    
-    all_versions: If True, includes all versions (both is_current=true and false). If False, only current values.
+    - "flat": Returns latest value per (valid_time, series_id), determined by most recent known_time
+    - "overlapping": Returns all forecast revisions with their known_time, useful for backtesting
     """
     try:
         dsn = get_dsn()
-        
+
         # Validate mode parameter
         if mode not in ["flat", "overlapping"]:
             raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}. Must be 'flat' or 'overlapping'")
-        
+
         # Convert timezone-naive datetimes to UTC if needed
         if start_valid and start_valid.tzinfo is None:
             start_valid = start_valid.replace(tzinfo=timezone.utc)
@@ -198,12 +201,12 @@ async def read_values(
             start_known = start_known.replace(tzinfo=timezone.utc)
         if end_known and end_known.tzinfo is None:
             end_known = end_known.replace(tzinfo=timezone.utc)
-        
+
         # Use tenant_id from authenticated user if available
         tenant_id = None
         if current_user:
             tenant_id = uuid.UUID(current_user.tenant_id)
-        
+
         if mode == "flat":
             df = db.read.read_values_flat(
                 dsn,
@@ -212,7 +215,6 @@ async def read_values(
                 end_valid=end_valid,
                 start_known=start_known,
                 end_known=end_known,
-                all_versions=all_versions,
             )
         elif mode == "overlapping":
             df = db.read.read_values_overlapping(
@@ -222,7 +224,6 @@ async def read_values(
                 end_valid=end_valid,
                 start_known=start_known,
                 end_known=end_known,
-                all_versions=all_versions,
             )
         else:
             raise ValueError(f"Invalid mode: {mode}. Must be 'flat' or 'overlapping'")
@@ -377,8 +378,8 @@ async def update_records(
     current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
-    Update one or more records in the values table.
-    
+    Update one or more projection records (actuals are immutable).
+
     This endpoint supports tri-state updates:
     - Omit a field to leave it unchanged
     - Set to None to explicitly clear the field
@@ -449,19 +450,17 @@ async def update_records(
                 "tenant_id": str(r["tenant_id"]),
                 "valid_time": r["valid_time"].isoformat(),
                 "series_id": str(r["series_id"]),
-                "value_id": r["value_id"]
+                "projection_id": r.get("projection_id"),
             }
             for r in outcome["updated"]
         ]
-        
+
         skipped = [
             {
-                "batch_id": str(k["batch_id"]),
-                "tenant_id": str(k["tenant_id"]),
-                "valid_time": k["valid_time"].isoformat(),
-                "series_id": str(k["series_id"])
+                k: str(v) if isinstance(v, uuid.UUID) else v.isoformat() if isinstance(v, datetime) else v
+                for k, v in item.items()
             }
-            for k in outcome["skipped_no_ops"]
+            for item in outcome["skipped_no_ops"]
         ]
         
         return UpdateRecordsResponse(
@@ -481,22 +480,28 @@ async def create_series(
 ):
     """
     Create a new time series.
-    
-    This endpoint creates a new series with the specified name, description, and unit.
+
+    This endpoint creates a new series with the specified name, description, unit, and labels.
     A new series_id is generated and returned, which can be used in subsequent API calls.
+
+    Note: Series identity is determined by (name, labels). Two series with the same name
+    but different labels are different series.
     """
     try:
         dsn = get_dsn()
         import psycopg
-        
+
         with psycopg.connect(dsn) as conn:
             series_id = db.series.create_series(
                 conn,
                 name=request.name,
                 description=request.description,
                 unit=request.unit,
+                labels=request.labels,
+                data_class=request.data_class,
+                storage_tier=request.storage_tier,
             )
-        
+
         return CreateSeriesResponse(
             series_id=str(series_id),
             message="Series created successfully"
@@ -511,57 +516,64 @@ async def list_timeseries(
 ):
     """
     List all time series available in the database.
-    
+
     Returns a dictionary mapping series_id (as string) to series information
-    including series_key, description, and unit.
+    including name, description, unit, and labels.
     This can be used in subsequent API calls to query and update data.
-    
+
     If authentication is enabled, only returns series for the user's tenant_id.
     """
     try:
         dsn = get_dsn()
         import psycopg
-        
+
         with psycopg.connect(dsn) as conn:
-            # Filter by tenant_id if user is authenticated
-            if current_user:
-                tenant_id = uuid.UUID(current_user.tenant_id)
-                # Get series_ids that have values for this tenant
-                with conn.cursor() as cur:
+            with conn.cursor() as cur:
+                if current_user:
+                    tenant_id = uuid.UUID(current_user.tenant_id)
+                    # Get series that have data for this tenant (check both actuals and projections)
                     cur.execute(
                         """
-                        SELECT DISTINCT v.series_id, s.series_key, s.description, s.series_unit
-                        FROM values_table v
-                        JOIN series_table s ON v.series_id = s.series_id
-                        WHERE v.tenant_id = %s
-                        ORDER BY s.series_key
+                        SELECT DISTINCT s.series_id, s.name, s.description, s.unit, s.labels, s.data_class, s.storage_tier
+                        FROM series_table s
+                        WHERE s.series_id IN (
+                            SELECT DISTINCT series_id FROM actuals WHERE tenant_id = %s
+                            UNION
+                            SELECT DISTINCT series_id FROM projections_short WHERE tenant_id = %s
+                            UNION
+                            SELECT DISTINCT series_id FROM projections_medium WHERE tenant_id = %s
+                            UNION
+                            SELECT DISTINCT series_id FROM projections_long WHERE tenant_id = %s
+                        )
+                        ORDER BY s.name
                         """,
-                        (tenant_id,)
+                        (tenant_id, tenant_id, tenant_id, tenant_id)
                     )
-                    rows = cur.fetchall()
-            else:
-                # No authentication - return all series
-                with conn.cursor() as cur:
+                else:
+                    # No authentication - return all series
                     cur.execute(
                         """
-                        SELECT series_id, series_key, description, series_unit
+                        SELECT series_id, name, description, unit, labels, data_class, storage_tier
                         FROM series_table
-                        ORDER BY series_key
+                        ORDER BY name
                         """
                     )
-                    rows = cur.fetchall()
-            
+                rows = cur.fetchall()
+
             # Build dictionary: series_id (string) -> SeriesInfo
             result = {
                 str(series_id): SeriesInfo(
-                    series_key=series_key,
+                    name=name,
                     description=description,
-                    unit=series_unit
+                    unit=unit,
+                    labels=labels or {},
+                    data_class=data_class,
+                    storage_tier=storage_tier,
                 )
-                for series_id, series_key, description, series_unit in rows
+                for series_id, name, description, unit, labels, data_class, storage_tier in rows
             }
             return result
-            
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing time series: {str(e)}")
 

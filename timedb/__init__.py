@@ -1,75 +1,51 @@
 """
-TimeDB - A time series database for PostgreSQL.
+TimeDB - A time series database for PostgreSQL with TimescaleDB.
 
 High-level SDK usage:
-    import timedb as td
-    import pint
-    ureg = pint.UnitRegistry()
-    
-    # Create schema
+    from timedb import TimeDataClient
+    import pandas as pd
+    from datetime import datetime, timezone, timedelta
+
+    # Create client and schema
+    td = TimeDataClient()
     td.create()
-    
-    # Insert batch with DataFrame containing Pint Quantity columns
-    # Each column (except time columns) becomes a separate series
-    df = pd.DataFrame({
-        "valid_time": times,
-        "power": power_vals_kW * ureg.kW,              # Series with kW unit
-        "wind_speed": wind_vals_m_s * (ureg.meter / ureg.second),  # Series with m/s unit
-        "temperature": temp_vals_C * ureg.degC          # Series with degC unit
-    })
-    
-    result = td.insert_batch(df=df)
-    # result.series_ids = {
-    #     'power': <uuid>,
-    #     'wind_speed': <uuid>,
-    #     'temperature': <uuid>
-    # }
-    
-    # With custom series keys
-    result = td.insert_batch(
-        df=df,
-        series_key_overrides={
-            'power': 'wind_power_forecast',
-            'wind_speed': 'wind_speed_measured'
-        }
+
+    # Create a series
+    series_id = td.create_series(
+        name='wind_power',
+        unit='MW',
+        labels={'site': 'offshore_1', 'type': 'forecast'}
     )
+
+    # Insert data using the fluent API
+    df = pd.DataFrame({
+        'valid_time': times,
+        'wind_power': values
+    })
+    result = td.series('wind_power').where(site='offshore_1', type='forecast').insert_batch(
+        df=df,
+        known_time=datetime.now(timezone.utc)
+    )
+
+    # Read latest values
+    df_latest = td.series('wind_power').where(site='offshore_1').read()
+
+    # Read all forecast revisions
+    df_all = td.series('wind_power').where(site='offshore_1').read_overlapping()
 """
 
 from .sdk import (
-    create,
-    delete,
-    start_api,
-    start_api_background,
-    check_api,
-    insert_batch,
-    read,
-    read_values_flat,
-    read_values_overlapping,
-    update_records,
-    create_series,
+    TimeDataClient,
+    SeriesCollection,
     InsertResult,
     DEFAULT_TENANT_ID,
-    TimeDataClient,
 )
 from .units import IncompatibleUnitError
 
 __all__ = [
-    'create',
-    'delete',
-    'start_api',
-    'start_api_background',
-    'check_api',
-    'insert_batch',
-    'read',
-    'read_values_flat',
-    'read_values_overlapping',
-    'update_records',
-    'create_series',
+    'TimeDataClient',
+    'SeriesCollection',
     'InsertResult',
     'DEFAULT_TENANT_ID',
     'IncompatibleUnitError',
-    'TimeDataClient',
 ]
-
-__all__ = ['create', 'delete', 'start_api', 'start_api_background', 'check_api', 'insert_batch', 'read', 'read_values_flat', 'read_values_overlapping', 'update_records', 'create_series', 'InsertResult', 'DEFAULT_TENANT_ID', 'IncompatibleUnitError']
-
