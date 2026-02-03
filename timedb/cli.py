@@ -195,11 +195,12 @@ def delete_tables(
         console.print(Panel(
             "[bold red]WARNING: This will delete ALL timedb tables and data![/bold red]\n\n"
             "This includes:\n"
-            "  • runs_table\n"
-            "  • values_table\n"
-            "  • metadata_table\n"
-            "  • users_table\n"
-            "  • All views",
+            "  • batches_table\n"
+            "  • series_table\n"
+            "  • actuals\n"
+            "  • projections_short / projections_medium / projections_long\n"
+            "  • users_table (if exists)\n"
+            "  • All views and continuous aggregates",
             title="Destructive Operation",
             border_style="red",
         ))

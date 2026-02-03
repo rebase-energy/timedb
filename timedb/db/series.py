@@ -16,43 +16,51 @@ def create_series(
     unit: str,
     labels: Optional[Dict[str, str]] = None,
     description: Optional[str] = None,
+    data_class: str = "actual",
+    storage_tier: str = "medium",
 ) -> uuid.UUID:
     """
     Create a new time series.
-    
+
     This function always creates a new series. A new series_id is generated for each call.
-    
+
     Args:
         conn: Database connection
         name: Parameter name (e.g., 'wind_power', 'temperature')
         unit: Canonical unit for the series (e.g., 'MW', 'degC', 'dimensionless')
         labels: Dictionary of labels that differentiate this series (e.g., {"site": "Gotland", "turbine": "T01"})
         description: Optional description of the series
-    
+        data_class: 'actual' or 'projection' (default: 'actual')
+        storage_tier: 'short', 'medium', or 'long' (default: 'medium', only relevant for projections)
+
     Returns:
         The series_id (UUID) for the newly created series
-    
+
     Raises:
-        ValueError: If name or unit is empty
+        ValueError: If name or unit is empty, or if data_class/storage_tier are invalid
     """
     if not name or not name.strip():
         raise ValueError("name cannot be empty")
     if not unit or not unit.strip():
         raise ValueError("unit cannot be empty")
-    
+    if data_class not in ("actual", "projection"):
+        raise ValueError(f"data_class must be 'actual' or 'projection', got '{data_class}'")
+    if storage_tier not in ("short", "medium", "long"):
+        raise ValueError(f"storage_tier must be 'short', 'medium', or 'long', got '{storage_tier}'")
+
     # Normalize labels
     labels_dict = labels or {}
     labels_json = json.dumps(labels_dict, sort_keys=True)
-    
+
     new_series_id = uuid.uuid4()
     with conn.cursor() as cur:
         description_value = description.strip() if description and description.strip() else None
         cur.execute(
             """
-            INSERT INTO series_table (series_id, name, unit, labels, description)
-            VALUES (%s, %s, %s, %s::jsonb, %s)
+            INSERT INTO series_table (series_id, name, unit, labels, description, data_class, storage_tier)
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
             """,
-            (new_series_id, name.strip(), unit.strip(), labels_json, description_value)
+            (new_series_id, name.strip(), unit.strip(), labels_json, description_value, data_class, storage_tier)
         )
     return new_series_id
 
@@ -65,16 +73,18 @@ def get_or_create_series(
     labels: Optional[Dict[str, str]] = None,
     series_id: Optional[uuid.UUID] = None,
     description: Optional[str] = None,
+    data_class: str = "actual",
+    storage_tier: str = "medium",
 ) -> uuid.UUID:
     """
     Get an existing series or create a new one.
-    
+
     If series_id is provided, verifies it exists and matches name/labels (unit is checked but not part of uniqueness).
     If series_id is None, looks up by (name, labels). If not found, creates a new series.
-    
+
     Note: The unique constraint is on (name, labels) only - unit is NOT part of uniqueness.
     This means you cannot have two series with the same name+labels but different units.
-    
+
     Args:
         conn: Database connection
         name: Parameter name (e.g., 'wind_power')
@@ -82,17 +92,19 @@ def get_or_create_series(
         labels: Dictionary of labels (e.g., {"site": "Gotland", "turbine": "T01"})
         series_id: Optional UUID. If provided, verifies it exists and matches.
         description: Optional description (only used when creating new series)
-    
+        data_class: 'actual' or 'projection' (default: 'actual', only used when creating)
+        storage_tier: 'short', 'medium', or 'long' (default: 'medium', only used when creating)
+
     Returns:
         The series_id (UUID) for the series
-    
+
     Raises:
         ValueError: If series_id is provided but doesn't exist or doesn't match
     """
     # Normalize labels
     labels_dict = labels or {}
     labels_json = json.dumps(labels_dict, sort_keys=True)
-    
+
     with conn.cursor() as cur:
         if series_id is not None:
             # Check if the series exists
@@ -110,13 +122,13 @@ def get_or_create_series(
                 description_value = description.strip() if description and description.strip() else None
                 cur.execute(
                     """
-                    INSERT INTO series_table (series_id, name, unit, labels, description)
-                    VALUES (%s, %s, %s, %s::jsonb, %s)
+                    INSERT INTO series_table (series_id, name, unit, labels, description, data_class, storage_tier)
+                    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
                     """,
-                    (series_id, name, unit, labels_json, description_value)
+                    (series_id, name, unit, labels_json, description_value, data_class, storage_tier)
                 )
                 return series_id
-            
+
             # Series exists - verify it matches (check name and labels, warn about unit mismatch)
             existing_name, existing_unit, existing_labels = row
             existing_labels_json = json.dumps(existing_labels or {}, sort_keys=True)
@@ -126,7 +138,7 @@ def get_or_create_series(
                     f"expected (name={name}, labels={labels_dict}), "
                     f"found (name={existing_name}, labels={existing_labels})"
                 )
-            
+
             # Warn if unit doesn't match (but still allow it since unit is not part of uniqueness)
             if existing_unit != unit:
                 import warnings
@@ -134,9 +146,9 @@ def get_or_create_series(
                     f"Series {series_id} has unit '{existing_unit}' but you specified '{unit}'. "
                     f"Using existing unit '{existing_unit}'."
                 )
-            
+
             return series_id
-        
+
         # Look up by (name, labels) - unit is NOT part of the lookup
         cur.execute(
             """
@@ -147,7 +159,7 @@ def get_or_create_series(
             (name, labels_json)
         )
         row = cur.fetchone()
-        
+
         if row is not None:
             existing_series_id, existing_unit = row
             # Warn if unit doesn't match
@@ -158,16 +170,16 @@ def get_or_create_series(
                     f"You specified unit '{unit}'. Using existing series with unit '{existing_unit}'."
                 )
             return existing_series_id
-        
+
         # Create new series
         new_series_id = uuid.uuid4()
         description_value = description.strip() if description and description.strip() else None
         cur.execute(
             """
-            INSERT INTO series_table (series_id, name, unit, labels, description)
-            VALUES (%s, %s, %s, %s::jsonb, %s)
+            INSERT INTO series_table (series_id, name, unit, labels, description, data_class, storage_tier)
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
             """,
-            (new_series_id, name, unit, labels_json, description_value)
+            (new_series_id, name, unit, labels_json, description_value, data_class, storage_tier)
         )
         return new_series_id
 
@@ -210,21 +222,21 @@ def get_series_info(
 ) -> Dict[str, any]:
     """
     Get full metadata for a series.
-    
+
     Args:
         conn: Database connection
         series_id: The series UUID
-    
+
     Returns:
-        Dictionary with keys: name, unit, labels, description
-    
+        Dictionary with keys: name, unit, labels, description, data_class, storage_tier
+
     Raises:
         ValueError: If series_id doesn't exist
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT name, unit, labels, description
+            SELECT name, unit, labels, description, data_class, storage_tier
             FROM series_table
             WHERE series_id = %s
             """,
@@ -238,6 +250,8 @@ def get_series_info(
             'unit': row[1],
             'labels': row[2] or {},
             'description': row[3],
+            'data_class': row[4],
+            'storage_tier': row[5],
         }
 
 

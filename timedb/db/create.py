@@ -8,11 +8,12 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 # This module creates the TimescaleDB schema for TimeDB:
 #   1) batches_table             → one row per batch
-#   2) series_table              → series metadata (name, unit, labels)
-#   3) values_table              → hypertable for versioned values
-#   4) indexes                   → for performance and data integrity
-#   5) latest_values             → continuous aggregate for latest values
-#   6) current_values_view       → convenience view with series metadata
+#   2) series_table              → series metadata (name, unit, labels, data_class, storage_tier)
+#   3) actuals                   → hypertable for immutable fact data
+#   4) projections_short/medium/long → hypertables for versioned projections
+#   5) all_projections_raw       → unified view of all projection tiers
+#   6) latest_projections_*      → continuous aggregates for latest values
+#   7) latest_projection_curve   → unified API view across all tiers
 #
 # The script is idempotent (safe to run multiple times).
 # Split into two parts because TimescaleDB features require autocommit.
