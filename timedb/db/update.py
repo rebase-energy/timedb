@@ -205,7 +205,6 @@ def _process_update_by_id(
                series_id, value, known_time, annotation, metadata, tags, changed_by
         FROM {table}
         WHERE projection_id = %(projection_id)s
-        FOR UPDATE
         """,
         {"projection_id": projection_id},
     )
@@ -315,6 +314,8 @@ def _process_update_by_key(
     if not has_any_update:
         raise ValueError("No updates supplied: provide at least one of 'value', 'annotation', 'tags', 'changed_by'.")
 
+    has_explicit_value = "value" in u
+
     cur.execute(
         f"""
         SELECT projection_id, value, valid_time_end, annotation, metadata, tags, changed_by
@@ -325,7 +326,6 @@ def _process_update_by_key(
           AND series_id = %(series_id)s
         ORDER BY known_time DESC
         LIMIT 1
-        FOR UPDATE
         """,
         {
             "batch_id": batch_id,
@@ -335,6 +335,11 @@ def _process_update_by_key(
         },
     )
     current = cur.fetchone()
+
+    if current is None and not has_explicit_value:
+        raise ValueError(
+            f"No current row exists for key in {table}. You must provide 'value'."
+        )
 
     current_value = current["value"] if current else None
     valid_time_end = current["valid_time_end"] if current else None
@@ -363,11 +368,6 @@ def _process_update_by_key(
     new_changed_by = u.get("changed_by", _UNSET)
     if new_changed_by is _UNSET:
         new_changed_by = current_changed_by
-
-    if current is None and new_value is _UNSET:
-        raise ValueError(
-            f"No current row exists for key in {table}. You must provide 'value'."
-        )
 
     current_tags_canonical = _canonicalize_tags_stored(current_tags)
     current_annotation_canonical = _canonicalize_annotation_stored(current_annotation)

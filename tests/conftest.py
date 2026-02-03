@@ -19,32 +19,21 @@ def test_db_conninfo():
 
 @pytest.fixture(scope="function")
 def clean_db(test_db_conninfo):
-    """Create a clean database schema for each test (main schema with value_key)."""
+    """Create a clean database schema for each test.
+
+    Creates the full TimescaleDB schema including:
+    - batches_table, series_table
+    - actuals (hypertable for immutable facts)
+    - projections_short/medium/long (hypertables for versioned projections)
+    - continuous aggregates and views
+    """
     # Delete existing schema if it exists
     delete.delete_schema(test_db_conninfo)
-    
+
     # Create fresh schema
     create.create_schema(test_db_conninfo)
-    
-    yield test_db_conninfo
-    
-    # Cleanup after test (optional - can be commented out to inspect data)
-    # delete.delete_schema(test_db_conninfo)
 
-
-@pytest.fixture(scope="function")
-def clean_db_for_update(test_db_conninfo):
-    """Create a clean database schema for update tests (uses main schema which supports updates)."""
-    # Delete existing schema if it exists
-    delete.delete_schema(test_db_conninfo)
-    
-    # Create main schema (now supports updates)
-    create.create_schema(test_db_conninfo)
-    
     yield test_db_conninfo
-    
-    # Cleanup after test (optional - can be commented out to inspect data)
-    # delete.delete_schema(test_db_conninfo)
 
 
 @pytest.fixture
@@ -75,4 +64,3 @@ def sample_tenant_id():
 def sample_series_id():
     """Generate a sample series ID for testing."""
     return uuid.uuid4()
-
