@@ -300,8 +300,10 @@ def insert_values(
             raise ValueError(f"No routing info for series_id {series_id}. Ensure it exists in series_table.")
 
         if routing["data_class"] == "actual":
-            # Actuals: (tenant_id, time, series_id, value)
-            actuals_rows.append((tenant_id, valid_time, series_id, value))
+            if valid_time_end is not None:
+                actuals_rows.append((tenant_id, valid_time, valid_time_end, series_id, value))
+            else:
+                actuals_rows.append((tenant_id, valid_time, series_id, value))
         else:
             # Projections: (tenant_id, valid_time, series_id, value) or 5-tuple
             tier = routing["storage_tier"]
