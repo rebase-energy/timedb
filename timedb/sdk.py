@@ -9,9 +9,9 @@ The SDK exposes two main classes:
 - SeriesCollection: Fluent API for series filtering and operations
 
 Data model:
-- Actuals: Immutable fact data (meter readings, measurements). Stored in 'actuals' table.
-- Projections: Versioned estimates (forecasts). Stored in 'projections_short/medium/long'
-  tables with known_time versioning. Routed by series storage_tier.
+- Flat: Immutable fact data (meter readings, measurements). Stored in 'flat' table.
+- Overlapping: Versioned estimates (forecasts). Stored in 'overlapping' table
+  (list-partitioned by retention) with known_time versioning.
 """
 import os
 import uuid
@@ -71,7 +71,7 @@ class SeriesCollection:
         self._unit = unit
         self._label_filters = label_filters or {}
         self._id_cache = _id_cache or {}
-        self._meta_cache = _meta_cache or {}  # series_id -> {data_class, storage_tier}
+        self._meta_cache = _meta_cache or {}  # series_id -> {data_class, retention}
         self._resolved = False
 
     def where(self, **labels) -> 'SeriesCollection':
@@ -93,14 +93,14 @@ class SeriesCollection:
     def _resolve_ids(self) -> List[uuid.UUID]:
         """
         Resolve series IDs that match the current filters.
-        Also caches data_class and storage_tier for routing.
+        Also caches data_class and retention for routing.
         """
         if not self._resolved:
             import psycopg
             import json
             with psycopg.connect(self._conninfo) as conn:
                 with conn.cursor() as cur:
-                    sql = "SELECT series_id, labels, data_class, storage_tier FROM series_table"
+                    sql = "SELECT series_id, labels, data_class, retention FROM series_table"
                     clauses: list = []
                     params: list = []
                     if self._name:
@@ -118,12 +118,12 @@ class SeriesCollection:
                     cur.execute(sql, params)
                     rows = cur.fetchall()
 
-            for series_id, labels, data_class, storage_tier in rows:
+            for series_id, labels, data_class, retention in rows:
                 label_set = frozenset((k, v) for k, v in (labels or {}).items())
                 self._id_cache[label_set] = series_id
                 self._meta_cache[series_id] = {
                     "data_class": data_class,
-                    "storage_tier": storage_tier,
+                    "retention": retention,
                 }
             self._resolved = True
 
@@ -159,7 +159,7 @@ class SeriesCollection:
         return {self._meta_cache[sid]["data_class"] for sid in ids if sid in self._meta_cache}
 
     def _get_series_routing(self) -> Dict[uuid.UUID, Dict[str, str]]:
-        """Get routing info (data_class, storage_tier) for all resolved series."""
+        """Get routing info (data_class, retention) for all resolved series."""
         ids = self._resolve_ids()
         return {sid: self._meta_cache[sid] for sid in ids if sid in self._meta_cache}
 
@@ -180,8 +180,8 @@ class SeriesCollection:
         Insert time series data for this collection.
 
         Automatically routes data to the correct table based on the series' data_class:
-        - actual: inserts into 'actuals' table (immutable facts, upsert on conflict)
-        - projection: inserts into 'projections_{tier}' table with batch and known_time
+        - flat: inserts into 'flat' table (immutable facts, upsert on conflict)
+        - overlapping: inserts into 'overlapping_{tier}' table with batch and known_time
 
         Args:
             df: DataFrame with time series data
@@ -192,7 +192,7 @@ class SeriesCollection:
             batch_finish_time: Finish time (optional)
             valid_time_col: Valid time column name
             valid_time_end_col: Valid time end column (for intervals)
-            known_time: Time of knowledge (optional, used for projections)
+            known_time: Time of knowledge (optional, used for overlapping)
             batch_params: Batch parameters (optional)
 
         Returns:
@@ -258,7 +258,7 @@ class SeriesCollection:
         """
         Collection-scoped wrapper around the module-level update_records helper.
 
-        Only applies to projection series (actuals are immutable).
+        Only applies to overlapping series (flat are immutable).
         """
         if not updates:
             return {"updated": [], "skipped_no_ops": []}
@@ -275,7 +275,7 @@ class SeriesCollection:
         for u in updates:
             u_copy = u.copy()
 
-            if "projection_id" in u_copy:
+            if "overlapping_id" in u_copy:
                 if "series_id" not in u_copy and single_series:
                     u_copy["series_id"] = series_ids[0]
                 filled_updates.append(u_copy)
@@ -310,17 +310,17 @@ class SeriesCollection:
         Read time series data for this collection.
 
         Automatically reads from the correct table based on the series' data_class:
-        - actual: reads from 'actuals' table (no versioning)
-        - projection: reads from 'latest_projection_curve' (default) or
-          'all_projections_raw' (if versions=True)
+        - flat: reads from 'flat' table (no versioning)
+        - overlapping: reads from 'latest_overlapping_curve' (default) or
+          'all_overlapping_raw' (if versions=True)
 
         Args:
             tenant_id: Tenant UUID filter (optional)
             start_valid: Start of valid time range (optional)
             end_valid: End of valid time range (optional)
-            start_known: Start of known_time range (optional, projections only)
-            end_known: End of known_time range (optional, projections only)
-            versions: If True, return all projection revisions (default: False)
+            start_known: Start of known_time range (optional, overlapping only)
+            end_known: End of known_time range (optional, overlapping only)
+            versions: If True, return all overlapping revisions (default: False)
             return_mapping: Return (DataFrame, mapping_dict) if True
 
         Returns:
@@ -336,17 +336,17 @@ class SeriesCollection:
 
         data_classes = self._get_data_classes()
 
-        if data_classes == {"actual"}:
-            return _read_actuals(
+        if data_classes == {"flat"}:
+            return _read_flat(
                 series_ids=series_ids,
                 tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
                 return_mapping=return_mapping,
             )
-        elif data_classes == {"projection"}:
+        elif data_classes == {"overlapping"}:
             if versions:
-                return _read_projections_all(
+                return _read_overlapping_all(
                     series_ids=series_ids,
                     tenant_id=tenant_id,
                     start_valid=start_valid,
@@ -356,7 +356,7 @@ class SeriesCollection:
                     return_mapping=return_mapping,
                 )
             else:
-                return _read_projections_latest(
+                return _read_overlapping_latest(
                     series_ids=series_ids,
                     tenant_id=tenant_id,
                     start_valid=start_valid,
@@ -366,16 +366,16 @@ class SeriesCollection:
                     return_mapping=return_mapping,
                 )
         else:
-            # Mixed actuals and projections - read both and merge
-            actual_ids = [sid for sid in series_ids if self._meta_cache[sid]["data_class"] == "actual"]
-            projection_ids = [sid for sid in series_ids if self._meta_cache[sid]["data_class"] == "projection"]
+            # Mixed flat and overlapping - read both and merge
+            flat_ids = [sid for sid in series_ids if self._meta_cache[sid]["data_class"] == "flat"]
+            overlapping_ids = [sid for sid in series_ids if self._meta_cache[sid]["data_class"] == "overlapping"]
 
             dfs = []
             mappings = {}
 
-            if actual_ids:
-                result = _read_actuals(
-                    series_ids=actual_ids,
+            if flat_ids:
+                result = _read_flat(
+                    series_ids=flat_ids,
                     tenant_id=tenant_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -384,10 +384,10 @@ class SeriesCollection:
                 dfs.append(result[0])
                 mappings.update(result[1])
 
-            if projection_ids:
+            if overlapping_ids:
                 if versions:
-                    result = _read_projections_all(
-                        series_ids=projection_ids,
+                    result = _read_overlapping_all(
+                        series_ids=overlapping_ids,
                         tenant_id=tenant_id,
                         start_valid=start_valid,
                         end_valid=end_valid,
@@ -396,8 +396,8 @@ class SeriesCollection:
                         return_mapping=True,
                     )
                 else:
-                    result = _read_projections_latest(
-                        series_ids=projection_ids,
+                    result = _read_overlapping_latest(
+                        series_ids=overlapping_ids,
                         tenant_id=tenant_id,
                         start_valid=start_valid,
                         end_valid=end_valid,
@@ -423,7 +423,7 @@ class SeriesCollection:
 
     # Keep read_overlapping as convenience alias
     def read_overlapping(self, **kwargs) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
-        """Read all projection revisions. Alias for read(versions=True)."""
+        """Read all overlapping revisions. Alias for read(versions=True)."""
         return self.read(versions=True, **kwargs)
 
     def list_labels(self, label_key: str) -> List[str]:
@@ -485,8 +485,8 @@ class TimeDataClient:
         unit: str = "dimensionless",
         labels: Optional[Dict[str, str]] = None,
         description: Optional[str] = None,
-        data_class: str = "actual",
-        storage_tier: str = "medium",
+        data_class: str = "flat",
+        retention: str = "medium",
     ) -> uuid.UUID:
         """
         Create a new series.
@@ -496,8 +496,8 @@ class TimeDataClient:
             unit: Canonical unit (e.g., 'MW', 'dimensionless')
             labels: Dictionary of labels (e.g., {"site": "Gotland"})
             description: Optional description
-            data_class: 'actual' or 'projection' (default: 'actual')
-            storage_tier: 'short', 'medium', or 'long' (default: 'medium', only for projections)
+            data_class: 'flat' or 'overlapping' (default: 'flat')
+            retention: 'short', 'medium', or 'long' (default: 'medium', only for overlapping)
 
         Returns:
             The series_id (UUID) for the newly created series
@@ -508,11 +508,11 @@ class TimeDataClient:
             labels=labels,
             description=description,
             data_class=data_class,
-            storage_tier=storage_tier,
+            retention=retention,
         )
 
     def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
-        """Update projection records (actuals are immutable)."""
+        """Update overlapping records (flat are immutable)."""
         return _update_records(updates)
 
 
@@ -713,8 +713,8 @@ def _create_series(
     unit: str = "dimensionless",
     labels: Optional[Dict[str, str]] = None,
     description: Optional[str] = None,
-    data_class: str = "actual",
-    storage_tier: str = "medium",
+    data_class: str = "flat",
+    retention: str = "medium",
 ) -> uuid.UUID:
     """
     Create a new time series.
@@ -724,8 +724,8 @@ def _create_series(
         unit: Canonical unit for the series
         labels: Dictionary of labels
         description: Optional description
-        data_class: 'actual' or 'projection' (default: 'actual')
-        storage_tier: 'short', 'medium', or 'long' (default: 'medium')
+        data_class: 'flat' or 'overlapping' (default: 'flat')
+        retention: 'short', 'medium', or 'long' (default: 'medium')
 
     Returns:
         The series_id (UUID) for the newly created series
@@ -741,7 +741,7 @@ def _create_series(
                 labels=labels,
                 description=description,
                 data_class=data_class,
-                storage_tier=storage_tier,
+                retention=retention,
             )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         error_msg = str(e)
@@ -767,20 +767,20 @@ def _delete() -> None:
     db.delete.delete_schema(conninfo)
 
 
-def _read_actuals(
+def _read_flat(
     series_ids: Optional[List[uuid.UUID]] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     return_mapping: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
-    """Read actual values and pivot into a wide DataFrame."""
+    """Read flat values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
     if tenant_id is None:
         tenant_id = DEFAULT_TENANT_ID
 
-    df = db.read.read_actuals(
+    df = db.read.read_flat(
         conninfo,
         tenant_id=tenant_id,
         series_ids=series_ids,
@@ -821,7 +821,7 @@ def _read_actuals(
         return df_pivoted
 
 
-def _read_projections_latest(
+def _read_overlapping_latest(
     series_ids: Optional[List[uuid.UUID]] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
@@ -830,13 +830,13 @@ def _read_projections_latest(
     end_known: Optional[datetime] = None,
     return_mapping: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
-    """Read latest projection values and pivot into a wide DataFrame."""
+    """Read latest overlapping values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
     if tenant_id is None:
         tenant_id = DEFAULT_TENANT_ID
 
-    df = db.read.read_projections_latest(
+    df = db.read.read_overlapping_latest(
         conninfo,
         tenant_id=tenant_id,
         series_ids=series_ids,
@@ -879,7 +879,7 @@ def _read_projections_latest(
         return df_pivoted
 
 
-def _read_projections_all(
+def _read_overlapping_all(
     series_ids: Optional[List[uuid.UUID]] = None,
     tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
@@ -888,13 +888,13 @@ def _read_projections_all(
     end_known: Optional[datetime] = None,
     return_mapping: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
-    """Read all projection versions and pivot into a wide DataFrame."""
+    """Read all overlapping versions and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
     if tenant_id is None:
         tenant_id = DEFAULT_TENANT_ID
 
-    df = db.read.read_projections_all(
+    df = db.read.read_overlapping_all(
         conninfo,
         tenant_id=tenant_id,
         series_ids=series_ids,
@@ -957,7 +957,7 @@ def _insert(
     """
     Insert a batch with time series data from a pandas DataFrame.
 
-    Routes data to the correct table based on series data_class and storage_tier.
+    Routes data to the correct table based on series data_class and retention.
     """
     conninfo = _get_conninfo()
 
@@ -1004,7 +1004,7 @@ def _insert(
                     if series_id not in series_routing:
                         series_routing[series_id] = {
                             "data_class": series_info_db['data_class'],
-                            "storage_tier": series_info_db['storage_tier'],
+                            "retention": series_info_db['retention'],
                         }
                 except ValueError as e:
                     raise ValueError(f"series_id {provided_series_id} not found in database") from e
@@ -1021,7 +1021,7 @@ def _insert(
                     info = db.series.get_series_info(conn, series_id)
                     series_routing[series_id] = {
                         "data_class": info['data_class'],
-                        "storage_tier": info['storage_tier'],
+                        "retention": info['retention'],
                     }
 
             series_mapping[col_name] = series_id
@@ -1051,7 +1051,7 @@ def _insert(
         )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         error_msg = str(e)
-        if any(t in error_msg for t in ["batches_table", "actuals", "projections_", "series_table", "does not exist"]):
+        if any(t in error_msg for t in ["batches_table", "flat", "overlapping_", "series_table", "does not exist"]):
             raise ValueError(
                 "TimeDB tables do not exist. Please create the schema first by running:\n"
                 "  td.create()"
@@ -1059,7 +1059,7 @@ def _insert(
         raise
     except Exception as e:
         error_msg = str(e)
-        if any(t in error_msg for t in ["batches_table", "actuals", "projections_", "series_table", "does not exist"]):
+        if any(t in error_msg for t in ["batches_table", "flat", "overlapping_", "series_table", "does not exist"]):
             raise ValueError(
                 "TimeDB tables do not exist. Please create the schema first by running:\n"
                 "  td.create()"
@@ -1087,7 +1087,7 @@ def _update_records(
     updates: List[Dict[str, Any]],
 ) -> Dict[str, List]:
     """
-    Update projection records (actuals are immutable).
+    Update overlapping records (flat are immutable).
 
     Wrapper around db.update.update_records that handles the database connection.
     """

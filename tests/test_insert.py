@@ -1,4 +1,4 @@
-"""Tests for inserting actuals and projections."""
+"""Tests for inserting flat and overlapping data."""
 import os
 import pytest
 import psycopg
@@ -9,15 +9,15 @@ from timedb import TimeDataClient
 
 
 # =============================================================================
-# Actuals insertion tests
+# Flat insertion tests
 # =============================================================================
 
-def test_insert_actuals_creates_batch(clean_db, sample_datetime):
-    """Test inserting actuals via SDK creates a batch and rows in the actuals table."""
+def test_insert_flat_creates_batch(clean_db, sample_datetime):
+    """Test inserting flat via SDK creates a batch and rows in the flat table."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temperature", unit="dimensionless", data_class="actual")
+    td.create_series(name="temperature", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -29,25 +29,25 @@ def test_insert_actuals_creates_batch(clean_db, sample_datetime):
     assert result.batch_id is not None
     assert "temperature" in result.series_ids
 
-    # Verify rows in actuals table
+    # Verify rows in flat table
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM actuals")
+            cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 2
 
-            # Verify no rows in any projections table
-            cur.execute("SELECT COUNT(*) FROM projections_medium")
+            # Verify no rows in any overlapping table
+            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
             assert cur.fetchone()[0] == 0
 
 
-def test_insert_actuals_with_known_time(clean_db, sample_datetime):
-    """Test inserting actuals with explicit known_time."""
+def test_insert_flat_with_known_time(clean_db, sample_datetime):
+    """Test inserting flat with explicit known_time."""
     known_time = sample_datetime - timedelta(hours=1)
 
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temperature", unit="dimensionless", data_class="actual")
+    td.create_series(name="temperature", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
@@ -72,12 +72,12 @@ def test_insert_actuals_with_known_time(clean_db, sample_datetime):
             assert abs((row[0] - sample_datetime).total_seconds()) < 1
 
 
-def test_insert_actuals_point_in_time(clean_db, sample_datetime):
-    """Test inserting multiple point-in-time actuals."""
+def test_insert_flat_point_in_time(clean_db, sample_datetime):
+    """Test inserting multiple point-in-time flat data."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", data_class="actual")
+    td.create_series(name="power", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [
@@ -92,16 +92,16 @@ def test_insert_actuals_point_in_time(clean_db, sample_datetime):
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM actuals")
+            cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 3
 
 
-def test_insert_actuals_interval(clean_db, sample_datetime):
-    """Test inserting interval actuals with valid_time_end."""
+def test_insert_flat_interval(clean_db, sample_datetime):
+    """Test inserting interval flat data with valid_time_end."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="energy", unit="dimensionless", data_class="actual")
+    td.create_series(name="energy", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
@@ -113,18 +113,18 @@ def test_insert_actuals_interval(clean_db, sample_datetime):
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT valid_time_end FROM actuals")
+            cur.execute("SELECT valid_time_end FROM flat")
             row = cur.fetchone()
             assert row is not None
             assert row[0] is not None
 
 
-def test_insert_actuals_upsert(clean_db, sample_datetime):
-    """Test that inserting the same actual twice upserts (updates value)."""
+def test_insert_flat_upsert(clean_db, sample_datetime):
+    """Test that inserting the same flat data twice upserts (updates value)."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="meter", unit="dimensionless", data_class="actual")
+    td.create_series(name="meter", unit="dimensionless", data_class="flat")
 
     # First insert
     df1 = pd.DataFrame({
@@ -143,25 +143,25 @@ def test_insert_actuals_upsert(clean_db, sample_datetime):
     # Should still have only 1 row (upsert), with updated value
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM actuals")
+            cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 1
 
-            cur.execute("SELECT value FROM actuals")
+            cur.execute("SELECT value FROM flat")
             assert cur.fetchone()[0] == 150.0
 
 
 # =============================================================================
-# Projections insertion tests
+# Overlapping insertion tests
 # =============================================================================
 
-def test_insert_projections_creates_batch(clean_db, sample_datetime):
-    """Test inserting projections via SDK creates rows in projections_medium table."""
+def test_insert_overlapping_creates_batch(clean_db, sample_datetime):
+    """Test inserting overlapping via SDK creates rows in overlapping_medium table."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="wind_forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
@@ -174,23 +174,23 @@ def test_insert_projections_creates_batch(clean_db, sample_datetime):
     assert result.batch_id is not None
     assert "wind_forecast" in result.series_ids
 
-    # Verify rows in projections_medium
+    # Verify rows in overlapping_medium
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM projections_medium WHERE batch_id = %s",
+                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s",
                 (result.batch_id,)
             )
             assert cur.fetchone()[0] == 2
 
-            # Verify no rows in actuals
-            cur.execute("SELECT COUNT(*) FROM actuals")
+            # Verify no rows in flat
+            cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 0
 
 
-def test_insert_projections_short_tier(clean_db):
-    """Test inserting projections with storage_tier='short'."""
-    # Use a recent datetime to avoid the 6-month retention policy on projections_short
+def test_insert_overlapping_short_tier(clean_db):
+    """Test inserting overlapping with retention='short'."""
+    # Use a recent datetime to avoid the 6-month retention policy on overlapping_short
     recent_time = datetime.now(timezone.utc).replace(microsecond=0)
 
     os.environ["TIMEDB_DSN"] = clean_db
@@ -198,7 +198,7 @@ def test_insert_projections_short_tier(clean_db):
 
     td.create_series(
         name="price_forecast", unit="dimensionless",
-        data_class="projection", storage_tier="short",
+        data_class="overlapping", retention="short",
     )
 
     df = pd.DataFrame({
@@ -210,24 +210,24 @@ def test_insert_projections_short_tier(clean_db):
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM projections_short")
+            cur.execute("SELECT COUNT(*) FROM overlapping_short")
             assert cur.fetchone()[0] == 1
 
-            cur.execute("SELECT COUNT(*) FROM projections_medium")
+            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
             assert cur.fetchone()[0] == 0
 
-            cur.execute("SELECT COUNT(*) FROM projections_long")
+            cur.execute("SELECT COUNT(*) FROM overlapping_long")
             assert cur.fetchone()[0] == 0
 
 
-def test_insert_projections_long_tier(clean_db, sample_datetime):
-    """Test inserting projections with storage_tier='long'."""
+def test_insert_overlapping_long_tier(clean_db, sample_datetime):
+    """Test inserting overlapping with retention='long'."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="climate_forecast", unit="dimensionless",
-        data_class="projection", storage_tier="long",
+        data_class="overlapping", retention="long",
     )
 
     df = pd.DataFrame({
@@ -239,18 +239,18 @@ def test_insert_projections_long_tier(clean_db, sample_datetime):
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM projections_long")
+            cur.execute("SELECT COUNT(*) FROM overlapping_long")
             assert cur.fetchone()[0] == 1
 
 
-def test_insert_projections_interval(clean_db, sample_datetime):
-    """Test inserting interval projections with valid_time_end."""
+def test_insert_overlapping_interval(clean_db, sample_datetime):
+    """Test inserting interval overlapping with valid_time_end."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="energy_forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
@@ -265,7 +265,7 @@ def test_insert_projections_interval(clean_db, sample_datetime):
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT valid_time_end FROM projections_medium")
+            cur.execute("SELECT valid_time_end FROM overlapping_medium")
             row = cur.fetchone()
             assert row is not None
             assert row[0] is not None
@@ -280,7 +280,7 @@ def test_insert_timezone_aware_required(clean_db):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temp", unit="dimensionless", data_class="actual")
+    td.create_series(name="temp", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [datetime(2025, 1, 1, 12, 0)],  # naive datetime
@@ -300,7 +300,7 @@ def test_insert_batch_alias(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="compat", unit="dimensionless", data_class="actual")
+    td.create_series(name="compat", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
@@ -312,5 +312,5 @@ def test_insert_batch_alias(clean_db, sample_datetime):
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM actuals")
+            cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 1

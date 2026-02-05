@@ -111,8 +111,8 @@ class CreateSeriesRequest(BaseModel):
     description: Optional[str] = Field(None, description="Optional description of the series")
     unit: str = Field(default="dimensionless", description="Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')")
     labels: Dict[str, str] = Field(default_factory=dict, description="Labels to differentiate series with the same name (e.g., {'site': 'Gotland', 'turbine': 'T01'})")
-    data_class: str = Field(default="actual", description="'actual' for immutable facts or 'projection' for versioned forecasts")
-    storage_tier: str = Field(default="medium", description="'short', 'medium', or 'long' retention (only relevant for projections)")
+    data_class: str = Field(default="flat", description="'flat' for immutable facts or 'overlapping' for versioned forecasts")
+    retention: str = Field(default="medium", description="'short', 'medium', or 'long' retention (only relevant for overlapping)")
 
 
 class CreateSeriesResponse(BaseModel):
@@ -127,8 +127,8 @@ class SeriesInfo(BaseModel):
     description: Optional[str] = None
     unit: str
     labels: Dict[str, str] = Field(default_factory=dict)
-    data_class: str = "actual"
-    storage_tier: str = "medium"
+    data_class: str = "flat"
+    retention: str = "medium"
 
 
 # FastAPI app
@@ -378,7 +378,7 @@ async def update_records(
     current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
-    Update one or more projection records (actuals are immutable).
+    Update one or more overlapping records (flat are immutable).
 
     This endpoint supports tri-state updates:
     - Omit a field to leave it unchanged
@@ -450,7 +450,7 @@ async def update_records(
                 "tenant_id": str(r["tenant_id"]),
                 "valid_time": r["valid_time"].isoformat(),
                 "series_id": str(r["series_id"]),
-                "projection_id": r.get("projection_id"),
+                "overlapping_id": r.get("overlapping_id"),
             }
             for r in outcome["updated"]
         ]
@@ -499,7 +499,7 @@ async def create_series(
                 unit=request.unit,
                 labels=request.labels,
                 data_class=request.data_class,
-                storage_tier=request.storage_tier,
+                retention=request.retention,
             )
 
         return CreateSeriesResponse(
@@ -531,29 +531,25 @@ async def list_timeseries(
             with conn.cursor() as cur:
                 if current_user:
                     tenant_id = uuid.UUID(current_user.tenant_id)
-                    # Get series that have data for this tenant (check both actuals and projections)
+                    # Get series that have data for this tenant (check both flat and overlapping)
                     cur.execute(
                         """
-                        SELECT DISTINCT s.series_id, s.name, s.description, s.unit, s.labels, s.data_class, s.storage_tier
+                        SELECT DISTINCT s.series_id, s.name, s.description, s.unit, s.labels, s.data_class, s.retention
                         FROM series_table s
                         WHERE s.series_id IN (
-                            SELECT DISTINCT series_id FROM actuals WHERE tenant_id = %s
+                            SELECT DISTINCT series_id FROM flat WHERE tenant_id = %s
                             UNION
-                            SELECT DISTINCT series_id FROM projections_short WHERE tenant_id = %s
-                            UNION
-                            SELECT DISTINCT series_id FROM projections_medium WHERE tenant_id = %s
-                            UNION
-                            SELECT DISTINCT series_id FROM projections_long WHERE tenant_id = %s
+                            SELECT DISTINCT series_id FROM all_overlapping_raw WHERE tenant_id = %s
                         )
                         ORDER BY s.name
                         """,
-                        (tenant_id, tenant_id, tenant_id, tenant_id)
+                        (tenant_id, tenant_id)
                     )
                 else:
                     # No authentication - return all series
                     cur.execute(
                         """
-                        SELECT series_id, name, description, unit, labels, data_class, storage_tier
+                        SELECT series_id, name, description, unit, labels, data_class, retention
                         FROM series_table
                         ORDER BY name
                         """
@@ -568,9 +564,9 @@ async def list_timeseries(
                     unit=unit,
                     labels=labels or {},
                     data_class=data_class,
-                    storage_tier=storage_tier,
+                    retention=retention,
                 )
-                for series_id, name, description, unit, labels, data_class, storage_tier in rows
+                for series_id, name, description, unit, labels, data_class, retention in rows
             }
             return result
 

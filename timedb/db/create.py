@@ -8,12 +8,10 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 # This module creates the TimescaleDB schema for TimeDB:
 #   1) batches_table             → one row per batch
-#   2) series_table              → series metadata (name, unit, labels, data_class, storage_tier)
-#   3) actuals                   → hypertable for immutable fact data
-#   4) projections_short/medium/long → hypertables for versioned projections
-#   5) all_projections_raw       → unified view of all projection tiers
-#   6) latest_projections_*      → continuous aggregates for latest values
-#   7) latest_projection_curve   → unified API view across all tiers
+#   2) series_table              → series metadata (name, unit, labels, data_class, retention)
+#   3) flat                      → hypertable for immutable fact data
+#   4) overlapping_short/medium/long → independent hypertables per retention tier
+#   5) all_overlapping_raw       → UNION ALL view across overlapping tables
 #
 # The script is idempotent (safe to run multiple times).
 # Split into two parts because TimescaleDB features require autocommit.
@@ -53,7 +51,7 @@ def create_schema(conninfo: str) -> None:
     Creates (or updates) the database schema (TimescaleDB version).
 
     - Part 1: Tables and indexes (runs in a transaction)
-    - Part 2: Hypertable, compression, continuous aggregates (requires autocommit)
+    - Part 2: Hypertables, compression, retention policies (requires autocommit)
     - Safe to run multiple times
     - Should typically be run at service startup or via a migration step
     """
@@ -88,6 +86,11 @@ def create_schema(conninfo: str) -> None:
                 except psycopg.errors.DuplicateTable:
                     # Table/view already exists - ignore
                     pass
+                except psycopg.errors.FeatureNotSupported:
+                    # create_hypertable on partition children may fail on
+                    # some TimescaleDB versions - log and continue
+                    first_sql = non_comment_lines[0][:60] if non_comment_lines else statement[:60]
+                    print(f"  Skipped (not supported): {first_sql}...")
                 except Exception as e:
                     err_msg = str(e).lower()
                     # Log but continue for IF NOT EXISTS statements

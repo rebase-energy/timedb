@@ -1,6 +1,8 @@
 -- TimeDB Schema - Part 1: Tables and Indexes
 -- This part runs inside a transaction.
 
+BEGIN;
+
 -- Ensure the extension is available
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
@@ -30,24 +32,24 @@ CREATE TABLE IF NOT EXISTS series_table (
   unit          text NOT NULL,
   labels        jsonb NOT NULL DEFAULT '{}',
   description   text,
-  data_class    text NOT NULL DEFAULT 'projection',
-  storage_tier  text NOT NULL DEFAULT 'medium',
+  data_class    text NOT NULL DEFAULT 'overlapping',
+  retention     text NOT NULL DEFAULT 'medium',
   inserted_at   timestamptz NOT NULL DEFAULT now(),
 
   CONSTRAINT series_identity_uniq UNIQUE (name, labels),
   CONSTRAINT series_name_not_empty CHECK (length(btrim(name)) > 0),
-  CONSTRAINT valid_data_class CHECK (data_class IN ('actual', 'projection')),
-  CONSTRAINT valid_storage_tier CHECK (storage_tier IN ('short', 'medium', 'long'))
+  CONSTRAINT valid_data_class CHECK (data_class IN ('flat', 'overlapping')),
+  CONSTRAINT valid_retention CHECK (retention IN ('short', 'medium', 'long'))
 );
 CREATE INDEX IF NOT EXISTS series_labels_gin_idx ON series_table USING GIN (labels);
 
 
 -- ============================================================================
--- 2) ACTUALS (Fact Table)
+-- 2) FLAT (Fact Table)
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS actuals (
-  actual_id       bigserial,
+CREATE TABLE IF NOT EXISTS flat (
+  flat_id         bigserial,
   tenant_id       uuid NOT NULL,
   series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
@@ -60,84 +62,26 @@ CREATE TABLE IF NOT EXISTS actuals (
   change_time     timestamptz NOT NULL DEFAULT now(),
   inserted_at     timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT valid_time_interval_check_actuals
+  CONSTRAINT valid_time_interval_check_flat
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  CONSTRAINT annotation_not_empty_actuals
+  CONSTRAINT annotation_not_empty_flat
     CHECK (annotation IS NULL OR length(btrim(annotation)) > 0),
-  CONSTRAINT tags_not_empty_array_actuals
+  CONSTRAINT tags_not_empty_array_flat
     CHECK (tags IS NULL OR cardinality(tags) > 0),
   UNIQUE (tenant_id, series_id, valid_time)
 );
 
 
 -- ============================================================================
--- 3) PROJECTIONS: LONG (5 Years)
+-- 3) OVERLAPPING HYPERTABLES (Independent Tables)
 -- ============================================================================
+-- Each tier is an independent table that will be converted to a hypertable
+-- in Part 2. Application-level routing directs inserts to the correct table
+-- based on series_table.retention.
 
-CREATE TABLE IF NOT EXISTS projections_long (
-  projection_id   bigserial,
-  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
-  tenant_id       uuid NOT NULL,
-  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
-  valid_time      timestamptz NOT NULL,
-  valid_time_end  timestamptz,
-  value           double precision,
-  known_time      timestamptz NOT NULL,
-  annotation      text,
-  metadata        jsonb,
-  tags            text[],
-  changed_by      text,
-  change_time     timestamptz NOT NULL DEFAULT now(),
-
-  CONSTRAINT valid_time_interval_check_long
-    CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  CONSTRAINT annotation_not_empty_long
-    CHECK (annotation IS NULL OR length(btrim(annotation)) > 0),
-  CONSTRAINT tags_not_empty_array_long
-    CHECK (tags IS NULL OR cardinality(tags) > 0)
-);
-
-CREATE INDEX IF NOT EXISTS long_lookup_idx
-  ON projections_long (tenant_id, series_id, valid_time, known_time DESC);
-
-
--- ============================================================================
--- 4) PROJECTIONS: MEDIUM (3 Years)
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS projections_medium (
-  projection_id   bigserial,
-  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
-  tenant_id       uuid NOT NULL,
-  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
-  valid_time      timestamptz NOT NULL,
-  valid_time_end  timestamptz,
-  value           double precision,
-  known_time      timestamptz NOT NULL,
-  annotation      text,
-  metadata        jsonb,
-  tags            text[],
-  changed_by      text,
-  change_time     timestamptz NOT NULL DEFAULT now(),
-
-  CONSTRAINT valid_time_interval_check_med
-    CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  CONSTRAINT annotation_not_empty_med
-    CHECK (annotation IS NULL OR length(btrim(annotation)) > 0),
-  CONSTRAINT tags_not_empty_array_med
-    CHECK (tags IS NULL OR cardinality(tags) > 0)
-);
-
-CREATE INDEX IF NOT EXISTS medium_lookup_idx
-  ON projections_medium (tenant_id, series_id, valid_time, known_time DESC);
-
-
--- ============================================================================
--- 5) PROJECTIONS: SHORT (6 Months)
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS projections_short (
-  projection_id   bigserial,
+-- TIER 1: SHORT (6 Months retention)
+CREATE TABLE IF NOT EXISTS overlapping_short (
+  overlapping_id  bigserial,
   batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
   tenant_id       uuid NOT NULL,
   series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
@@ -153,11 +97,70 @@ CREATE TABLE IF NOT EXISTS projections_short (
 
   CONSTRAINT valid_time_interval_check_short
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  CONSTRAINT annotation_not_empty_short
-    CHECK (annotation IS NULL OR length(btrim(annotation)) > 0),
-  CONSTRAINT tags_not_empty_array_short
-    CHECK (tags IS NULL OR cardinality(tags) > 0)
+  UNIQUE (tenant_id, series_id, valid_time, known_time)
 );
 
-CREATE INDEX IF NOT EXISTS short_lookup_idx
-  ON projections_short (tenant_id, series_id, valid_time, known_time DESC);
+-- TIER 2: MEDIUM (3 Years retention)
+CREATE TABLE IF NOT EXISTS overlapping_medium (
+  overlapping_id  bigserial,
+  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  tenant_id       uuid NOT NULL,
+  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
+  valid_time      timestamptz NOT NULL,
+  valid_time_end  timestamptz,
+  value           double precision,
+  known_time      timestamptz NOT NULL,
+  annotation      text,
+  metadata        jsonb,
+  tags            text[],
+  changed_by      text,
+  change_time     timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT valid_time_interval_check_medium
+    CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
+  UNIQUE (tenant_id, series_id, valid_time, known_time)
+);
+
+-- TIER 3: LONG (5 Years retention)
+CREATE TABLE IF NOT EXISTS overlapping_long (
+  overlapping_id  bigserial,
+  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  tenant_id       uuid NOT NULL,
+  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
+  valid_time      timestamptz NOT NULL,
+  valid_time_end  timestamptz,
+  value           double precision,
+  known_time      timestamptz NOT NULL,
+  annotation      text,
+  metadata        jsonb,
+  tags            text[],
+  changed_by      text,
+  change_time     timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT valid_time_interval_check_long
+    CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
+  UNIQUE (tenant_id, series_id, valid_time, known_time)
+);
+
+
+-- ============================================================================
+-- 4) INDEXES ON OVERLAPPING TABLES
+-- ============================================================================
+
+CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (tenant_id, series_id, valid_time, known_time DESC);
+CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (tenant_id, series_id, valid_time, known_time DESC);
+CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (tenant_id, series_id, valid_time, known_time DESC);
+
+
+-- ============================================================================
+-- 5) UNIFIED OVERLAPPING VIEW
+-- ============================================================================
+
+CREATE OR REPLACE VIEW all_overlapping_raw AS
+SELECT *, 'short'  as retention FROM overlapping_short
+UNION ALL
+SELECT *, 'medium' as retention FROM overlapping_medium
+UNION ALL
+SELECT *, 'long'   as retention FROM overlapping_long;
+
+COMMIT;

@@ -1,8 +1,8 @@
 """
-Concurrency-safe tri-state update API for versioned time-series projections.
+Concurrency-safe tri-state update API for versioned time-series (overlapping mode).
 
 Key conventions:
- - Updates only apply to projections (actuals are immutable facts).
+ - Updates only apply to overlapping series (flat are immutable facts).
  - At the Python API level, every updatable field is tri-state:
      Omit field => leave unchanged (field not provided)
      None      => explicitly set SQL NULL (clear)
@@ -10,7 +10,7 @@ Key conventions:
  - No-op updates (canonicalized new == canonicalized current) are skipped.
  - Values must be in the canonical unit for the series.
 
-Updates insert a new row with a new known_time (now()) into the same projection table.
+Updates insert a new row with a new known_time (now()) into the same overlapping table.
 The latest value is determined by ORDER BY known_time DESC.
 """
 from __future__ import annotations
@@ -22,11 +22,10 @@ import datetime as dt
 import psycopg
 from psycopg.rows import dict_row
 
-# Mapping from storage_tier to table name
-_PROJECTION_TABLES = {
-    "short": "projections_short",
-    "medium": "projections_medium",
-    "long": "projections_long",
+_OVERLAPPING_TABLES = {
+    "short":  "overlapping_short",
+    "medium": "overlapping_medium",
+    "long":   "overlapping_long",
 }
 
 # -----------------------------------------------------------------------------
@@ -94,25 +93,27 @@ def _canonicalize_annotation_stored(annotation) -> Optional[str]:
     return s or None
 
 
-def _get_projection_table(conn: psycopg.Connection, series_id: uuid.UUID) -> str:
-    """Look up the storage_tier for a series and return the projection table name."""
+def _validate_overlapping_series(conn: psycopg.Connection, series_id: uuid.UUID) -> str:
+    """Verify that a series exists and is overlapping.
+
+    Returns the target table name (e.g. 'overlapping_medium').
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT data_class, storage_tier FROM series_table WHERE series_id = %s",
+            "SELECT data_class, retention FROM series_table WHERE series_id = %s",
             (series_id,),
         )
         row = cur.fetchone()
     if row is None:
         raise ValueError(f"Series {series_id} not found")
-    data_class, storage_tier = row
-    if data_class != "projection":
+    if row[0] != "overlapping":
         raise ValueError(
-            f"Series {series_id} has data_class='{data_class}'. "
-            f"Only projections support versioned updates."
+            f"Series {series_id} has data_class='{row[0]}'."
+            f"Only overlapping support versioned updates."
         )
-    table = _PROJECTION_TABLES.get(storage_tier)
+    table = _OVERLAPPING_TABLES.get(row[1])
     if table is None:
-        raise ValueError(f"Invalid storage_tier '{storage_tier}' for series {series_id}")
+        raise ValueError(f"Unknown retention '{row[1]}' for series {series_id}")
     return table
 
 
@@ -125,17 +126,18 @@ def update_records(
     updates: List[Dict[str, Any]],
 ) -> Dict[str, List]:
     """
-    Batch, concurrency-safe versioned updates for projection values.
+    Batch, concurrency-safe versioned updates for overlapping values.
 
-    Updates insert a new row with a new known_time (now()) into the appropriate
-    projections table. The latest value is determined by ORDER BY known_time DESC.
+    Updates insert a new row with a new known_time (now()) into the correct
+    overlapping table (short/medium/long) based on the series' retention.
+    The latest value is determined by ORDER BY known_time DESC.
 
     Args:
         conn: Database connection
         updates: List of update dictionaries. Each dictionary must contain EITHER:
-            Option 1 (by projection_id):
-            - projection_id (int): The projection_id of the row to update
-            - series_id (uuid.UUID): Series identifier (needed to determine table)
+            Option 1 (by overlapping_id):
+            - overlapping_id (int): The overlapping_id of the row to update
+            - series_id (uuid.UUID): Series identifier
             - value (float, optional): New value (omit to leave unchanged, None to clear)
             - annotation (str, optional): Annotation text (omit to leave unchanged, None to clear)
             - tags (list[str], optional): Tags (omit to leave unchanged, None to clear)
@@ -162,29 +164,28 @@ def update_records(
     updated: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
 
-    # Cache table lookups
-    table_cache: Dict[uuid.UUID, str] = {}
-
-    def _get_table(series_id: uuid.UUID) -> str:
-        if series_id not in table_cache:
-            table_cache[series_id] = _get_projection_table(conn, series_id)
-        return table_cache[series_id]
+    # Cache series validation + table routing
+    series_table_map: Dict[uuid.UUID, str] = {}
 
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
             for u in updates:
                 series_id = u.get("series_id")
                 if series_id is None:
-                    raise ValueError("Each update must include 'series_id' to determine the projection table.")
+                    raise ValueError("Each update must include 'series_id'.")
                 if isinstance(series_id, str):
                     series_id = uuid.UUID(series_id)
 
-                table = _get_table(series_id)
+                if series_id not in series_table_map:
+                    table = _validate_overlapping_series(conn, series_id)
+                    series_table_map[series_id] = table
 
-                if "projection_id" in u:
-                    _process_update_by_id(cur, table, u, updated, skipped)
+                target_table = series_table_map[series_id]
+
+                if "overlapping_id" in u:
+                    _process_update_by_id(cur, target_table, u, updated, skipped)
                 else:
-                    _process_update_by_key(cur, table, u, updated, skipped)
+                    _process_update_by_key(cur, target_table, u, updated, skipped)
 
     return {"updated": updated, "skipped_no_ops": skipped}
 
@@ -196,21 +197,21 @@ def _process_update_by_id(
     updated: List[Dict[str, Any]],
     skipped: List[Dict[str, Any]],
 ) -> None:
-    """Process an update by projection_id."""
-    projection_id = u["projection_id"]
+    """Process an update by overlapping_id."""
+    overlapping_id = u["overlapping_id"]
 
     cur.execute(
         f"""
-        SELECT projection_id, batch_id, tenant_id, valid_time, valid_time_end,
+        SELECT overlapping_id, batch_id, tenant_id, valid_time, valid_time_end,
                series_id, value, known_time, annotation, metadata, tags, changed_by
         FROM {table}
-        WHERE projection_id = %(projection_id)s
+        WHERE overlapping_id = %(overlapping_id)s
         """,
-        {"projection_id": projection_id},
+        {"overlapping_id": overlapping_id},
     )
     current = cur.fetchone()
     if current is None:
-        raise ValueError(f"No row found with projection_id={projection_id} in {table}")
+        raise ValueError(f"No row found with overlapping_id={overlapping_id} in {table}")
 
     # Resolve tri-state fields
     new_value = u.get("value", _UNSET)
@@ -245,7 +246,7 @@ def _process_update_by_id(
             and new_annotation == current_annotation_canonical
             and new_tags == current_tags_canonical
             and new_changed_by == current["changed_by"]):
-        skipped.append({"projection_id": projection_id})
+        skipped.append({"overlapping_id": overlapping_id})
         return
 
     cur.execute(
@@ -258,7 +259,7 @@ def _process_update_by_id(
             %(batch_id)s, %(tenant_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
             %(value)s, now(), %(annotation)s, %(metadata)s, %(tags)s, %(changed_by)s
         )
-        RETURNING projection_id
+        RETURNING overlapping_id
         """,
         {
             "batch_id": current["batch_id"],
@@ -273,9 +274,9 @@ def _process_update_by_id(
             "changed_by": new_changed_by,
         },
     )
-    new_id = cur.fetchone()["projection_id"]
+    new_id = cur.fetchone()["overlapping_id"]
     updated.append({
-        "projection_id": new_id,
+        "overlapping_id": new_id,
         "batch_id": current["batch_id"],
         "tenant_id": current["tenant_id"],
         "valid_time": current["valid_time"],
@@ -318,7 +319,7 @@ def _process_update_by_key(
 
     cur.execute(
         f"""
-        SELECT projection_id, value, valid_time_end, annotation, metadata, tags, changed_by
+        SELECT overlapping_id, value, valid_time_end, annotation, metadata, tags, changed_by
         FROM {table}
         WHERE batch_id = %(batch_id)s
           AND tenant_id = %(tenant_id)s
@@ -394,7 +395,7 @@ def _process_update_by_key(
             %(batch_id)s, %(tenant_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
             %(value)s, now(), %(annotation)s, %(metadata)s, %(tags)s, %(changed_by)s
         )
-        RETURNING projection_id
+        RETURNING overlapping_id
         """,
         {
             "batch_id": batch_id,
@@ -409,9 +410,9 @@ def _process_update_by_key(
             "changed_by": new_changed_by,
         },
     )
-    new_id = cur.fetchone()["projection_id"]
+    new_id = cur.fetchone()["overlapping_id"]
     updated.append({
-        "projection_id": new_id,
+        "overlapping_id": new_id,
         "batch_id": batch_id,
         "tenant_id": tenant_id,
         "valid_time": valid_time,

@@ -1,4 +1,4 @@
-"""Tests for updating projection records."""
+"""Tests for updating overlapping records."""
 import os
 import pytest
 import psycopg
@@ -7,14 +7,14 @@ import pandas as pd
 from timedb import TimeDataClient
 
 
-def _setup_projection_series(clean_db, sample_datetime):
-    """Helper: create a projection series, insert one value, return (td, result, series_id)."""
+def _setup_overlapping_series(clean_db, sample_datetime):
+    """Helper: create a overlapping series, insert one value, return (td, result, series_id)."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
@@ -30,9 +30,9 @@ def _setup_projection_series(clean_db, sample_datetime):
 # Update value tests
 # =============================================================================
 
-def test_update_projection_value(clean_db, sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime):
-    """Test updating a projection's value creates a new version."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+def test_update_overlapping_value(clean_db, sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime):
+    """Test updating a overlapping's value creates a new version."""
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     record_update = {
         "batch_id": result.batch_id,
@@ -53,7 +53,7 @@ def test_update_projection_value(clean_db, sample_batch_id, sample_tenant_id, sa
             cur.execute(
                 """
                 SELECT value, changed_by
-                FROM projections_medium
+                FROM overlapping_medium
                 WHERE batch_id = %s AND series_id = %s
                 ORDER BY known_time DESC
                 LIMIT 1
@@ -66,9 +66,9 @@ def test_update_projection_value(clean_db, sample_batch_id, sample_tenant_id, sa
             assert row[1] == "test-user"
 
 
-def test_update_projection_annotation_only(clean_db, sample_datetime):
+def test_update_overlapping_annotation_only(clean_db, sample_datetime):
     """Test updating only the annotation, leaving value unchanged."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     record_update = {
         "batch_id": result.batch_id,
@@ -88,7 +88,7 @@ def test_update_projection_annotation_only(clean_db, sample_datetime):
             cur.execute(
                 """
                 SELECT value, annotation
-                FROM projections_medium
+                FROM overlapping_medium
                 WHERE batch_id = %s AND series_id = %s
                 ORDER BY known_time DESC
                 LIMIT 1
@@ -100,9 +100,9 @@ def test_update_projection_annotation_only(clean_db, sample_datetime):
             assert row[1] == "Updated annotation"
 
 
-def test_update_projection_tags(clean_db, sample_datetime):
-    """Test updating tags on a projection."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+def test_update_overlapping_tags(clean_db, sample_datetime):
+    """Test updating tags on a overlapping."""
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     record_update = {
         "batch_id": result.batch_id,
@@ -122,7 +122,7 @@ def test_update_projection_tags(clean_db, sample_datetime):
             cur.execute(
                 """
                 SELECT tags
-                FROM projections_medium
+                FROM overlapping_medium
                 WHERE batch_id = %s AND series_id = %s
                 ORDER BY known_time DESC
                 LIMIT 1
@@ -134,9 +134,9 @@ def test_update_projection_tags(clean_db, sample_datetime):
             assert set(row[0]) == {"reviewed", "validated"}
 
 
-def test_update_projection_clear_tags(clean_db, sample_datetime):
+def test_update_overlapping_clear_tags(clean_db, sample_datetime):
     """Test clearing tags by setting to empty list."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     # First add tags
     td.update_records(updates=[{
@@ -164,7 +164,7 @@ def test_update_projection_clear_tags(clean_db, sample_datetime):
             cur.execute(
                 """
                 SELECT tags
-                FROM projections_medium
+                FROM overlapping_medium
                 WHERE batch_id = %s AND series_id = %s
                 ORDER BY known_time DESC
                 LIMIT 1
@@ -177,7 +177,7 @@ def test_update_projection_clear_tags(clean_db, sample_datetime):
 
 def test_update_no_op_skipped(clean_db, sample_datetime):
     """Test that no-op updates are skipped."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     record_update = {
         "batch_id": result.batch_id,
@@ -200,7 +200,7 @@ def test_update_nonexistent_record_without_value(clean_db, sample_datetime):
 
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     # Insert a batch but no values for this specific valid_time
@@ -230,7 +230,7 @@ def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
 
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     # Insert initial data
@@ -259,8 +259,8 @@ def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
 # =============================================================================
 
 def test_update_via_collection(clean_db, sample_datetime):
-    """Test updating projections via the SeriesCollection API."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+    """Test updating overlappings via the SeriesCollection API."""
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     outcome = td.series("forecast").update_records(updates=[{
         "batch_id": result.batch_id,
@@ -276,7 +276,7 @@ def test_update_via_collection(clean_db, sample_datetime):
             cur.execute(
                 """
                 SELECT value, changed_by
-                FROM projections_medium
+                FROM overlapping_medium
                 WHERE batch_id = %s AND series_id = %s
                 ORDER BY known_time DESC
                 LIMIT 1
@@ -294,13 +294,13 @@ def test_update_via_collection(clean_db, sample_datetime):
 
 def test_update_creates_new_version(clean_db, sample_datetime):
     """Test that an update creates a new row (version) rather than modifying in place."""
-    td, result, series_id = _setup_projection_series(clean_db, sample_datetime)
+    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     # Initial: 1 row
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM projections_medium WHERE batch_id = %s AND series_id = %s",
+                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s AND series_id = %s",
                 (result.batch_id, series_id)
             )
             assert cur.fetchone()[0] == 1
@@ -318,7 +318,7 @@ def test_update_creates_new_version(clean_db, sample_datetime):
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM projections_medium WHERE batch_id = %s AND series_id = %s",
+                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s AND series_id = %s",
                 (result.batch_id, series_id)
             )
             assert cur.fetchone()[0] == 2
@@ -326,7 +326,7 @@ def test_update_creates_new_version(clean_db, sample_datetime):
             # Latest version should have the new value
             cur.execute(
                 """
-                SELECT value FROM projections_medium
+                SELECT value FROM overlapping_medium
                 WHERE batch_id = %s AND series_id = %s
                 ORDER BY known_time DESC LIMIT 1
                 """,

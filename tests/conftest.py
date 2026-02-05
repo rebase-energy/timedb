@@ -23,9 +23,8 @@ def clean_db(test_db_conninfo):
 
     Creates the full TimescaleDB schema including:
     - batches_table, series_table
-    - actuals (hypertable for immutable facts)
-    - projections_short/medium/long (hypertables for versioned projections)
-    - continuous aggregates and views
+    - flat (hypertable for immutable facts)
+    - overlapping_short/medium/long (hypertables for versioned overlapping)
     """
     # Delete existing schema if it exists
     delete.delete_schema(test_db_conninfo)

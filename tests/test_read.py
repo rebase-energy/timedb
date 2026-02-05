@@ -1,4 +1,4 @@
-"""Tests for reading actuals and projections."""
+"""Tests for reading flat and overlapping."""
 import os
 import pytest
 import pandas as pd
@@ -9,16 +9,16 @@ from timedb.db import read
 
 
 # =============================================================================
-# Read actuals tests
+# Read flat tests
 # =============================================================================
 
-def test_read_actuals_via_sdk(clean_db, sample_datetime):
-    """Test reading actuals via SDK returns a pivoted DataFrame."""
+def test_read_flat_via_sdk(clean_db, sample_datetime):
+    """Test reading flat via SDK returns a pivoted DataFrame."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temperature", unit="dimensionless", data_class="actual")
-    td.create_series(name="humidity", unit="dimensionless", data_class="actual")
+    td.create_series(name="temperature", unit="dimensionless", data_class="flat")
+    td.create_series(name="humidity", unit="dimensionless", data_class="flat")
 
     df_temp = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -32,7 +32,7 @@ def test_read_actuals_via_sdk(clean_db, sample_datetime):
     })
     td.series("humidity").insert(df=df_hum)
 
-    # Read all actuals via SDK
+    # Read all flat via SDK
     df = td.series("temperature").read(
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
@@ -43,12 +43,12 @@ def test_read_actuals_via_sdk(clean_db, sample_datetime):
     assert "valid_time" in df.index.names or df.index.name == "valid_time"
 
 
-def test_read_actuals_db_layer(clean_db, sample_datetime):
-    """Test reading actuals via the db.read layer."""
+def test_read_flat_db_layer(clean_db, sample_datetime):
+    """Test reading flat via the db.read layer."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", data_class="actual")
+    td.create_series(name="power", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -57,7 +57,7 @@ def test_read_actuals_db_layer(clean_db, sample_datetime):
     td.series("power").insert(df=df)
 
     # Read via db layer
-    result = read.read_actuals(
+    result = read.read_flat(
         clean_db,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
@@ -68,12 +68,12 @@ def test_read_actuals_db_layer(clean_db, sample_datetime):
     assert list(result.index.names) == ["valid_time", "series_id"]
 
 
-def test_read_actuals_filter_by_valid_time(clean_db, sample_datetime):
-    """Test filtering actuals by valid_time range."""
+def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
+    """Test filtering flat by valid_time range."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", data_class="actual")
+    td.create_series(name="power", unit="dimensionless", data_class="flat")
 
     df = pd.DataFrame({
         "valid_time": [
@@ -87,7 +87,7 @@ def test_read_actuals_filter_by_valid_time(clean_db, sample_datetime):
     td.series("power").insert(df=df)
 
     # Read only a subset
-    result = read.read_actuals(
+    result = read.read_flat(
         clean_db,
         start_valid=sample_datetime + timedelta(hours=1),
         end_valid=sample_datetime + timedelta(hours=3),
@@ -102,17 +102,17 @@ def test_read_actuals_filter_by_valid_time(clean_db, sample_datetime):
 
 
 # =============================================================================
-# Read projections tests
+# Read overlapping tests
 # =============================================================================
 
-def test_read_projections_latest_via_sdk(clean_db, sample_datetime):
-    """Test reading latest projections via SDK."""
+def test_read_overlapping_latest_via_sdk(clean_db, sample_datetime):
+    """Test reading latest overlapping via SDK."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="wind_forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
@@ -131,14 +131,14 @@ def test_read_projections_latest_via_sdk(clean_db, sample_datetime):
     assert len(result) == 2
 
 
-def test_read_projections_all_versions_via_sdk(clean_db, sample_datetime):
-    """Test reading all projection versions via SDK (versions=True)."""
+def test_read_overlapping_all_versions_via_sdk(clean_db, sample_datetime):
+    """Test reading all overlapping versions via SDK (versions=True)."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="wind_forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     # Insert first batch
@@ -170,14 +170,14 @@ def test_read_projections_all_versions_via_sdk(clean_db, sample_datetime):
     assert "known_time" in result.index.names
 
 
-def test_read_projections_all_versions_db_layer(clean_db, sample_datetime):
-    """Test reading all projection versions via the db.read layer."""
+def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
+    """Test reading all overlapping versions via the db.read layer."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     known_time_1 = sample_datetime
@@ -194,7 +194,7 @@ def test_read_projections_all_versions_db_layer(clean_db, sample_datetime):
     })
     td.series("forecast").insert(df=df2, known_time=known_time_2)
 
-    result = read.read_projections_all(
+    result = read.read_overlapping_all(
         clean_db,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=1),
@@ -205,14 +205,14 @@ def test_read_projections_all_versions_db_layer(clean_db, sample_datetime):
     assert list(result.index.names) == ["known_time", "valid_time", "series_id"]
 
 
-def test_read_projections_latest_picks_newest(clean_db, sample_datetime):
-    """Test that latest projections read picks the most recent known_time."""
+def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
+    """Test that latest overlapping read picks the most recent known_time."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="price", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     # Insert initial forecast
@@ -248,13 +248,13 @@ def test_read_projections_latest_picks_newest(clean_db, sample_datetime):
 # =============================================================================
 
 def test_read_values_between_flat_legacy(clean_db, sample_datetime):
-    """Test legacy read_values_between in flat mode reads from projections."""
+    """Test legacy read_values_between in flat mode reads from overlapping."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
@@ -275,13 +275,13 @@ def test_read_values_between_flat_legacy(clean_db, sample_datetime):
 
 
 def test_read_values_between_overlapping_legacy(clean_db, sample_datetime):
-    """Test legacy read_values_between in overlapping mode reads all projection versions."""
+    """Test legacy read_values_between in overlapping mode reads all overlapping versions."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
     td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
@@ -313,7 +313,7 @@ def test_read_overlapping_alias(clean_db, sample_datetime):
 
     td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="projection", storage_tier="medium",
+        data_class="overlapping", retention="medium",
     )
 
     df = pd.DataFrame({
