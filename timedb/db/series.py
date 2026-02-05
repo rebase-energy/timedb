@@ -16,8 +16,8 @@ def create_series(
     unit: str,
     labels: Optional[Dict[str, str]] = None,
     description: Optional[str] = None,
-    data_class: str = "actual",
-    storage_tier: str = "medium",
+    data_class: str = "flat",
+    retention: str = "medium",
 ) -> uuid.UUID:
     """
     Create a new time series.
@@ -30,23 +30,23 @@ def create_series(
         unit: Canonical unit for the series (e.g., 'MW', 'degC', 'dimensionless')
         labels: Dictionary of labels that differentiate this series (e.g., {"site": "Gotland", "turbine": "T01"})
         description: Optional description of the series
-        data_class: 'actual' or 'projection' (default: 'actual')
-        storage_tier: 'short', 'medium', or 'long' (default: 'medium', only relevant for projections)
+        data_class: 'flat' or 'overlapping' (default: 'flat')
+        retention: 'short', 'medium', or 'long' (default: 'medium', only relevant for overlapping)
 
     Returns:
         The series_id (UUID) for the newly created series
 
     Raises:
-        ValueError: If name or unit is empty, or if data_class/storage_tier are invalid
+        ValueError: If name or unit is empty, or if data_class/retention are invalid
     """
     if not name or not name.strip():
         raise ValueError("name cannot be empty")
     if not unit or not unit.strip():
         raise ValueError("unit cannot be empty")
-    if data_class not in ("actual", "projection"):
-        raise ValueError(f"data_class must be 'actual' or 'projection', got '{data_class}'")
-    if storage_tier not in ("short", "medium", "long"):
-        raise ValueError(f"storage_tier must be 'short', 'medium', or 'long', got '{storage_tier}'")
+    if data_class not in ("flat", "overlapping"):
+        raise ValueError(f"data_class must be 'flat' or 'overlapping', got '{data_class}'")
+    if retention not in ("short", "medium", "long"):
+        raise ValueError(f"retention must be 'short', 'medium', or 'long', got '{retention}'")
 
     # Normalize labels
     labels_dict = labels or {}
@@ -57,10 +57,10 @@ def create_series(
         description_value = description.strip() if description and description.strip() else None
         cur.execute(
             """
-            INSERT INTO series_table (series_id, name, unit, labels, description, data_class, storage_tier)
+            INSERT INTO series_table (series_id, name, unit, labels, description, data_class, retention)
             VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
             """,
-            (new_series_id, name.strip(), unit.strip(), labels_json, description_value, data_class, storage_tier)
+            (new_series_id, name.strip(), unit.strip(), labels_json, description_value, data_class, retention)
         )
     return new_series_id
 
@@ -73,8 +73,8 @@ def get_or_create_series(
     labels: Optional[Dict[str, str]] = None,
     series_id: Optional[uuid.UUID] = None,
     description: Optional[str] = None,
-    data_class: str = "actual",
-    storage_tier: str = "medium",
+    data_class: str = "flat",
+    retention: str = "medium",
 ) -> uuid.UUID:
     """
     Get an existing series or create a new one.
@@ -92,8 +92,8 @@ def get_or_create_series(
         labels: Dictionary of labels (e.g., {"site": "Gotland", "turbine": "T01"})
         series_id: Optional UUID. If provided, verifies it exists and matches.
         description: Optional description (only used when creating new series)
-        data_class: 'actual' or 'projection' (default: 'actual', only used when creating)
-        storage_tier: 'short', 'medium', or 'long' (default: 'medium', only used when creating)
+        data_class: 'flat' or 'overlapping' (default: 'flat', only used when creating)
+        retention: 'short', 'medium', or 'long' (default: 'medium', only used when creating)
 
     Returns:
         The series_id (UUID) for the series
@@ -122,10 +122,10 @@ def get_or_create_series(
                 description_value = description.strip() if description and description.strip() else None
                 cur.execute(
                     """
-                    INSERT INTO series_table (series_id, name, unit, labels, description, data_class, storage_tier)
+                    INSERT INTO series_table (series_id, name, unit, labels, description, data_class, retention)
                     VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
                     """,
-                    (series_id, name, unit, labels_json, description_value, data_class, storage_tier)
+                    (series_id, name, unit, labels_json, description_value, data_class, retention)
                 )
                 return series_id
 
@@ -176,10 +176,10 @@ def get_or_create_series(
         description_value = description.strip() if description and description.strip() else None
         cur.execute(
             """
-            INSERT INTO series_table (series_id, name, unit, labels, description, data_class, storage_tier)
+            INSERT INTO series_table (series_id, name, unit, labels, description, data_class, retention)
             VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
             """,
-            (new_series_id, name, unit, labels_json, description_value, data_class, storage_tier)
+            (new_series_id, name, unit, labels_json, description_value, data_class, retention)
         )
         return new_series_id
 
@@ -228,7 +228,7 @@ def get_series_info(
         series_id: The series UUID
 
     Returns:
-        Dictionary with keys: name, unit, labels, description, data_class, storage_tier
+        Dictionary with keys: name, unit, labels, description, data_class, retention
 
     Raises:
         ValueError: If series_id doesn't exist
@@ -236,7 +236,7 @@ def get_series_info(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT name, unit, labels, description, data_class, storage_tier
+            SELECT name, unit, labels, description, data_class, retention
             FROM series_table
             WHERE series_id = %s
             """,
@@ -251,7 +251,7 @@ def get_series_info(
             'labels': row[2] or {},
             'description': row[3],
             'data_class': row[4],
-            'storage_tier': row[5],
+            'retention': row[5],
         }
 
 

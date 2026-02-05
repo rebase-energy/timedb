@@ -2,15 +2,16 @@ import uuid
 import json
 from typing import Optional, Iterable, Tuple, Dict, List
 from datetime import datetime
+from collections import defaultdict
 import psycopg
+from psycopg import sql
 
-
-# Mapping from storage_tier to table name
-_PROJECTION_TABLES = {
-    "short": "projections_short",
-    "medium": "projections_medium",
-    "long": "projections_long",
+_OVERLAPPING_TABLES = {
+    "short":  "overlapping_short",
+    "medium": "overlapping_medium",
+    "long":   "overlapping_long",
 }
+
 
 
 def insert_batch(
@@ -102,29 +103,29 @@ def _lookup_series_routing(
     series_ids: List[uuid.UUID],
 ) -> Dict[uuid.UUID, Dict[str, str]]:
     """
-    Look up data_class and storage_tier for a list of series IDs.
+    Look up data_class and retention for a list of series IDs.
 
     Returns:
-        Dict mapping series_id -> {'data_class': ..., 'storage_tier': ...}
+        Dict mapping series_id -> {'data_class': ..., 'retention': ...}
     """
     if not series_ids:
         return {}
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT series_id, data_class, storage_tier FROM series_table WHERE series_id = ANY(%s)",
+            "SELECT series_id, data_class, retention FROM series_table WHERE series_id = ANY(%s)",
             (list(series_ids),),
         )
         rows = cur.fetchall()
-    return {row[0]: {"data_class": row[1], "storage_tier": row[2]} for row in rows}
+    return {row[0]: {"data_class": row[1], "retention": row[2]} for row in rows}
 
 
-def insert_actuals(
+def insert_flat(
     conn: psycopg.Connection,
     *,
     value_rows: Iterable[Tuple],
 ) -> None:
     """
-    Insert actual (fact) values into the actuals table.
+    Insert flat (fact) values into the flat table.
 
     Each row is: (tenant_id, valid_time, series_id, value)
     or with valid_time_end: (tenant_id, valid_time, valid_time_end, series_id, value)
@@ -144,7 +145,7 @@ def insert_actuals(
             tenant_id, valid_time, valid_time_end, series_id, value = item
         else:
             raise ValueError(
-                "Each actuals row must be "
+                "Each flat row must be "
                 "(tenant_id, valid_time, series_id, value) or "
                 "(tenant_id, valid_time, valid_time_end, series_id, value)"
             )
@@ -174,7 +175,7 @@ def insert_actuals(
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO actuals (tenant_id, series_id, valid_time, valid_time_end, value)
+            INSERT INTO flat (tenant_id, series_id, valid_time, valid_time_end, value)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (tenant_id, series_id, valid_time)
             DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end
@@ -183,16 +184,19 @@ def insert_actuals(
         )
 
 
-def insert_projections(
+def insert_overlapping(
     conn: psycopg.Connection,
     *,
     batch_id: uuid.UUID,
     known_time: datetime,
-    storage_tier: str,
     value_rows: Iterable[Tuple],
+    series_routing: Dict[uuid.UUID, Dict[str, str]],
 ) -> None:
     """
-    Insert projection values into the appropriate projections table.
+    Insert overlapping values into the correct tier table.
+
+    Routes rows to overlapping_short/medium/long based on the series'
+    retention from series_routing.
 
     Each row is: (tenant_id, valid_time, series_id, value)
     or with valid_time_end: (tenant_id, valid_time, valid_time_end, series_id, value)
@@ -200,15 +204,13 @@ def insert_projections(
     Args:
         conn: Database connection
         batch_id: UUID of the batch these values belong to
-        known_time: The known_time for these projections
-        storage_tier: 'short', 'medium', or 'long'
+        known_time: The known_time for these overlapping entries
         value_rows: Iterable of value tuples
+        series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}
     """
-    table = _PROJECTION_TABLES.get(storage_tier)
-    if table is None:
-        raise ValueError(f"Invalid storage_tier: {storage_tier}. Must be 'short', 'medium', or 'long'")
+    # Bucket rows by storage tier
+    by_tier: Dict[str, List[Tuple]] = defaultdict(list)
 
-    rows_list = []
     for item in value_rows:
         if len(item) == 4:
             tenant_id, valid_time, series_id, value = item
@@ -217,7 +219,7 @@ def insert_projections(
             tenant_id, valid_time, valid_time_end, series_id, value = item
         else:
             raise ValueError(
-                "Each projection row must be "
+                "Each overlapping row must be "
                 "(tenant_id, valid_time, series_id, value) or "
                 "(tenant_id, valid_time, valid_time_end, series_id, value)"
             )
@@ -239,19 +241,21 @@ def insert_projections(
             if not (valid_time_end > valid_time):
                 raise ValueError("valid_time_end must be strictly after valid_time")
 
-        rows_list.append((batch_id, tenant_id, series_id, valid_time, valid_time_end, value, known_time))
-
-    if not rows_list:
-        return
+        retention = series_routing[series_id]["retention"]
+        by_tier[retention].append(
+            (batch_id, tenant_id, series_id, valid_time, valid_time_end, value, known_time)
+        )
 
     with conn.cursor() as cur:
-        cur.executemany(
-            f"""
-            INSERT INTO {table} (batch_id, tenant_id, series_id, valid_time, valid_time_end, value, known_time)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            rows_list,
-        )
+        for tier, rows in by_tier.items():
+            table = _OVERLAPPING_TABLES[tier]
+            cur.executemany(
+                sql.SQL("""
+                INSERT INTO {} (batch_id, tenant_id, series_id, valid_time, valid_time_end, value, known_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """).format(sql.Identifier(table)),
+                rows,
+            )
 
 
 def insert_values(
@@ -264,7 +268,7 @@ def insert_values(
     changed_by: Optional[str] = None,
 ) -> None:
     """
-    Route and insert values to the correct table based on series data_class and storage_tier.
+    Route and insert values to the correct table based on series data_class and retention.
 
     Accepts rows in either of two shapes:
       - (tenant_id, valid_time, series_id, value)                       # point-in-time
@@ -275,12 +279,12 @@ def insert_values(
         batch_id: UUID of the batch these values belong to
         known_time: The known_time from the batch
         value_rows: Iterable of value tuples
-        series_routing: Dict mapping series_id -> {'data_class': ..., 'storage_tier': ...}
+        series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}
         changed_by: Optional user identifier
     """
-    # Separate rows by destination table
-    actuals_rows: List[Tuple] = []
-    projection_rows: Dict[str, List[Tuple]] = {"short": [], "medium": [], "long": []}
+    # Separate rows by data_class
+    flat_rows: List[Tuple] = []
+    overlapping_rows: List[Tuple] = []
 
     for item in value_rows:
         if len(item) == 4:
@@ -299,33 +303,30 @@ def insert_values(
         if routing is None:
             raise ValueError(f"No routing info for series_id {series_id}. Ensure it exists in series_table.")
 
-        if routing["data_class"] == "actual":
+        if routing["data_class"] == "flat":
             if valid_time_end is not None:
-                actuals_rows.append((tenant_id, valid_time, valid_time_end, series_id, value))
+                flat_rows.append((tenant_id, valid_time, valid_time_end, series_id, value))
             else:
-                actuals_rows.append((tenant_id, valid_time, series_id, value))
+                flat_rows.append((tenant_id, valid_time, series_id, value))
         else:
-            # Projections: (tenant_id, valid_time, series_id, value) or 5-tuple
-            tier = routing["storage_tier"]
             if valid_time_end is not None:
-                projection_rows[tier].append((tenant_id, valid_time, valid_time_end, series_id, value))
+                overlapping_rows.append((tenant_id, valid_time, valid_time_end, series_id, value))
             else:
-                projection_rows[tier].append((tenant_id, valid_time, series_id, value))
+                overlapping_rows.append((tenant_id, valid_time, series_id, value))
 
-    # Insert actuals
-    if actuals_rows:
-        insert_actuals(conn, value_rows=actuals_rows)
+    # Insert flat
+    if flat_rows:
+        insert_flat(conn, value_rows=flat_rows)
 
-    # Insert projections by tier
-    for tier, rows in projection_rows.items():
-        if rows:
-            insert_projections(
-                conn,
-                batch_id=batch_id,
-                known_time=known_time,
-                storage_tier=tier,
-                value_rows=rows,
-            )
+    # Insert overlapping (PostgreSQL partitioning routes by retention)
+    if overlapping_rows:
+        insert_overlapping(
+            conn,
+            batch_id=batch_id,
+            known_time=known_time,
+            value_rows=overlapping_rows,
+            series_routing=series_routing,
+        )
 
 
 def insert_batch_with_values(
@@ -345,7 +346,7 @@ def insert_batch_with_values(
     """
     One-shot helper: inserts the batch + all values atomically.
 
-    Routes values to actuals or projections tables based on series_routing.
+    Routes values to flat or overlapping tables based on series_routing.
 
     value_rows is expected to be an iterable where each item is either:
       - (tenant_id, valid_time, series_id, value),                      # point-in-time
@@ -361,7 +362,7 @@ def insert_batch_with_values(
         known_time: Time of knowledge
         batch_params: Optional parameters/config
         changed_by: Optional user identifier
-        series_routing: Dict mapping series_id -> {'data_class': ..., 'storage_tier': ...}.
+        series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}.
                        If None, will be looked up from the database.
     """
     # Materialize rows so we can iterate multiple times and extract series_ids
@@ -379,11 +380,11 @@ def insert_batch_with_values(
                         series_ids_in_rows.add(item[3])  # series_id at index 3
                 series_routing = _lookup_series_routing(conn, list(series_ids_in_rows))
 
-            # Check if any projections exist (need a batch for them)
-            has_projections = any(
+            # Check if any overlapping entries exist (need a batch for them)
+            has_overlapping = any(
                 series_routing.get(
                     item[2] if len(item) == 4 else item[3], {}
-                ).get("data_class") == "projection"
+                ).get("data_class") == "overlapping"
                 for item in rows_list
             )
 

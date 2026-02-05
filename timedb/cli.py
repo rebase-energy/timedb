@@ -197,8 +197,8 @@ def delete_tables(
             "This includes:\n"
             "  • batches_table\n"
             "  • series_table\n"
-            "  • actuals\n"
-            "  • projections_short / projections_medium / projections_long\n"
+            "  • flat\n"
+            "  • overlapping_short / overlapping_medium / overlapping_long\n"
             "  • users_table (if exists)\n"
             "  • All views and continuous aggregates",
             title="Destructive Operation",

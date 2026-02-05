@@ -67,7 +67,7 @@ def _build_where_clause(
     return where_clause, params
 
 
-def read_actuals(
+def read_flat(
     conninfo: str,
     *,
     tenant_id: Optional[uuid.UUID] = None,
@@ -76,7 +76,7 @@ def read_actuals(
     end_valid: Optional[datetime] = None,
 ) -> pd.DataFrame:
     """
-    Read actual (fact) values from the actuals table.
+    Read flat (fact) values from the flat table.
 
     Returns immutable fact data (meter readings, measurements).
 
@@ -96,7 +96,7 @@ def read_actuals(
         start_valid=start_valid,
         end_valid=end_valid,
         time_col="v.valid_time",
-        known_time_col="v.inserted_at",  # actuals don't have known_time
+        known_time_col="v.inserted_at",  # flat don't have known_time
     )
 
     sql = f"""
@@ -107,7 +107,7 @@ def read_actuals(
         s.name,
         s.unit,
         s.labels
-    FROM actuals v
+    FROM flat v
     JOIN series_table s ON v.series_id = s.series_id
     {where_clause}
     ORDER BY v.valid_time, v.series_id;
@@ -127,7 +127,7 @@ def read_actuals(
     return df
 
 
-def read_projections_latest(
+def read_overlapping_latest(
     conninfo: str,
     *,
     tenant_id: Optional[uuid.UUID] = None,
@@ -138,10 +138,10 @@ def read_projections_latest(
     end_known: Optional[datetime] = None,
 ) -> pd.DataFrame:
     """
-    Read latest projection values from the latest_projection_curve view.
+    Read latest overlapping values from the overlapping table.
 
     Returns the latest value for each (valid_time, series_id) combination,
-    pre-computed by the continuous aggregates.
+    determined by the most recent known_time via DISTINCT ON.
 
     Args:
         conninfo: Database connection string
@@ -149,8 +149,8 @@ def read_projections_latest(
         series_ids: Series UUID or list of UUIDs (optional)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
-        start_known: Start of generated_at range (optional)
-        end_known: End of generated_at range (optional)
+        start_known: Start of known_time range (optional)
+        end_known: End of known_time range (optional)
 
     Returns:
         DataFrame with index (valid_time, series_id) and columns (value, name, unit, labels)
@@ -162,22 +162,22 @@ def read_projections_latest(
         end_valid=end_valid,
         start_known=start_known,
         end_known=end_known,
-        time_col="v.bucket_time",
-        known_time_col="v.generated_at",
+        time_col="v.valid_time",
+        known_time_col="v.known_time",
     )
 
     sql = f"""
-    SELECT
-        v.bucket_time as valid_time,
+    SELECT DISTINCT ON (v.series_id, v.valid_time)
+        v.valid_time,
         v.value,
         v.series_id,
         s.name,
         s.unit,
         s.labels
-    FROM latest_projection_curve v
+    FROM all_overlapping_raw v
     JOIN series_table s ON v.series_id = s.series_id
     {where_clause}
-    ORDER BY v.bucket_time, v.series_id;
+    ORDER BY v.series_id, v.valid_time, v.known_time DESC;
     """
 
     import warnings
@@ -194,7 +194,7 @@ def read_projections_latest(
     return df
 
 
-def read_projections_all(
+def read_overlapping_all(
     conninfo: str,
     *,
     tenant_id: Optional[uuid.UUID] = None,
@@ -205,7 +205,7 @@ def read_projections_all(
     end_known: Optional[datetime] = None,
 ) -> pd.DataFrame:
     """
-    Read all projection versions from the all_projections_raw view.
+    Read all overlapping versions from the overlapping table.
 
     Returns all versions of forecasts, showing how predictions evolve over time.
     Useful for analyzing forecast revisions and backtesting.
@@ -242,7 +242,7 @@ def read_projections_all(
         s.name,
         s.unit,
         s.labels
-    FROM all_projections_raw v
+    FROM all_overlapping_raw v
     JOIN series_table s ON v.series_id = s.series_id
     {where_clause}
     ORDER BY v.known_time, v.valid_time, v.series_id;
@@ -263,7 +263,7 @@ def read_projections_all(
     return df
 
 
-# Legacy wrappers for backward compatibility
+# Combined read functions (query both flat and overlapping)
 def read_values_flat(
     conninfo: str,
     *,
@@ -275,8 +275,25 @@ def read_values_flat(
     end_known: Optional[datetime] = None,
     return_value_id: bool = False,
 ) -> pd.DataFrame:
-    """Legacy wrapper. Reads latest projections from latest_projection_curve."""
-    return read_projections_latest(
+    """Read latest values from both flat and overlapping.
+
+    In flat mode, returns one value per (valid_time, series_id):
+    - Flat: immutable facts (one value per timestamp)
+    - Overlapping: latest version by known_time
+    """
+    # Read flat (skip if filtering by known_time since flat don't have it)
+    df_flat = pd.DataFrame()
+    if start_known is None and end_known is None:
+        df_flat = read_flat(
+            conninfo,
+            tenant_id=tenant_id,
+            series_ids=series_ids,
+            start_valid=start_valid,
+            end_valid=end_valid,
+        )
+
+    # Read latest overlapping
+    df_overlapping = read_overlapping_latest(
         conninfo,
         tenant_id=tenant_id,
         series_ids=series_ids,
@@ -285,6 +302,14 @@ def read_values_flat(
         start_known=start_known,
         end_known=end_known,
     )
+
+    # Combine results
+    if len(df_flat) == 0:
+        return df_overlapping
+    elif len(df_overlapping) == 0:
+        return df_flat
+    else:
+        return pd.concat([df_flat, df_overlapping]).sort_index()
 
 
 def read_values_overlapping(
@@ -297,8 +322,59 @@ def read_values_overlapping(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> pd.DataFrame:
-    """Legacy wrapper. Reads all projection versions from all_projections_raw."""
-    return read_projections_all(
+    """Read all versions from both flat and overlapping.
+
+    In overlapping mode, returns all versions with known_time:
+    - Flat: single version per timestamp (inserted_at as known_time)
+    - Overlapping: all versions with their known_time
+    """
+    # Read flat (skip if filtering by known_time)
+    df_flat = pd.DataFrame()
+    if start_known is None and end_known is None:
+        df_flat_raw = read_flat(
+            conninfo,
+            tenant_id=tenant_id,
+            series_ids=series_ids,
+            start_valid=start_valid,
+            end_valid=end_valid,
+        )
+        # Add known_time level for flat using inserted_at from the table
+        if len(df_flat_raw) > 0:
+            # Query flat with inserted_at to use as known_time
+            where_clause, params = _build_where_clause(
+                tenant_id=tenant_id,
+                series_ids=series_ids,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                time_col="v.valid_time",
+                known_time_col="v.inserted_at",
+            )
+            sql = f"""
+            SELECT
+                v.inserted_at as known_time,
+                v.valid_time,
+                v.value,
+                v.series_id,
+                s.name,
+                s.unit,
+                s.labels
+            FROM flat v
+            JOIN series_table s ON v.series_id = s.series_id
+            {where_clause}
+            ORDER BY v.inserted_at, v.valid_time, v.series_id;
+            """
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+                with psycopg.connect(conninfo) as conn:
+                    df_flat = pd.read_sql(sql, conn, params=params)
+            if len(df_flat) > 0:
+                df_flat["known_time"] = pd.to_datetime(df_flat["known_time"], utc=True)
+                df_flat["valid_time"] = pd.to_datetime(df_flat["valid_time"], utc=True)
+                df_flat = df_flat.set_index(["known_time", "valid_time", "series_id"]).sort_index()
+
+    # Read all overlapping versions
+    df_overlapping = read_overlapping_all(
         conninfo,
         tenant_id=tenant_id,
         series_ids=series_ids,
@@ -307,6 +383,14 @@ def read_values_overlapping(
         start_known=start_known,
         end_known=end_known,
     )
+
+    # Combine results
+    if len(df_flat) == 0:
+        return df_overlapping
+    elif len(df_overlapping) == 0:
+        return df_flat
+    else:
+        return pd.concat([df_flat, df_overlapping]).sort_index()
 
 
 def read_values_between(
@@ -320,9 +404,9 @@ def read_values_between(
     end_known: Optional[datetime] = None,
     mode: Literal["flat", "overlapping"] = "flat",
 ) -> pd.DataFrame:
-    """Legacy wrapper function."""
+    """Read values from both flat and overlapping with mode selection."""
     if mode == "flat":
-        return read_projections_latest(
+        return read_values_flat(
             conninfo,
             tenant_id=tenant_id,
             series_ids=series_ids,
@@ -332,7 +416,7 @@ def read_values_between(
             end_known=end_known,
         )
     elif mode == "overlapping":
-        return read_projections_all(
+        return read_values_overlapping(
             conninfo,
             tenant_id=tenant_id,
             series_ids=series_ids,
@@ -347,5 +431,5 @@ def read_values_between(
 
 if __name__ == "__main__":
     conninfo = os.environ["DATABASE_URL"]
-    df = read_projections_latest(conninfo)
+    df = read_overlapping_latest(conninfo)
     print(df)
