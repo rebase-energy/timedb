@@ -35,6 +35,9 @@ dependencies = [
   "notebook>=7.5.2",
   "pytest>=8.4.2",
   "seaborn>=0.13.2",
+  "sphinx>=7.4.7",
+  "nbsphinx>=0.9.8",
+  "sphinx-rtd-theme>=3.1.0",
 ]
 
 # expose the CLI command 'timedb' which points to the Typer app in timedb/cli.py

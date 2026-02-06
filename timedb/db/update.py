@@ -1,8 +1,10 @@
 """
-Concurrency-safe tri-state update API for versioned time-series (overlapping mode).
+Concurrency-safe tri-state update API for time-series data.
 
 Key conventions:
- - Updates only apply to overlapping series (flat are immutable facts).
+ - Both flat and overlapping series can be updated.
+ - Flat: in-place update (no versioning)
+ - Overlapping: creates new row with known_time=now() (versioned)
  - At the Python API level, every updatable field is tri-state:
      Omit field => leave unchanged (field not provided)
      None      => explicitly set SQL NULL (clear)
@@ -10,8 +12,7 @@ Key conventions:
  - No-op updates (canonicalized new == canonicalized current) are skipped.
  - Values must be in the canonical unit for the series.
 
-Updates insert a new row with a new known_time (now()) into the same overlapping table.
-The latest value is determined by ORDER BY known_time DESC.
+For overlapping updates, the latest value is determined by ORDER BY known_time DESC.
 """
 from __future__ import annotations
 
@@ -93,10 +94,13 @@ def _canonicalize_annotation_stored(annotation) -> Optional[str]:
     return s or None
 
 
-def _validate_overlapping_series(conn: psycopg.Connection, series_id: uuid.UUID) -> str:
-    """Verify that a series exists and is overlapping.
+def _get_series_routing(conn: psycopg.Connection, series_id: uuid.UUID) -> Tuple[str, Optional[str]]:
+    """Get routing info for a series.
 
-    Returns the target table name (e.g. 'overlapping_medium').
+    Returns:
+        Tuple of (data_class, table_name).
+        - For flat: ("flat", "flat")
+        - For overlapping: ("overlapping", "overlapping_medium") etc.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -106,15 +110,17 @@ def _validate_overlapping_series(conn: psycopg.Connection, series_id: uuid.UUID)
         row = cur.fetchone()
     if row is None:
         raise ValueError(f"Series {series_id} not found")
-    if row[0] != "overlapping":
-        raise ValueError(
-            f"Series {series_id} has data_class='{row[0]}'."
-            f"Only overlapping support versioned updates."
-        )
-    table = _OVERLAPPING_TABLES.get(row[1])
-    if table is None:
-        raise ValueError(f"Unknown retention '{row[1]}' for series {series_id}")
-    return table
+
+    data_class = row[0]
+    if data_class == "flat":
+        return ("flat", "flat")
+    elif data_class == "overlapping":
+        table = _OVERLAPPING_TABLES.get(row[1])
+        if table is None:
+            raise ValueError(f"Unknown retention '{row[1]}' for series {series_id}")
+        return ("overlapping", table)
+    else:
+        raise ValueError(f"Unknown data_class '{data_class}' for series {series_id}")
 
 
 # -----------------------------------------------------------------------------
@@ -126,31 +132,36 @@ def update_records(
     updates: List[Dict[str, Any]],
 ) -> Dict[str, List]:
     """
-    Batch, concurrency-safe versioned updates for overlapping values.
+    Batch, concurrency-safe updates for time-series values.
 
-    Updates insert a new row with a new known_time (now()) into the correct
-    overlapping table (short/medium/long) based on the series' retention.
-    The latest value is determined by ORDER BY known_time DESC.
+    - Flat series: in-place update (no versioning)
+    - Overlapping series: inserts new row with known_time=now() (versioned)
 
     Args:
         conn: Database connection
-        updates: List of update dictionaries. Each dictionary must contain EITHER:
-            Option 1 (by overlapping_id):
-            - overlapping_id (int): The overlapping_id of the row to update
+        updates: List of update dictionaries. Required fields vary by data_class:
+
+            For flat series:
             - series_id (uuid.UUID): Series identifier
-            - value (float, optional): New value (omit to leave unchanged, None to clear)
-            - annotation (str, optional): Annotation text (omit to leave unchanged, None to clear)
-            - tags (list[str], optional): Tags (omit to leave unchanged, None to clear)
+            - valid_time (datetime): Time the value is valid for
+            - tenant_id (uuid.UUID, optional): Defaults to zeros UUID
+            - value (float, optional): New value
+            - annotation (str, optional): Annotation text
+            - tags (list[str], optional): Tags
             - changed_by (str, optional): Who made the change
 
-            Option 2 (by key):
-            - batch_id (uuid.UUID): Batch identifier
-            - tenant_id (uuid.UUID): Tenant identifier
-            - valid_time (datetime): Time the value is valid for
+            For overlapping series (flexible lookup):
             - series_id (uuid.UUID): Series identifier
-            - value (float, optional): New value (omit to leave unchanged, None to clear)
-            - annotation (str, optional): Annotation text (omit to leave unchanged, None to clear)
-            - tags (list[str], optional): Tags (omit to leave unchanged, None to clear)
+            - valid_time (datetime): Time the value is valid for
+            - tenant_id (uuid.UUID, optional): Defaults to zeros UUID
+            - Plus ONE of these to identify the version:
+              - overlapping_id (int): Direct row lookup (fastest)
+              - known_time (datetime): Exact version by known_time
+              - batch_id (uuid.UUID): Latest version in that batch
+              - (none): Latest version overall
+            - value (float, optional): New value
+            - annotation (str, optional): Annotation text
+            - tags (list[str], optional): Tags
             - changed_by (str, optional): Who made the change
 
     Returns:
@@ -164,8 +175,8 @@ def update_records(
     updated: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
 
-    # Cache series validation + table routing
-    series_table_map: Dict[uuid.UUID, str] = {}
+    # Cache series routing: series_id -> (data_class, table_name)
+    series_routing_map: Dict[uuid.UUID, Tuple[str, str]] = {}
 
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
@@ -176,18 +187,143 @@ def update_records(
                 if isinstance(series_id, str):
                     series_id = uuid.UUID(series_id)
 
-                if series_id not in series_table_map:
-                    table = _validate_overlapping_series(conn, series_id)
-                    series_table_map[series_id] = table
+                if series_id not in series_routing_map:
+                    routing = _get_series_routing(conn, series_id)
+                    series_routing_map[series_id] = routing
 
-                target_table = series_table_map[series_id]
+                data_class, target_table = series_routing_map[series_id]
 
-                if "overlapping_id" in u:
+                if data_class == "flat":
+                    _process_flat_update(cur, u, updated, skipped)
+                elif "overlapping_id" in u:
                     _process_update_by_id(cur, target_table, u, updated, skipped)
                 else:
                     _process_update_by_key(cur, target_table, u, updated, skipped)
 
     return {"updated": updated, "skipped_no_ops": skipped}
+
+
+def _process_flat_update(
+    cur,
+    u: Dict[str, Any],
+    updated: List[Dict[str, Any]],
+    skipped: List[Dict[str, Any]],
+) -> None:
+    """Process an update for a flat series (in-place, no versioning)."""
+    tenant_id = u.get("tenant_id")
+    valid_time = u.get("valid_time")
+    series_id = u.get("series_id")
+
+    if valid_time is None or series_id is None:
+        raise ValueError("Flat updates require 'valid_time' and 'series_id'")
+
+    # Default tenant_id
+    if tenant_id is None:
+        tenant_id = uuid.UUID('00000000-0000-0000-0000-000000000000')
+    if isinstance(tenant_id, str):
+        tenant_id = uuid.UUID(tenant_id)
+    if isinstance(series_id, str):
+        series_id = uuid.UUID(series_id)
+    if isinstance(valid_time, str):
+        valid_time = dt.datetime.fromisoformat(valid_time.replace('Z', '+00:00'))
+    if valid_time.tzinfo is None:
+        raise ValueError(f"valid_time must be timezone-aware (timestamptz). Bad update: {u}")
+
+    has_any_update = "value" in u or "annotation" in u or "tags" in u or "changed_by" in u
+    if not has_any_update:
+        raise ValueError("No updates supplied: provide at least one of 'value', 'annotation', 'tags', 'changed_by'.")
+
+    # Lookup existing row
+    cur.execute(
+        """
+        SELECT flat_id, value, annotation, tags, changed_by
+        FROM flat
+        WHERE tenant_id = %(tenant_id)s
+          AND series_id = %(series_id)s
+          AND valid_time = %(valid_time)s
+        """,
+        {
+            "tenant_id": tenant_id,
+            "series_id": series_id,
+            "valid_time": valid_time,
+        },
+    )
+    current = cur.fetchone()
+
+    if current is None:
+        raise ValueError(
+            f"No flat row exists for (series_id={series_id}, valid_time={valid_time}). "
+            f"Use insert() to create new data."
+        )
+
+    current_value = current["value"]
+    current_annotation = current["annotation"]
+    current_tags = current["tags"]
+    current_changed_by = current["changed_by"]
+    flat_id = current["flat_id"]
+
+    # Resolve tri-state fields
+    new_value = u.get("value", _UNSET)
+    if new_value is _UNSET:
+        new_value = current_value
+
+    new_annotation = u.get("annotation", _UNSET)
+    if new_annotation is _UNSET:
+        new_annotation = current_annotation
+    else:
+        new_annotation = _canonicalize_annotation_input(new_annotation)
+
+    new_tags = u.get("tags", _UNSET)
+    if new_tags is _UNSET:
+        new_tags = current_tags
+    else:
+        new_tags = _canonicalize_tags_input(new_tags)
+
+    new_changed_by = u.get("changed_by", _UNSET)
+    if new_changed_by is _UNSET:
+        new_changed_by = current_changed_by
+
+    current_tags_canonical = _canonicalize_tags_stored(current_tags)
+    current_annotation_canonical = _canonicalize_annotation_stored(current_annotation)
+
+    # Check for no-op
+    if (new_value == current_value
+            and new_annotation == current_annotation_canonical
+            and new_tags == current_tags_canonical
+            and new_changed_by == current_changed_by):
+        skipped.append({
+            "flat_id": flat_id,
+            "tenant_id": tenant_id,
+            "series_id": series_id,
+            "valid_time": valid_time,
+        })
+        return
+
+    # In-place update (no versioning for flat)
+    cur.execute(
+        """
+        UPDATE flat
+        SET value = %(value)s,
+            annotation = %(annotation)s,
+            tags = %(tags)s,
+            changed_by = %(changed_by)s,
+            change_time = now()
+        WHERE flat_id = %(flat_id)s
+        """,
+        {
+            "flat_id": flat_id,
+            "value": new_value,
+            "annotation": new_annotation,
+            "tags": new_tags,
+            "changed_by": new_changed_by,
+        },
+    )
+    updated.append({
+        "flat_id": flat_id,
+        "tenant_id": tenant_id,
+        "series_id": series_id,
+        "valid_time": valid_time,
+    })
 
 
 def _process_update_by_id(
@@ -291,17 +427,25 @@ def _process_update_by_key(
     updated: List[Dict[str, Any]],
     skipped: List[Dict[str, Any]],
 ) -> None:
-    """Process an update by (batch_id, tenant_id, valid_time, series_id) key."""
-    batch_id = u.get("batch_id")
+    """Process an overlapping update with flexible lookup.
+
+    Lookup priority:
+    1. known_time + valid_time: Exact version lookup
+    2. batch_id + valid_time: Latest version in that batch
+    3. Just valid_time: Latest version overall
+    """
     tenant_id = u.get("tenant_id")
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
+    batch_id = u.get("batch_id")
+    known_time = u.get("known_time")
 
-    if batch_id is None or tenant_id is None or valid_time is None or series_id is None:
-        raise ValueError("Each update must contain batch_id, tenant_id, valid_time, and series_id")
+    if valid_time is None or series_id is None:
+        raise ValueError("Overlapping updates require 'valid_time' and 'series_id'")
 
-    if isinstance(batch_id, str):
-        batch_id = uuid.UUID(batch_id)
+    # Default tenant_id
+    if tenant_id is None:
+        tenant_id = uuid.UUID('00000000-0000-0000-0000-000000000000')
     if isinstance(tenant_id, str):
         tenant_id = uuid.UUID(tenant_id)
     if isinstance(series_id, str):
@@ -311,36 +455,87 @@ def _process_update_by_key(
     if valid_time.tzinfo is None:
         raise ValueError(f"valid_time must be timezone-aware (timestamptz). Bad update: {u}")
 
+    if batch_id is not None and isinstance(batch_id, str):
+        batch_id = uuid.UUID(batch_id)
+    if known_time is not None:
+        if isinstance(known_time, str):
+            known_time = dt.datetime.fromisoformat(known_time.replace('Z', '+00:00'))
+        if known_time.tzinfo is None:
+            raise ValueError(f"known_time must be timezone-aware (timestamptz). Bad update: {u}")
+
     has_any_update = "value" in u or "annotation" in u or "tags" in u or "changed_by" in u
     if not has_any_update:
         raise ValueError("No updates supplied: provide at least one of 'value', 'annotation', 'tags', 'changed_by'.")
 
     has_explicit_value = "value" in u
 
-    cur.execute(
-        f"""
-        SELECT overlapping_id, value, valid_time_end, annotation, metadata, tags, changed_by
-        FROM {table}
-        WHERE batch_id = %(batch_id)s
-          AND tenant_id = %(tenant_id)s
-          AND valid_time = %(valid_time)s
-          AND series_id = %(series_id)s
-        ORDER BY known_time DESC
-        LIMIT 1
-        """,
-        {
-            "batch_id": batch_id,
-            "tenant_id": tenant_id,
-            "valid_time": valid_time,
-            "series_id": series_id,
-        },
-    )
+    # Flexible lookup based on what identifiers are provided
+    if known_time is not None:
+        # Exact version lookup by known_time
+        cur.execute(
+            f"""
+            SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
+            FROM {table}
+            WHERE tenant_id = %(tenant_id)s
+              AND series_id = %(series_id)s
+              AND valid_time = %(valid_time)s
+              AND known_time = %(known_time)s
+            """,
+            {
+                "tenant_id": tenant_id,
+                "series_id": series_id,
+                "valid_time": valid_time,
+                "known_time": known_time,
+            },
+        )
+    elif batch_id is not None:
+        # Latest version in that batch
+        cur.execute(
+            f"""
+            SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
+            FROM {table}
+            WHERE tenant_id = %(tenant_id)s
+              AND series_id = %(series_id)s
+              AND valid_time = %(valid_time)s
+              AND batch_id = %(batch_id)s
+            ORDER BY known_time DESC
+            LIMIT 1
+            """,
+            {
+                "tenant_id": tenant_id,
+                "series_id": series_id,
+                "valid_time": valid_time,
+                "batch_id": batch_id,
+            },
+        )
+    else:
+        # Latest version overall
+        cur.execute(
+            f"""
+            SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
+            FROM {table}
+            WHERE tenant_id = %(tenant_id)s
+              AND series_id = %(series_id)s
+              AND valid_time = %(valid_time)s
+            ORDER BY known_time DESC
+            LIMIT 1
+            """,
+            {
+                "tenant_id": tenant_id,
+                "series_id": series_id,
+                "valid_time": valid_time,
+            },
+        )
     current = cur.fetchone()
 
     if current is None and not has_explicit_value:
         raise ValueError(
             f"No current row exists for key in {table}. You must provide 'value'."
         )
+
+    # Get batch_id from current row if not provided
+    if batch_id is None and current is not None:
+        batch_id = current["batch_id"]
 
     current_value = current["value"] if current else None
     valid_time_end = current["valid_time_end"] if current else None
