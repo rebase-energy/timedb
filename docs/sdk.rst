@@ -174,132 +174,80 @@ Full function signature:
 Reading Data
 ------------
 
-The SDK provides several functions for reading data.
+The SDK provides reading capabilities through the fluent SeriesCollection API.
 
 Basic Read
 ~~~~~~~~~~
 
-Read time series values:
+Read the latest time series values using a SeriesCollection:
 
 .. code-block:: python
 
-   df = td.read(
-       series_ids=None,  # Optional, filter by series IDs (pass a list; single-element list is fine)
+   df = td.series("temperature").read(
+       start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
+       end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
+   )
+
+Function signature:
+
+.. code-block:: python
+
+   df = td.series("temperature").read(
        tenant_id=None,  # Optional, defaults to zeros UUID
        start_valid=None,  # Optional, start of valid time range
        end_valid=None,  # Optional, end of valid time range
+       start_known=None,  # Optional, start of known_time range (overlapping only)
+       end_known=None,  # Optional, end of known_time range (overlapping only)
+       versions=False,  # If True, include all versions (overlapping only)
        return_mapping=False,  # If True, return (DataFrame, mapping_dict)
-       all_versions=False,  # If True, include all versions
-       return_value_id=False,  # If True, include value_id column
-       tags_and_annotations=False,  # If True, include tags and annotation columns
    )
 
 Returns a DataFrame with:
 
 - Index: ``valid_time``
 - Columns: ``series_key`` (one column per series)
-- Each column has pint-pandas dtype based on ``series_unit``
+- Each column has pint-pandas dtype based on the series unit
 
-Example:
+Examples:
 
 .. code-block:: python
 
-   # Read all series
-   df = td.read()
-
-   # Read specific series
-   series_id = result.series_ids['power']
-   df = td.read(series_ids=[series_id])
+   # Read specific series by name
+   df = td.series("temperature").read()
 
    # Read with time range
-   df = td.read(
-       start_valid=datetime(2024, 1, 1, tzinfo=timezone.utc),
-       end_valid=datetime(2024, 1, 2, tzinfo=timezone.utc),
+   df = td.series("power").read(
+       start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
+       end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
 
    # Get mapping of series_id to series_key
-   df, mapping = td.read(return_mapping=True)
+   df, mapping = td.series("temperature").read(return_mapping=True)
 
-Reading with Tags and Annotations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Reading All Versions (Overlapping Series Only)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Include tags and annotations as DataFrame columns:
-
-.. code-block:: python
-
-   df = td.read(
-       series_ids=[series_id],
-       tags_and_annotations=True
-   )
-
-The returned DataFrame includes additional columns:
-
-- ``tags``: List of tags for each value
-- ``annotation``: Annotation text for each value
-- ``changed_by``: Email of the user who changed the value
-- ``change_time``: When the value was last changed
-
-Reading All Versions
-~~~~~~~~~~~~~~~~~~~~
-
-By default, ``read()`` returns only the latest version of each value. To see all historical versions:
+For overlapping series (forecasts, estimates with revisions), read all historical versions:
 
 .. code-block:: python
 
-   df = td.read(
-       series_ids=[series_id],
-       all_versions=True,
-       return_value_id=True  # Include value_id to distinguish versions
+   # Read all versions as separate rows
+   df = td.series("wind_forecast").read(versions=True)
+
+   # With time filters
+   df = td.series("wind_forecast").read(
+       versions=True,
+       start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
+       end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
+       start_known=datetime(2024, 12, 1, tzinfo=timezone.utc),
+       end_known=datetime(2025, 1, 15, tzinfo=timezone.utc),
    )
 
 This is useful for:
 
-- Auditing changes to time series values
-- Viewing complete version history
-- Analyzing how values evolved over time
-
-Flat Mode Read
-~~~~~~~~~~~~~~
-
-Read values in flat mode (latest known_time per valid_time):
-
-.. code-block:: python
-
-   df = td.read_values_flat(
-       series_ids=None,
-       tenant_id=None,
-       start_valid=None,
-       end_valid=None,
-       start_known=None,  # Start of known_time range
-       end_known=None,  # End of known_time range
-       all_versions=False,
-       return_mapping=False,
-       units=True,  # If True, return pint-pandas DataFrame
-       return_value_id=False,
-   )
-
-Returns the latest version of each (valid_time, series_id) combination based on known_time.
-
-Overlapping Mode Read
-~~~~~~~~~~~~~~~~~~~~~
-
-Read values in overlapping mode (all forecast revisions):
-
-.. code-block:: python
-
-   df = td.read_values_overlapping(
-       series_ids=None,
-       tenant_id=None,
-       start_valid=None,
-       end_valid=None,
-       start_known=None,
-       end_known=None,
-       all_versions=False,
-       return_mapping=False,
-       units=True,
-   )
-
-Returns all versions of forecasts, showing how predictions evolve over time. Useful for analyzing forecast revisions and backtesting.
+- Auditing how forecast predictions changed over time
+- Analyzing forecast revisions and backtesting
+- Viewing complete version history with known_time tracking
 
 Example: Analyzing forecast revisions:
 
@@ -317,15 +265,15 @@ Example: Analyzing forecast revisions:
            "power": generate_forecast(valid_times) * ureg.MW
        })
 
-       td.insert_batch(
+       result = td.insert_batch(
            df=df,
            known_time=known_time,  # When forecast was made
            workflow_id=f"forecast-run-{i}"
        )
 
    # Read all forecast revisions (overlapping mode)
-   df_overlapping = td.read_values_overlapping(
-       series_ids=[series_id],
+   df_overlapping = td.series("power").read(
+       versions=True,
        start_valid=base_time,
        end_valid=base_time + timedelta(days=5)
    )
@@ -333,13 +281,16 @@ Example: Analyzing forecast revisions:
 Updating Records
 ----------------
 
-Update existing records with new values, annotations, or tags:
+Update existing overlapping records (flat series are immutable):
 
 .. code-block:: python
 
    updates = [
        {
-           'value_id': 123,  # Simplest: update by value_id
+           'batch_id': batch_id,
+           'tenant_id': tenant_id,
+           'valid_time': datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+           'series_id': series_id,
            'value': 150.0,
            'annotation': 'Manually corrected',
            'tags': ['reviewed', 'corrected'],
@@ -349,20 +300,36 @@ Update existing records with new values, annotations, or tags:
 
    result = td.update_records(updates)
 
-For each update:
+Or update through a SeriesCollection:
 
-- Omit a field to leave it unchanged
-- Set to ``None`` (or ``[]`` for tags) to explicitly clear it
-- Set to a value to update it
+.. code-block:: python
+
+   td.series("wind_forecast").update_records([
+       {
+           'batch_id': batch_id,
+           'tenant_id': tenant_id,
+           'valid_time': datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+           'value': 150.0,
+           'annotation': 'Corrected',
+       }
+   ])
+
+For each update, use tri-state semantics:
+
+- **Omit a field**: Leave it unchanged (use current value)
+- **Set to None**: Explicitly clear the field (set to SQL NULL)
+- **Set to a value**: Update to that value
 
 The function returns:
 
 .. code-block:: python
 
    {
-       'updated': [...],  # List of updated records
-       'skipped_no_ops': [...]  # List of skipped records (no changes)
+       'updated': [...],      # List of successfully updated records
+       'skipped_no_ops': [...] # List of skipped (no changes detected)
    }
+
+**Note**: Updates only apply to overlapping series (flat values are immutable facts).
 
 API Server
 ----------

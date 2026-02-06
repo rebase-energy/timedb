@@ -22,6 +22,7 @@ Before running the examples locally, ensure you have:
 .. toctree::
    :maxdepth: 1
 
+   notebooks/quickstart
    notebooks/nb_01_write_read_pandas
    notebooks/nb_02_units_validation
    notebooks/nb_03_forecast_revisions

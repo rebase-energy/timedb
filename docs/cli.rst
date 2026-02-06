@@ -100,10 +100,10 @@ Options:
 
 **WARNING**: This will delete ALL timedb tables and their data, including:
 
-- ``runs_table``
-- ``values_table``
+- ``batches_table``
 - ``series_table``
-- ``metadata_table`` (if created)
+- ``flat``
+- ``overlapping_short``, ``overlapping_medium``, ``overlapping_long``
 - ``users_table`` (if created)
 - All views
 

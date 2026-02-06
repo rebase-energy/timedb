@@ -70,18 +70,29 @@ class CreateBatchResponse(BaseModel):
 
 class RecordUpdateRequest(BaseModel):
     """Request to update a record.
-    
+
+    Supports both flat and overlapping series:
+
+    **Flat series**: In-place update by (series_id, valid_time).
+    - No batch_id or known_time needed
+
+    **Overlapping series**: Creates new version. Lookup priority:
+    - known_time + valid_time: Exact version lookup
+    - batch_id + valid_time: Latest version in that batch
+    - Just valid_time: Latest version overall
+
     For value, annotation, and tags:
     - Omit the field to leave it unchanged
     - Set to null to explicitly clear it
     - Set to a value to update it
-    
+
     Note: changed_by is automatically set from the authenticated user's email.
     """
-    batch_id: str
-    tenant_id: str
     valid_time: datetime
     series_id: str
+    tenant_id: Optional[str] = Field(default=None, description="Tenant ID (defaults to zeros UUID)")
+    batch_id: Optional[str] = Field(default=None, description="For overlapping: target specific batch")
+    known_time: Optional[datetime] = Field(default=None, description="For overlapping: target specific version")
     value: Optional[float] = Field(default=None, description="Omit to leave unchanged, null to clear, or provide a value")
     annotation: Optional[str] = Field(default=None, description="Omit to leave unchanged, null to clear, or provide a value")
     tags: Optional[List[str]] = Field(default=None, description="Omit to leave unchanged, null or [] to clear, or provide tags")
@@ -378,7 +389,10 @@ async def update_records(
     current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
-    Update one or more overlapping records (flat are immutable).
+    Update one or more records (flat or overlapping series).
+
+    **Flat series**: In-place update by (series_id, valid_time).
+    **Overlapping series**: Creates new version. Lookup by known_time, batch_id, or latest.
 
     This endpoint supports tri-state updates:
     - Omit a field to leave it unchanged
@@ -387,45 +401,57 @@ async def update_records(
     """
     try:
         dsn = get_dsn()
-        
+
+        # Default tenant ID (zeros UUID)
+        default_tenant_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
         # Convert request updates to RecordUpdate objects
         updates = []
         for req_update in request.updates:
-            # Parse UUIDs
+            # Parse UUIDs - batch_id and tenant_id are now optional
             try:
-                batch_id_uuid = uuid.UUID(req_update.batch_id)
-                tenant_id_uuid = uuid.UUID(req_update.tenant_id)
                 series_id_uuid = uuid.UUID(req_update.series_id)
+                batch_id_uuid = uuid.UUID(req_update.batch_id) if req_update.batch_id else None
+                tenant_id_uuid = uuid.UUID(req_update.tenant_id) if req_update.tenant_id else default_tenant_id
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
-            
+
             # Ensure timezone-aware datetime
             valid_time = req_update.valid_time
             if valid_time.tzinfo is None:
                 valid_time = valid_time.replace(tzinfo=timezone.utc)
-            
+
+            known_time = req_update.known_time
+            if known_time and known_time.tzinfo is None:
+                known_time = known_time.replace(tzinfo=timezone.utc)
+
             # Use model_dump to check which fields were actually provided
             # exclude_unset=True gives us only fields that were explicitly set
             provided_fields = req_update.model_dump(exclude_unset=True)
-            
-            # Build update dict - only include fields that were provided
+
+            # Build update dict - required fields
             update_dict = {
-                "batch_id": batch_id_uuid,
-                "tenant_id": tenant_id_uuid,
                 "valid_time": valid_time,
                 "series_id": series_id_uuid,
+                "tenant_id": tenant_id_uuid,
             }
-            
-            # Add optional fields only if provided
+
+            # Add optional lookup fields if provided
+            if batch_id_uuid is not None:
+                update_dict["batch_id"] = batch_id_uuid
+            if known_time is not None:
+                update_dict["known_time"] = known_time
+
+            # Add optional update fields only if provided
             if "value" in provided_fields:
                 update_dict["value"] = req_update.value  # Can be None (explicit clear) or a float
-                
+
             if "annotation" in provided_fields:
                 update_dict["annotation"] = req_update.annotation  # Can be None (explicit clear) or a string
-                
+
             if "tags" in provided_fields:
                 update_dict["tags"] = req_update.tags  # Can be None or [] (explicit clear) or a list
-            
+
             # Automatically set changed_by from authenticated user's email if available
             # User cannot override this for security/audit purposes
             if current_user:
@@ -436,24 +462,29 @@ async def update_records(
                         status_code=403,
                         detail=f"Cannot update records for tenant_id {req_update.tenant_id}. You can only update records for your own tenant_id ({current_user.tenant_id})."
                     )
-            
+
             updates.append(update_dict)
-        
+
         # Execute updates
         with psycopg.connect(dsn) as conn:
             outcome = db.update.update_records(conn, updates=updates)
-        
+
         # Convert response to JSON-serializable format
-        updated = [
-            {
-                "batch_id": str(r["batch_id"]),
-                "tenant_id": str(r["tenant_id"]),
+        updated = []
+        for r in outcome["updated"]:
+            item = {
                 "valid_time": r["valid_time"].isoformat(),
                 "series_id": str(r["series_id"]),
-                "overlapping_id": r.get("overlapping_id"),
+                "tenant_id": str(r["tenant_id"]),
             }
-            for r in outcome["updated"]
-        ]
+            # Include optional fields if present
+            if "batch_id" in r and r["batch_id"] is not None:
+                item["batch_id"] = str(r["batch_id"])
+            if "overlapping_id" in r:
+                item["overlapping_id"] = r["overlapping_id"]
+            if "flat_id" in r:
+                item["flat_id"] = r["flat_id"]
+            updated.append(item)
 
         skipped = [
             {
@@ -462,7 +493,7 @@ async def update_records(
             }
             for item in outcome["skipped_no_ops"]
         ]
-        
+
         return UpdateRecordsResponse(
             updated=updated,
             skipped_no_ops=skipped

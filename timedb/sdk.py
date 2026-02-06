@@ -256,9 +256,35 @@ class SeriesCollection:
 
     def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
         """
-        Collection-scoped wrapper around the module-level update_records helper.
+        Update records for series in this collection.
 
-        Only applies to overlapping series (flat are immutable).
+        Supports both flat and overlapping series:
+
+        **Flat series**: In-place update (no versioning).
+        - Key: (series_id, valid_time)
+        - Updateable fields: value, annotation, tags, changed_by
+
+        **Overlapping series**: Creates a new version with known_time=now().
+        Lookup priority (use what you have):
+        - known_time + valid_time: Exact version lookup
+        - batch_id + valid_time: Latest version in that batch
+        - Just valid_time: Latest version overall
+
+        Args:
+            updates: List of update dicts. Each dict must include:
+                - valid_time: Required for both flat and overlapping
+                - series_id: Required if collection matches multiple series
+                Optional fields:
+                - value: New value (if omitted, keeps current value)
+                - annotation: Text annotation (None to clear)
+                - tags: List of tags ([] to clear)
+                - changed_by: User identifier
+                For overlapping only:
+                - batch_id: Target specific batch
+                - known_time: Target specific version
+
+        Returns:
+            Dict with 'updated' and 'skipped_no_ops' lists.
         """
         if not updates:
             return {"updated": [], "skipped_no_ops": []}
@@ -512,7 +538,14 @@ class TimeDataClient:
         )
 
     def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
-        """Update overlapping records (flat are immutable)."""
+        """
+        Update records for flat or overlapping series.
+
+        Flat series: In-place update by (series_id, valid_time).
+        Overlapping series: Creates new version. Lookup by known_time, batch_id, or latest.
+
+        See SeriesCollection.update_records for full documentation.
+        """
         return _update_records(updates)
 
 
