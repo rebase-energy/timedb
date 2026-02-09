@@ -17,9 +17,9 @@ SELECT create_hypertable('overlapping_long',   'valid_time', if_not_exists => TR
 -- 2) RETENTION POLICIES (Variable Retention per Tier)
 -- ============================================================================
 
-SELECT add_retention_policy('overlapping_short',  INTERVAL '6 months', if_not_exists => TRUE);
-SELECT add_retention_policy('overlapping_medium', INTERVAL '3 years',  if_not_exists => TRUE);
-SELECT add_retention_policy('overlapping_long',   INTERVAL '5 years',  if_not_exists => TRUE);
+SELECT add_retention_policy('overlapping_short',  INTERVAL '{retention_short}', if_not_exists => TRUE);
+SELECT add_retention_policy('overlapping_medium', INTERVAL '{retention_medium}', if_not_exists => TRUE);
+SELECT add_retention_policy('overlapping_long',   INTERVAL '{retention_long}', if_not_exists => TRUE);
 
 
 -- ============================================================================

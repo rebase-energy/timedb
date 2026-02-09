@@ -481,9 +481,35 @@ class TimeDataClient:
             unit=unit,
         )
 
-    def create(self) -> None:
-        """Create database schema (TimescaleDB version)."""
-        _create()
+    def create(
+        self,
+        retention=None,
+        *,
+        retention_short: str = "6 months",
+        retention_medium: str = "3 years",
+        retention_long: str = "5 years",
+    ) -> None:
+        """
+        Create database schema (TimescaleDB version).
+
+        Args:
+            retention: Shorthand to set the default (medium) retention period.
+                       An int is interpreted as years (e.g., 5 → "5 years").
+                       A string is used as-is (e.g., "18 months").
+            retention_short: Retention for overlapping_short (default: "6 months")
+            retention_medium: Retention for overlapping_medium (default: "3 years")
+            retention_long: Retention for overlapping_long (default: "5 years")
+        """
+        if retention is not None:
+            if isinstance(retention, int):
+                retention_medium = f"{retention} years"
+            else:
+                retention_medium = str(retention)
+        _create(
+            retention_short=retention_short,
+            retention_medium=retention_medium,
+            retention_long=retention_long,
+        )
 
     def delete(self) -> None:
         """Delete database schema."""
@@ -718,10 +744,19 @@ def _dataframe_to_value_rows(
     return rows
 
 
-def _create() -> None:
+def _create(
+    retention_short: str = "6 months",
+    retention_medium: str = "3 years",
+    retention_long: str = "5 years",
+) -> None:
     """Create or update the database schema (TimescaleDB version)."""
     conninfo = _get_conninfo()
-    db.create.create_schema(conninfo)
+    db.create.create_schema(
+        conninfo,
+        retention_short=retention_short,
+        retention_medium=retention_medium,
+        retention_long=retention_long,
+    )
 
 
 def _create_series(
