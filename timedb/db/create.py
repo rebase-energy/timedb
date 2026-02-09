@@ -22,30 +22,6 @@ DDL_TABLES = resources.files("timedb").joinpath("sql", "pg_create_table_timescal
 DDL_TIMESCALE = resources.files("timedb").joinpath("sql", "pg_create_timescaledb_features.sql").read_text(encoding="utf-8")
 
 
-def _is_hypertable(cur, table_name: str) -> bool:
-    """Check if a table is already a TimescaleDB hypertable."""
-    cur.execute("""
-        SELECT EXISTS (
-            SELECT 1 FROM timescaledb_information.hypertables
-            WHERE hypertable_name = %s
-        )
-    """, (table_name,))
-    result = cur.fetchone()
-    return result[0] if result else False
-
-
-def _table_exists(cur, table_name: str) -> bool:
-    """Check if a table exists."""
-    cur.execute("""
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_name = %s
-        )
-    """, (table_name,))
-    result = cur.fetchone()
-    return result[0] if result else False
-
-
 def create_schema(
     conninfo: str,
     retention_short: str = "6 months",

@@ -82,7 +82,6 @@ def api(
 def create_tables(
     dsn: Annotated[Optional[str], typer.Option("--dsn", "-d", envvar=["TIMEDB_DSN", "DATABASE_URL"], help="Postgres DSN")] = None,
     schema: Annotated[Optional[str], typer.Option("--schema", "-s", help="Schema name (sets search_path)")] = None,
-    with_metadata: Annotated[bool, typer.Option("--with-metadata/--no-metadata", help="Create metadata_table addon")] = False,
     retention: Annotated[Optional[str], typer.Option("--retention", "-r", help="Default (medium) retention period, e.g. '5 years'")] = None,
     retention_short: Annotated[str, typer.Option("--retention-short", help="Retention for overlapping_short")] = "6 months",
     retention_medium: Annotated[str, typer.Option("--retention-medium", help="Retention for overlapping_medium")] = "3 years",
@@ -118,8 +117,6 @@ def create_tables(
         console.print(f"  Connection: [cyan]{conninfo[:50]}...[/cyan]" if len(conninfo) > 50 else f"  Connection: [cyan]{conninfo}[/cyan]")
         if schema:
             console.print(f"  Schema: [cyan]{schema}[/cyan]")
-        if with_metadata:
-            console.print("  [dim]+ metadata_table addon[/dim]")
 
         if not typer.confirm("\nContinue?"):
             console.print("[yellow]Aborted.[/yellow]")
@@ -146,14 +143,6 @@ def create_tables(
             retention_long=retention_long,
         )
         console.print("[green]✓[/green] Base timedb tables created")
-
-        # Create metadata schema if requested
-        if with_metadata:
-            create_schema_metadata = getattr(db.create_with_metadata, "create_schema_metadata", None)
-            if create_schema_metadata is None:
-                raise RuntimeError("db.create_with_metadata.create_schema_metadata not found")
-            create_schema_metadata(conninfo)
-            console.print("[green]✓[/green] Metadata table created")
 
         console.print("\n[bold green]Schema created successfully![/bold green]")
 

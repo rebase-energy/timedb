@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import pandas as pd
 import psycopg
 from datetime import datetime
-from typing import Optional, Literal, List, Union
+from typing import Optional, List, Union
 import uuid
 
 load_dotenv()
@@ -391,42 +391,6 @@ def read_values_overlapping(
         return df_flat
     else:
         return pd.concat([df_flat, df_overlapping]).sort_index()
-
-
-def read_values_between(
-    conninfo: str,
-    *,
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-    mode: Literal["flat", "overlapping"] = "flat",
-) -> pd.DataFrame:
-    """Read values from both flat and overlapping with mode selection."""
-    if mode == "flat":
-        return read_values_flat(
-            conninfo,
-            tenant_id=tenant_id,
-            series_ids=series_ids,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-    elif mode == "overlapping":
-        return read_values_overlapping(
-            conninfo,
-            tenant_id=tenant_id,
-            series_ids=series_ids,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-    else:
-        raise ValueError(f"Invalid mode: {mode}. Must be 'flat' or 'overlapping'")
 
 
 if __name__ == "__main__":

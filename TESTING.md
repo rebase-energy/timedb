@@ -82,21 +82,16 @@ pytest -m "not slow"
 Fixtures are defined in `conftest.py`:
 
 - `test_db_conninfo`: Provides the test database connection string
-- `clean_db`: Creates a fresh database schema (main schema with `value_key`) for each test
-- `clean_db_for_update`: Creates a fresh database schema for update tests
+- `clean_db`: Creates a fresh TimescaleDB schema for each test
 - `sample_batch_id`: Generates a UUID for test runs
 - `sample_workflow_id`: Provides a test workflow ID
 - `sample_datetime`: Provides a sample datetime for testing
 
-### Schema Note
+### Schema
 
-**Important**: The codebase has two different schemas:
+The schema is defined in `pg_create_table_timescaledb.sql` (tables) and `pg_create_timescaledb_features.sql` (hypertables, compression, retention). It supports inserts, reads, and updates with `valid_time_end` for intervals, tags, annotations, and versioning.
 
-1. **Main schema** (`pg_create_table.sql`): Unified schema that supports inserts, reads, and updates. Includes support for `valid_time_end` for intervals, tags, annotations, and versioning.
-   - Used by: `create`, `insert`, `read`, `update` modules
-   - Used in: All test files (`test_insert.py`, `test_read.py`, `test_update.py`)
-
-The test fixtures handle this automatically - both `clean_db` and `clean_db_for_update` use the main schema.
+Used by: `create`, `insert`, `read`, `update` modules and all test files.
 
 ## Writing New Tests
 

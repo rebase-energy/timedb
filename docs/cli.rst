@@ -54,7 +54,10 @@ Options:
 
 - ``--dsn``, ``-d``: PostgreSQL connection string (or use environment variable)
 - ``--schema``, ``-s``: Schema name to use for the tables (sets search_path for the DDL)
-- ``--with-metadata``: Also create the optional metadata_table addon
+- ``--retention``, ``-r``: Default (medium) retention period (e.g., ``5 years``)
+- ``--retention-short``: Retention for overlapping_short (default: ``6 months``)
+- ``--retention-medium``: Retention for overlapping_medium (default: ``3 years``)
+- ``--retention-long``: Retention for overlapping_long (default: ``5 years``)
 - ``--yes``, ``-y``: Do not prompt for confirmation
 - ``--dry-run``: Print the DDL and exit without executing
 
@@ -68,8 +71,9 @@ Examples:
    # Create tables in a specific schema
    timedb create tables --schema timedb
 
-   # Create tables with metadata table
-   timedb create tables --with-metadata
+   # Create tables with custom retention periods
+   timedb create tables --retention "5 years"
+   timedb create tables --retention-short "3 months" --retention-long "10 years"
 
    # Preview the DDL without executing
    timedb create tables --dry-run

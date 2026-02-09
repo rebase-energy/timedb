@@ -99,7 +99,7 @@ class SeriesCollection:
             import json
             with psycopg.connect(self._conninfo) as conn:
                 with conn.cursor() as cur:
-                    sql = "SELECT series_id, labels, data_class, retention FROM series_table"
+                    sql = "SELECT series_id, name, unit, labels, data_class, retention FROM series_table"
                     clauses: list = []
                     params: list = []
                     if self._name:
@@ -117,9 +117,12 @@ class SeriesCollection:
                     cur.execute(sql, params)
                     rows = cur.fetchall()
 
-            for series_id, labels, data_class, retention in rows:
+            for series_id, name, unit, labels, data_class, retention in rows:
                 label_set = frozenset((k, v) for k, v in (labels or {}).items())
-                self._id_cache[label_set] = series_id
+                # Cache key is unique (name, unit, label_set) to avoid collisions when
+                # multiple series share the same labels but different names/units
+                cache_key = (name, unit, label_set)
+                self._id_cache[cache_key] = series_id
                 self._meta_cache[series_id] = {
                     "data_class": data_class,
                     "retention": retention,
@@ -131,7 +134,8 @@ class SeriesCollection:
 
         matching_ids = []
         filter_set = set(self._label_filters.items())
-        for label_set, series_id in self._id_cache.items():
+        for cache_key, series_id in self._id_cache.items():
+            name, unit, label_set = cache_key
             if filter_set.issubset(label_set):
                 matching_ids.append(series_id)
         return matching_ids
@@ -161,6 +165,20 @@ class SeriesCollection:
         """Get routing info (data_class, retention) for all resolved series."""
         ids = self._resolve_ids()
         return {sid: self._meta_cache[sid] for sid in ids if sid in self._meta_cache}
+
+    def _get_name_to_id_mapping(self) -> Dict[str, uuid.UUID]:
+        """Build name→series_id mapping from resolved, filtered series.
+
+        Uses the cache keyed by (name, unit, label_set) but only includes
+        series that match the current filters (via _resolve_ids).
+        This ensures labels are respected when multiple series share a name.
+        """
+        ids = set(self._resolve_ids())
+        mapping = {}
+        for (name, unit, label_set), series_id in self._id_cache.items():
+            if series_id in ids:
+                mapping[name] = series_id
+        return mapping
 
     def insert(
         self,
@@ -243,11 +261,9 @@ class SeriesCollection:
                 valid_time_end_col=valid_time_end_col,
                 known_time=known_time,
                 batch_params=batch_params,
+                series_ids=self._get_name_to_id_mapping(),
                 series_routing=series_routing,
             )
-
-    # Keep insert_batch as alias for backward compatibility
-    insert_batch = insert
 
     def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
         """
@@ -430,11 +446,6 @@ class SeriesCollection:
             combined.rename(columns=mappings, inplace=True)
             combined.columns.name = "name"
             return combined
-
-    # Keep read_overlapping as convenience alias
-    def read_overlapping(self, **kwargs) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
-        """Read all overlapping revisions. Alias for read(versions=True)."""
-        return self.read(versions=True, **kwargs)
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
@@ -987,15 +998,14 @@ def _insert(
     valid_time_end_col: Optional[str] = None,
     known_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
-    name_overrides: Optional[Dict[str, str]] = None,
     series_ids: Optional[Dict[str, uuid.UUID]] = None,
-    series_descriptions: Optional[Dict[str, str]] = None,
     series_routing: Optional[Dict[uuid.UUID, Dict[str, str]]] = None,
 ) -> InsertResult:
     """
     Insert a batch with time series data from a pandas DataFrame.
 
     Routes data to the correct table based on series data_class and retention.
+    Requires all series to exist — use td.create_series() first.
     """
     conninfo = _get_conninfo()
 
@@ -1017,19 +1027,14 @@ def _insert(
     series_mapping = {}
     units = {}
 
-    if name_overrides is None:
-        name_overrides = {}
     if series_ids is None:
         series_ids = {}
-    if series_descriptions is None:
-        series_descriptions = {}
     if series_routing is None:
         series_routing = {}
 
     with psycopg.connect(conninfo) as conn:
         for col_name, canonical_unit in series_info.items():
-            name = name_overrides.get(col_name, col_name)
-            provided_series_id = series_ids.get(col_name) or series_ids.get(name)
+            provided_series_id = series_ids.get(col_name)
 
             if provided_series_id is not None:
                 try:
@@ -1045,20 +1050,10 @@ def _insert(
                 except ValueError as e:
                     raise ValueError(f"series_id {provided_series_id} not found in database") from e
             else:
-                description = series_descriptions.get(col_name) or series_descriptions.get(name)
-                series_id = db.series.create_series(
-                    conn,
-                    name=name,
-                    description=description,
-                    unit=canonical_unit,
+                raise ValueError(
+                    f"No series found for column '{col_name}'. "
+                    f"Create the series first with td.create_series(name='{col_name}', ...)"
                 )
-                # New series defaults: look up what was created
-                if series_id not in series_routing:
-                    info = db.series.get_series_info(conn, series_id)
-                    series_routing[series_id] = {
-                        "data_class": info['data_class'],
-                        "retention": info['retention'],
-                    }
 
             series_mapping[col_name] = series_id
             units[col_name] = canonical_unit
@@ -1101,20 +1096,12 @@ def _insert(
             ) from None
         raise
 
-    final_series_ids = {}
-    for col_name, series_id in series_mapping.items():
-        name = name_overrides.get(col_name, col_name)
-        final_series_ids[name] = series_id
-
     return InsertResult(
         batch_id=batch_id,
         workflow_id=workflow_id,
-        series_ids=final_series_ids,
+        series_ids=series_mapping,
     )
 
-
-# Keep _insert_batch as alias for backward compatibility
-_insert_batch = _insert
 
 
 def _update_records(

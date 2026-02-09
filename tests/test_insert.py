@@ -289,28 +289,3 @@ def test_insert_timezone_aware_required(clean_db):
 
     with pytest.raises(ValueError, match="timezone-aware"):
         td.series("temp").insert(df=df)
-
-
-# =============================================================================
-# Backward compatibility
-# =============================================================================
-
-def test_insert_batch_alias(clean_db, sample_datetime):
-    """Test that insert_batch still works as alias for insert."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
-
-    td.create_series(name="compat", unit="dimensionless", data_class="flat")
-
-    df = pd.DataFrame({
-        "valid_time": [sample_datetime],
-        "compat": [99.0],
-    })
-
-    result = td.series("compat").insert_batch(df=df)
-    assert result.batch_id is not None
-
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 1

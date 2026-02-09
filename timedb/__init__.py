@@ -22,7 +22,7 @@ High-level SDK usage:
         'valid_time': times,
         'wind_power': values
     })
-    result = td.series('wind_power').where(site='offshore_1', type='forecast').insert_batch(
+    result = td.series('wind_power').where(site='offshore_1', type='forecast').insert(
         df=df,
         known_time=datetime.now(timezone.utc)
     )
@@ -31,7 +31,7 @@ High-level SDK usage:
     df_latest = td.series('wind_power').where(site='offshore_1').read()
 
     # Read all forecast revisions
-    df_all = td.series('wind_power').where(site='offshore_1').read_overlapping()
+    df_all = td.series('wind_power').where(site='offshore_1').read(versions=True)
 """
 
 from .sdk import (
