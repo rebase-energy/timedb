@@ -38,7 +38,6 @@ from .sdk import (
     TimeDataClient,
     SeriesCollection,
     InsertResult,
-    DEFAULT_TENANT_ID,
 )
 from .units import IncompatibleUnitError
 
@@ -46,6 +45,5 @@ __all__ = [
     'TimeDataClient',
     'SeriesCollection',
     'InsertResult',
-    'DEFAULT_TENANT_ID',
     'IncompatibleUnitError',
 ]

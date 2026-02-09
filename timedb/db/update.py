@@ -144,7 +144,6 @@ def update_records(
             For flat series:
             - series_id (uuid.UUID): Series identifier
             - valid_time (datetime): Time the value is valid for
-            - tenant_id (uuid.UUID, optional): Defaults to zeros UUID
             - value (float, optional): New value
             - annotation (str, optional): Annotation text
             - tags (list[str], optional): Tags
@@ -153,7 +152,6 @@ def update_records(
             For overlapping series (flexible lookup):
             - series_id (uuid.UUID): Series identifier
             - valid_time (datetime): Time the value is valid for
-            - tenant_id (uuid.UUID, optional): Defaults to zeros UUID
             - Plus ONE of these to identify the version:
               - overlapping_id (int): Direct row lookup (fastest)
               - known_time (datetime): Exact version by known_time
@@ -210,18 +208,12 @@ def _process_flat_update(
     skipped: List[Dict[str, Any]],
 ) -> None:
     """Process an update for a flat series (in-place, no versioning)."""
-    tenant_id = u.get("tenant_id")
+    tenant_id = u.get("tenant_id", uuid.UUID('00000000-0000-0000-0000-000000000000'))
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
 
     if valid_time is None or series_id is None:
         raise ValueError("Flat updates require 'valid_time' and 'series_id'")
-
-    # Default tenant_id
-    if tenant_id is None:
-        tenant_id = uuid.UUID('00000000-0000-0000-0000-000000000000')
-    if isinstance(tenant_id, str):
-        tenant_id = uuid.UUID(tenant_id)
     if isinstance(series_id, str):
         series_id = uuid.UUID(series_id)
     if isinstance(valid_time, str):
@@ -434,7 +426,7 @@ def _process_update_by_key(
     2. batch_id + valid_time: Latest version in that batch
     3. Just valid_time: Latest version overall
     """
-    tenant_id = u.get("tenant_id")
+    tenant_id = u.get("tenant_id", uuid.UUID('00000000-0000-0000-0000-000000000000'))
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
     batch_id = u.get("batch_id")
@@ -442,12 +434,6 @@ def _process_update_by_key(
 
     if valid_time is None or series_id is None:
         raise ValueError("Overlapping updates require 'valid_time' and 'series_id'")
-
-    # Default tenant_id
-    if tenant_id is None:
-        tenant_id = uuid.UUID('00000000-0000-0000-0000-000000000000')
-    if isinstance(tenant_id, str):
-        tenant_id = uuid.UUID(tenant_id)
     if isinstance(series_id, str):
         series_id = uuid.UUID(series_id)
     if isinstance(valid_time, str):

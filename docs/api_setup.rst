@@ -123,12 +123,10 @@ Update overlapping records using the ``PUT /values`` endpoint:
 
    curl -X PUT http://localhost:8000/values \
      -H "Content-Type: application/json" \
-     -H "X-API-Key: your-api-key" \
      -d '{
        "updates": [
          {
            "batch_id": "550e8400-e29b-41d4-a716-446655440000",
-           "tenant_id": "00000000-0000-0000-0000-000000000000",
            "valid_time": "2025-01-01T12:00:00Z",
            "series_id": "660e8400-e29b-41d4-a716-446655440000",
            "value": 150.0,
@@ -147,12 +145,10 @@ Or using Python requests:
 
    response = requests.put(
        "http://localhost:8000/values",
-       headers={"X-API-Key": "your-api-key"},
        json={
            "updates": [
                {
                    "batch_id": str(batch_id),
-                   "tenant_id": str(tenant_id),
                    "valid_time": valid_time.isoformat(),
                    "series_id": str(series_id),
                    "value": 150.0,
@@ -166,47 +162,6 @@ Or using Python requests:
    result = response.json()
    print(f"Updated: {len(result['updated'])}")
    print(f"Skipped: {len(result['skipped_no_ops'])}")
-
-Authentication
---------------
-
-TimeDB supports optional multi-tenant authentication using API keys.
-
-Setting Up Authentication
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-1. Create the schema with users table:
-
-   .. code-block:: bash
-
-      timedb create tables --with-users
-
-2. Create users with API keys:
-
-   .. code-block:: bash
-
-      timedb users create --tenant-id <uuid> --email user@example.com
-
-3. Use API keys in requests:
-
-   .. code-block:: python
-
-      import requests
-
-      api_key = "your-api-key-here"
-      headers = {"X-API-Key": api_key}
-
-      response = requests.get(
-          "http://127.0.0.1:8000/values",
-          headers=headers
-      )
-
-Tenant Isolation
-~~~~~~~~~~~~~~~~
-
-Each user's API key is tied to a ``tenant_id``. Users can only access data for their own tenant, providing complete data isolation between tenants.
-
-For more details on user management, see the :doc:`CLI documentation <cli>`.
 
 Production Deployment
 ---------------------

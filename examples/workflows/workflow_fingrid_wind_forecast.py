@@ -69,10 +69,10 @@ def main():
 
     df = pd.concat([df_forecast, df_capacity])
     
-    # Generate tenant_id and series_id (in production, these would come from context)
-    tenant_id = uuid.uuid4()
+    # Generate series_id (in production, this would come from context)
+    tenant_id = uuid.UUID('00000000-0000-0000-0000-000000000000')
     series_id = uuid.uuid4()
-    
+
     # Prepare value_rows in the format: (tenant_id, valid_time, series_id, value_key, value)
     value_rows = [
         (tenant_id, row["valid_time"], series_id, row["value_key"], row["value"])

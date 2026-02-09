@@ -164,7 +164,6 @@ Updates create new rows rather than overwriting, so you maintain a complete audi
 - [x] Decouple the knowledge time from the batch_start_time
 - [x] Python SDK that allows time series data manipulations, reads and writes
 - [x] RESTful API layer that serves data to users
-- [x] Built in authentication and multi-tenancy support
 - [x] Unit handling (e.g. MW, kW)
 - [ ] Handle different time zones in the API layer while always storing in UTC in the database
 - [ ] Support for postgres time intervals (tsrange/tstzrange)

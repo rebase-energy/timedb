@@ -28,6 +28,3 @@ Before running the examples locally, ensure you have:
    notebooks/nb_03_forecast_revisions
    notebooks/nb_04_timeseries_changes
    notebooks/nb_07_api_usage
-   notebooks/nb_08_authentication
-   notebooks/nb_08a_authentication_cli
-   notebooks/nb_08b_authentication_sdk

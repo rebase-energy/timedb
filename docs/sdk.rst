@@ -159,7 +159,6 @@ Full function signature:
 
    result = td.insert_batch(
        df=pd.DataFrame(...),
-       tenant_id=None,  # Optional, defaults to zeros UUID
        run_id=None,  # Optional, auto-generated if not provided
        workflow_id=None,  # Optional, defaults to "sdk-workflow"
        run_start_time=None,  # Optional, defaults to now()
@@ -193,7 +192,6 @@ Function signature:
 .. code-block:: python
 
    df = td.series("temperature").read(
-       tenant_id=None,  # Optional, defaults to zeros UUID
        start_valid=None,  # Optional, start of valid time range
        end_valid=None,  # Optional, end of valid time range
        start_known=None,  # Optional, start of known_time range (overlapping only)
@@ -288,7 +286,6 @@ Update existing overlapping records (flat series are immutable):
    updates = [
        {
            'batch_id': batch_id,
-           'tenant_id': tenant_id,
            'valid_time': datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
            'series_id': series_id,
            'value': 150.0,
@@ -307,7 +304,6 @@ Or update through a SeriesCollection:
    td.series("wind_forecast").update_records([
        {
            'batch_id': batch_id,
-           'tenant_id': tenant_id,
            'valid_time': datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
            'value': 150.0,
            'annotation': 'Corrected',

@@ -30,13 +30,12 @@ def _setup_overlapping_series(clean_db, sample_datetime):
 # Update value tests
 # =============================================================================
 
-def test_update_overlapping_value(clean_db, sample_batch_id, sample_tenant_id, sample_series_id, sample_datetime):
+def test_update_overlapping_value(clean_db, sample_batch_id, sample_series_id, sample_datetime):
     """Test updating a overlapping's value creates a new version."""
     td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     record_update = {
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "value": 150.0,
@@ -72,7 +71,6 @@ def test_update_overlapping_annotation_only(clean_db, sample_datetime):
 
     record_update = {
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "annotation": "Updated annotation",
@@ -106,7 +104,6 @@ def test_update_overlapping_tags(clean_db, sample_datetime):
 
     record_update = {
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "tags": ["reviewed", "validated"],
@@ -141,7 +138,6 @@ def test_update_overlapping_clear_tags(clean_db, sample_datetime):
     # First add tags
     td.update_records(updates=[{
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "tags": ["tag1", "tag2"],
@@ -150,7 +146,6 @@ def test_update_overlapping_clear_tags(clean_db, sample_datetime):
     # Then clear tags
     outcome = td.update_records(updates=[{
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "tags": [],  # Empty list clears tags
@@ -181,7 +176,6 @@ def test_update_no_op_skipped(clean_db, sample_datetime):
 
     record_update = {
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "value": 100.0,  # Same value as inserted
@@ -214,7 +208,6 @@ def test_update_nonexistent_record_without_value(clean_db, sample_datetime):
     non_existent_time = sample_datetime + timedelta(hours=999)
     record_update = {
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": non_existent_time,
         "series_id": series_id,
         "annotation": "annotation only",  # No value provided
@@ -244,7 +237,6 @@ def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
     new_time = sample_datetime + timedelta(hours=1)
     record_update = {
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": new_time,
         "series_id": series_id,
         "value": 200.0,
@@ -308,7 +300,6 @@ def test_update_creates_new_version(clean_db, sample_datetime):
     # Update creates a new row
     td.update_records(updates=[{
         "batch_id": result.batch_id,
-        "tenant_id": result.tenant_id,
         "valid_time": sample_datetime,
         "series_id": series_id,
         "value": 200.0,

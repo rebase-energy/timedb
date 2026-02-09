@@ -64,13 +64,6 @@ Advanced data retrieval patterns:
 Using the REST API:
 - Starting the API server
 - Making HTTP requests
-- API authentication
-
-### Notebook 8: Authentication (`nb_08_authentication.ipynb`, `nb_08a_authentication_cli.ipynb`, `nb_08b_authentication_sdk.ipynb`)
-Authentication and authorization:
-- Setting up user authentication
-- CLI-based authentication
-- SDK-based authentication
 
 ## Running Notebooks
 

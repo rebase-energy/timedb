@@ -45,7 +45,6 @@ class InsertResult(NamedTuple):
     batch_id: uuid.UUID
     workflow_id: str
     series_ids: Dict[str, uuid.UUID]  # Maps name to series_id
-    tenant_id: uuid.UUID
 
 
 class SeriesCollection:
@@ -166,7 +165,6 @@ class SeriesCollection:
     def insert(
         self,
         df: pd.DataFrame,
-        tenant_id: Optional[uuid.UUID] = None,
         batch_id: Optional[uuid.UUID] = None,
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
@@ -185,7 +183,6 @@ class SeriesCollection:
 
         Args:
             df: DataFrame with time series data
-            tenant_id: Tenant UUID (optional)
             batch_id: Batch UUID (optional, auto-generated)
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
@@ -196,7 +193,7 @@ class SeriesCollection:
             batch_params: Batch parameters (optional)
 
         Returns:
-            InsertResult with batch_id, workflow_id, series_ids, tenant_id
+            InsertResult with batch_id, workflow_id, series_ids
         """
         series_ids = self._resolve_ids()
 
@@ -224,7 +221,6 @@ class SeriesCollection:
             col_name = list(series_info.keys())[0]
             return _insert(
                 df=df,
-                tenant_id=tenant_id,
                 batch_id=batch_id,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
@@ -239,7 +235,6 @@ class SeriesCollection:
         else:
             return _insert(
                 df=df,
-                tenant_id=tenant_id,
                 batch_id=batch_id,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
@@ -315,16 +310,12 @@ class SeriesCollection:
                         "For collections matching multiple series, each update must include 'series_id'."
                     )
 
-            if "tenant_id" not in u_copy:
-                u_copy["tenant_id"] = DEFAULT_TENANT_ID
-
             filled_updates.append(u_copy)
 
         return _update_records(filled_updates)
 
     def read(
         self,
-        tenant_id: Optional[uuid.UUID] = None,
         start_valid: Optional[datetime] = None,
         end_valid: Optional[datetime] = None,
         start_known: Optional[datetime] = None,
@@ -341,7 +332,6 @@ class SeriesCollection:
           'all_overlapping_raw' (if versions=True)
 
         Args:
-            tenant_id: Tenant UUID filter (optional)
             start_valid: Start of valid time range (optional)
             end_valid: End of valid time range (optional)
             start_known: Start of known_time range (optional, overlapping only)
@@ -365,7 +355,6 @@ class SeriesCollection:
         if data_classes == {"flat"}:
             return _read_flat(
                 series_ids=series_ids,
-                tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
                 return_mapping=return_mapping,
@@ -374,7 +363,6 @@ class SeriesCollection:
             if versions:
                 return _read_overlapping_all(
                     series_ids=series_ids,
-                    tenant_id=tenant_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
@@ -384,7 +372,6 @@ class SeriesCollection:
             else:
                 return _read_overlapping_latest(
                     series_ids=series_ids,
-                    tenant_id=tenant_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
@@ -402,7 +389,6 @@ class SeriesCollection:
             if flat_ids:
                 result = _read_flat(
                     series_ids=flat_ids,
-                    tenant_id=tenant_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
                     return_mapping=True,
@@ -414,7 +400,6 @@ class SeriesCollection:
                 if versions:
                     result = _read_overlapping_all(
                         series_ids=overlapping_ids,
-                        tenant_id=tenant_id,
                         start_valid=start_valid,
                         end_valid=end_valid,
                         start_known=start_known,
@@ -424,7 +409,6 @@ class SeriesCollection:
                 else:
                     result = _read_overlapping_latest(
                         series_ids=overlapping_ids,
-                        tenant_id=tenant_id,
                         start_valid=start_valid,
                         end_valid=end_valid,
                         start_known=start_known,
@@ -645,7 +629,6 @@ def _detect_series_from_dataframe(
 
 def _dataframe_to_value_rows(
     df: pd.DataFrame,
-    tenant_id: uuid.UUID,
     series_mapping: Dict[str, uuid.UUID],
     units: Dict[str, str],
     valid_time_col: str = 'valid_time',
@@ -728,9 +711,9 @@ def _dataframe_to_value_rows(
                     ) from e
 
             if has_intervals:
-                rows.append((tenant_id, valid_time, valid_time_end, series_id, converted_value))
+                rows.append((DEFAULT_TENANT_ID, valid_time, valid_time_end, series_id, converted_value))
             else:
-                rows.append((tenant_id, valid_time, series_id, converted_value))
+                rows.append((DEFAULT_TENANT_ID, valid_time, series_id, converted_value))
 
     return rows
 
@@ -802,7 +785,6 @@ def _delete() -> None:
 
 def _read_flat(
     series_ids: Optional[List[uuid.UUID]] = None,
-    tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     return_mapping: bool = False,
@@ -810,12 +792,9 @@ def _read_flat(
     """Read flat values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
-    if tenant_id is None:
-        tenant_id = DEFAULT_TENANT_ID
-
     df = db.read.read_flat(
         conninfo,
-        tenant_id=tenant_id,
+        tenant_id=DEFAULT_TENANT_ID,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -856,7 +835,6 @@ def _read_flat(
 
 def _read_overlapping_latest(
     series_ids: Optional[List[uuid.UUID]] = None,
-    tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -866,12 +844,9 @@ def _read_overlapping_latest(
     """Read latest overlapping values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
-    if tenant_id is None:
-        tenant_id = DEFAULT_TENANT_ID
-
     df = db.read.read_overlapping_latest(
         conninfo,
-        tenant_id=tenant_id,
+        tenant_id=DEFAULT_TENANT_ID,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -914,7 +889,6 @@ def _read_overlapping_latest(
 
 def _read_overlapping_all(
     series_ids: Optional[List[uuid.UUID]] = None,
-    tenant_id: Optional[uuid.UUID] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -924,12 +898,9 @@ def _read_overlapping_all(
     """Read all overlapping versions and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
-    if tenant_id is None:
-        tenant_id = DEFAULT_TENANT_ID
-
     df = db.read.read_overlapping_all(
         conninfo,
-        tenant_id=tenant_id,
+        tenant_id=DEFAULT_TENANT_ID,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -973,7 +944,6 @@ def _read_overlapping_all(
 
 def _insert(
     df: pd.DataFrame,
-    tenant_id: Optional[uuid.UUID] = None,
     batch_id: Optional[uuid.UUID] = None,
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
@@ -994,8 +964,6 @@ def _insert(
     """
     conninfo = _get_conninfo()
 
-    if tenant_id is None:
-        tenant_id = DEFAULT_TENANT_ID
     if batch_id is None:
         batch_id = uuid.uuid4()
     if workflow_id is None:
@@ -1062,7 +1030,6 @@ def _insert(
 
     value_rows = _dataframe_to_value_rows(
         df=df,
-        tenant_id=tenant_id,
         series_mapping=series_mapping,
         units=units,
         valid_time_col=valid_time_col,
@@ -1073,7 +1040,7 @@ def _insert(
         db.insert.insert_batch_with_values(
             conninfo=conninfo,
             batch_id=batch_id,
-            tenant_id=tenant_id,
+            tenant_id=DEFAULT_TENANT_ID,
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
@@ -1108,7 +1075,6 @@ def _insert(
         batch_id=batch_id,
         workflow_id=workflow_id,
         series_ids=final_series_ids,
-        tenant_id=tenant_id,
     )
 
 
@@ -1127,8 +1093,7 @@ def _update_records(
     conninfo = _get_conninfo()
 
     for update_dict in updates:
-        if "tenant_id" not in update_dict:
-            update_dict["tenant_id"] = DEFAULT_TENANT_ID
+        update_dict["tenant_id"] = DEFAULT_TENANT_ID
 
     with psycopg.connect(conninfo) as conn:
         return db.update.update_records(conn, updates=updates)

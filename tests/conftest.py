@@ -53,11 +53,6 @@ def sample_datetime():
     return datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def sample_tenant_id():
-    """Generate a sample tenant ID for testing."""
-    return uuid.uuid4()
-
 
 @pytest.fixture
 def sample_series_id():

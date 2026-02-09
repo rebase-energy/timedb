@@ -7,17 +7,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from dotenv import load_dotenv
 import psycopg
-from psycopg import errors as psycopg_errors
-from psycopg.rows import dict_row
 import pandas as pd
 
 from . import db
-from .auth import get_current_user, CurrentUser
 
 # Load .env file but DO NOT override existing environment variables
 # This allows users to set TIMEDB_DSN/DATABASE_URL before importing this module
@@ -53,7 +50,6 @@ class CreateBatchRequest(BaseModel):
     batch_start_time: datetime
     batch_finish_time: Optional[datetime] = None
     known_time: Optional[datetime] = None  # Time of knowledge - defaults to inserted_at (now()) if not provided
-    tenant_id: Optional[str] = None  # Tenant UUID (defaults to zeros UUID for single-tenant)
     batch_params: Optional[Dict[str, Any]] = None
     value_rows: List[ValueRow] = Field(default_factory=list)
     series_descriptions: Optional[Dict[str, str]] = Field(None, description="Optional dict mapping value_key to description. Used when creating new series.")
@@ -86,11 +82,9 @@ class RecordUpdateRequest(BaseModel):
     - Set to null to explicitly clear it
     - Set to a value to update it
 
-    Note: changed_by is automatically set from the authenticated user's email.
     """
     valid_time: datetime
     series_id: str
-    tenant_id: Optional[str] = Field(default=None, description="Tenant ID (defaults to zeros UUID)")
     batch_id: Optional[str] = Field(default=None, description="For overlapping: target specific batch")
     known_time: Optional[datetime] = Field(default=None, description="For overlapping: target specific version")
     value: Optional[float] = Field(default=None, description="Omit to leave unchanged, null to clear, or provide a value")
@@ -165,12 +159,7 @@ async def root():
             "list_timeseries": "GET /list_timeseries - List all time series (series_id -> series_key mapping)",
             "update_records": "PUT /values - Update existing time series records",
         },
-        "authentication": {
-            "method": "API Key",
-            "header": "X-API-Key",
-            "note": "Authentication is optional. If users_table exists, endpoints require authentication. Users can only access data for their own tenant_id."
-        },
-        "admin_note": "Schema creation/deletion and user management must be done through CLI or SDK, not through the API."
+        "admin_note": "Schema creation/deletion must be done through CLI or SDK, not through the API."
     }
     # Manually serialize to avoid FastAPI's jsonable_encoder recursion issue
     json_str = json.dumps(data)
@@ -184,7 +173,6 @@ async def read_values(
     start_known: Optional[datetime] = Query(None, description="Start of known_time range (ISO format)"),
     end_known: Optional[datetime] = Query(None, description="End of known_time range (ISO format)"),
     mode: str = Query("flat", description="Query mode: 'flat' or 'overlapping'"),
-    current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
     Read time series values from the database.
@@ -213,15 +201,9 @@ async def read_values(
         if end_known and end_known.tzinfo is None:
             end_known = end_known.replace(tzinfo=timezone.utc)
 
-        # Use tenant_id from authenticated user if available
-        tenant_id = None
-        if current_user:
-            tenant_id = uuid.UUID(current_user.tenant_id)
-
         if mode == "flat":
             df = db.read.read_values_flat(
                 dsn,
-                tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
                 start_known=start_known,
@@ -230,7 +212,6 @@ async def read_values(
         elif mode == "overlapping":
             df = db.read.read_values_overlapping(
                 dsn,
-                tenant_id=tenant_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
                 start_known=start_known,
@@ -264,7 +245,6 @@ async def read_values(
 @app.post("/upload", response_model=CreateBatchResponse)
 async def upload_timeseries(
     request: CreateBatchRequest,
-    current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
     Upload time series data (create a new batch with associated values).
@@ -299,21 +279,9 @@ async def upload_timeseries(
         else:
             known_time = None  # Will default to now() in insert_batch
         
-        # Use tenant_id from authenticated user, or from request if no authentication
-        if current_user:
-            # User is authenticated - use their tenant_id (cannot override)
-            tenant_id = uuid.UUID(current_user.tenant_id)
-        else:
-            # No authentication - use tenant_id from request or default
-            if request.tenant_id:
-                try:
-                    tenant_id = uuid.UUID(request.tenant_id)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Invalid tenant_id format: {request.tenant_id}")
-            else:
-                # Default to zeros UUID for single-tenant installations
-                tenant_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
-        
+        # Single-tenant: hardcoded default tenant
+        tenant_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
         # workflow_id defaults to "api-workflow" via Field(default="api-workflow")
         workflow_id = request.workflow_id or "api-workflow"
         
@@ -371,7 +339,7 @@ async def upload_timeseries(
             known_time=known_time,
             value_rows=value_rows,
             batch_params=request.batch_params,
-            changed_by=current_user.email if current_user else None,
+            changed_by=None,
         )
         
         return CreateBatchResponse(
@@ -386,7 +354,6 @@ async def upload_timeseries(
 @app.put("/values", response_model=UpdateRecordsResponse)
 async def update_records(
     request: UpdateRecordsRequest,
-    current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
     Update one or more records (flat or overlapping series).
@@ -402,17 +369,13 @@ async def update_records(
     try:
         dsn = get_dsn()
 
-        # Default tenant ID (zeros UUID)
-        default_tenant_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
-
-        # Convert request updates to RecordUpdate objects
+        # Convert request updates to update dicts
         updates = []
         for req_update in request.updates:
-            # Parse UUIDs - batch_id and tenant_id are now optional
+            # Parse UUIDs
             try:
                 series_id_uuid = uuid.UUID(req_update.series_id)
                 batch_id_uuid = uuid.UUID(req_update.batch_id) if req_update.batch_id else None
-                tenant_id_uuid = uuid.UUID(req_update.tenant_id) if req_update.tenant_id else default_tenant_id
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
 
@@ -426,14 +389,12 @@ async def update_records(
                 known_time = known_time.replace(tzinfo=timezone.utc)
 
             # Use model_dump to check which fields were actually provided
-            # exclude_unset=True gives us only fields that were explicitly set
             provided_fields = req_update.model_dump(exclude_unset=True)
 
             # Build update dict - required fields
             update_dict = {
                 "valid_time": valid_time,
                 "series_id": series_id_uuid,
-                "tenant_id": tenant_id_uuid,
             }
 
             # Add optional lookup fields if provided
@@ -444,24 +405,13 @@ async def update_records(
 
             # Add optional update fields only if provided
             if "value" in provided_fields:
-                update_dict["value"] = req_update.value  # Can be None (explicit clear) or a float
+                update_dict["value"] = req_update.value
 
             if "annotation" in provided_fields:
-                update_dict["annotation"] = req_update.annotation  # Can be None (explicit clear) or a string
+                update_dict["annotation"] = req_update.annotation
 
             if "tags" in provided_fields:
-                update_dict["tags"] = req_update.tags  # Can be None or [] (explicit clear) or a list
-
-            # Automatically set changed_by from authenticated user's email if available
-            # User cannot override this for security/audit purposes
-            if current_user:
-                update_dict["changed_by"] = current_user.email
-                # Ensure user can only update records for their own tenant_id
-                if tenant_id_uuid != uuid.UUID(current_user.tenant_id):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Cannot update records for tenant_id {req_update.tenant_id}. You can only update records for your own tenant_id ({current_user.tenant_id})."
-                    )
+                update_dict["tags"] = req_update.tags
 
             updates.append(update_dict)
 
@@ -475,7 +425,6 @@ async def update_records(
             item = {
                 "valid_time": r["valid_time"].isoformat(),
                 "series_id": str(r["series_id"]),
-                "tenant_id": str(r["tenant_id"]),
             }
             # Include optional fields if present
             if "batch_id" in r and r["batch_id"] is not None:
@@ -507,7 +456,6 @@ async def update_records(
 @app.post("/series", response_model=CreateSeriesResponse)
 async def create_series(
     request: CreateSeriesRequest,
-    current_user: Optional[CurrentUser] = Depends(get_current_user),
 ):
     """
     Create a new time series.
@@ -542,17 +490,13 @@ async def create_series(
 
 
 @app.get("/list_timeseries", response_model=Dict[str, SeriesInfo])
-async def list_timeseries(
-    current_user: Optional[CurrentUser] = Depends(get_current_user),
-):
+async def list_timeseries():
     """
     List all time series available in the database.
 
     Returns a dictionary mapping series_id (as string) to series information
     including name, description, unit, and labels.
     This can be used in subsequent API calls to query and update data.
-
-    If authentication is enabled, only returns series for the user's tenant_id.
     """
     try:
         dsn = get_dsn()
@@ -560,31 +504,13 @@ async def list_timeseries(
 
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
-                if current_user:
-                    tenant_id = uuid.UUID(current_user.tenant_id)
-                    # Get series that have data for this tenant (check both flat and overlapping)
-                    cur.execute(
-                        """
-                        SELECT DISTINCT s.series_id, s.name, s.description, s.unit, s.labels, s.data_class, s.retention
-                        FROM series_table s
-                        WHERE s.series_id IN (
-                            SELECT DISTINCT series_id FROM flat WHERE tenant_id = %s
-                            UNION
-                            SELECT DISTINCT series_id FROM all_overlapping_raw WHERE tenant_id = %s
-                        )
-                        ORDER BY s.name
-                        """,
-                        (tenant_id, tenant_id)
-                    )
-                else:
-                    # No authentication - return all series
-                    cur.execute(
-                        """
-                        SELECT series_id, name, description, unit, labels, data_class, retention
-                        FROM series_table
-                        ORDER BY name
-                        """
-                    )
+                cur.execute(
+                    """
+                    SELECT series_id, name, description, unit, labels, data_class, retention
+                    FROM series_table
+                    ORDER BY name
+                    """
+                )
                 rows = cur.fetchall()
 
             # Build dictionary: series_id (string) -> SeriesInfo
