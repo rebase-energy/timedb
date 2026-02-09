@@ -46,7 +46,12 @@ def _table_exists(cur, table_name: str) -> bool:
     return result[0] if result else False
 
 
-def create_schema(conninfo: str) -> None:
+def create_schema(
+    conninfo: str,
+    retention_short: str = "6 months",
+    retention_medium: str = "3 years",
+    retention_long: str = "5 years",
+) -> None:
     """
     Creates (or updates) the database schema (TimescaleDB version).
 
@@ -54,6 +59,12 @@ def create_schema(conninfo: str) -> None:
     - Part 2: Hypertables, compression, retention policies (requires autocommit)
     - Safe to run multiple times
     - Should typically be run at service startup or via a migration step
+
+    Args:
+        conninfo: PostgreSQL connection string
+        retention_short: Retention interval for overlapping_short (default: "6 months")
+        retention_medium: Retention interval for overlapping_medium (default: "3 years")
+        retention_long: Retention interval for overlapping_long (default: "5 years")
     """
 
     print("Creating database schema...")
@@ -66,11 +77,16 @@ def create_schema(conninfo: str) -> None:
 
     # Part 2: TimescaleDB features (must run with autocommit)
     # Each statement is executed separately to handle IF NOT EXISTS gracefully
+    ddl_timescale = DDL_TIMESCALE.format(
+        retention_short=retention_short,
+        retention_medium=retention_medium,
+        retention_long=retention_long,
+    )
     with psycopg.connect(conninfo, autocommit=True) as conn:
         with conn.cursor() as cur:
             # Split SQL into individual statements and execute each
             # Don't filter by '--' since statements may have comment blocks before them
-            for statement in DDL_TIMESCALE.split(';'):
+            for statement in ddl_timescale.split(';'):
                 statement = statement.strip()
                 if not statement:
                     continue

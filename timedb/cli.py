@@ -83,6 +83,10 @@ def create_tables(
     dsn: Annotated[Optional[str], typer.Option("--dsn", "-d", envvar=["TIMEDB_DSN", "DATABASE_URL"], help="Postgres DSN")] = None,
     schema: Annotated[Optional[str], typer.Option("--schema", "-s", help="Schema name (sets search_path)")] = None,
     with_metadata: Annotated[bool, typer.Option("--with-metadata/--no-metadata", help="Create metadata_table addon")] = False,
+    retention: Annotated[Optional[str], typer.Option("--retention", "-r", help="Default (medium) retention period, e.g. '5 years'")] = None,
+    retention_short: Annotated[str, typer.Option("--retention-short", help="Retention for overlapping_short")] = "6 months",
+    retention_medium: Annotated[str, typer.Option("--retention-medium", help="Retention for overlapping_medium")] = "3 years",
+    retention_long: Annotated[str, typer.Option("--retention-long", help="Retention for overlapping_long")] = "5 years",
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print DDL and exit")] = False,
 ):
@@ -126,12 +130,21 @@ def create_tables(
     if schema:
         os.environ["PGOPTIONS"] = f"-c search_path={schema}"
 
+    # Apply shorthand: --retention overrides --retention-medium
+    if retention is not None:
+        retention_medium = retention
+
     try:
         # Create base schema
         create_schema = getattr(db.create, "create_schema", None)
         if create_schema is None:
             raise RuntimeError("db.create.create_schema not found")
-        create_schema(conninfo)
+        create_schema(
+            conninfo,
+            retention_short=retention_short,
+            retention_medium=retention_medium,
+            retention_long=retention_long,
+        )
         console.print("[green]✓[/green] Base timedb tables created")
 
         # Create metadata schema if requested
