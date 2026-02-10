@@ -48,4 +48,6 @@ Notebook Descriptions
 
 **nb_05_multiple_series**: Work with multiple unrelated series in a single operation.
 
+**nb_06_api_usage**: Examples of using the REST API for reading and writing time series data.
+
 **nb_06_api_usage**: Learn how to use the REST API endpoints for all database operations.
