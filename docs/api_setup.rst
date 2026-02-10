@@ -48,17 +48,7 @@ Examples:
 Using Python SDK
 ~~~~~~~~~~~~~~~~
 
-Start the server programmatically:
-
-.. code-block:: python
-
-   import timedb as td
-
-   # Blocking (runs until Ctrl+C)
-   td.start_api()
-
-   # Non-blocking (runs in background thread)
-   td.start_api_background()
+Start the server programmatically via the CLI is the recommended approach. See the :doc:`CLI <cli>` documentation for details.
 
 Using uvicorn directly
 ~~~~~~~~~~~~~~~~~~~~~~
