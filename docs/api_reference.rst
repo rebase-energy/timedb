@@ -38,6 +38,7 @@ Exceptions
 
 .. autoexception:: timedb.units.IncompatibleUnitError
    :members:
+   :no-index:
 
 REST API Reference
 ------------------

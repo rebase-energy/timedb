@@ -389,6 +389,7 @@ class SeriesCollection:
         Read time series data for this collection.
 
         Automatically reads from the correct table based on the series' data_class:
+
         - flat: reads from 'flat' table (no versioning)
         - overlapping: reads from 'latest_overlapping_curve' (default) or
           'all_overlapping_raw' (if versions=True)
@@ -642,6 +643,7 @@ class TimeDataClient:
 
             unit (str, default="dimensionless"):
                 Canonical unit for the series. Examples:
+
                 - 'MW' - megawatts (power)
                 - 'kWh' - kilowatt-hours (energy)
                 - 'C' - celsius (temperature)
@@ -657,12 +659,14 @@ class TimeDataClient:
 
             data_class (str, default="flat"):
                 Type of time series data:
+
                 - 'flat': Immutable facts (e.g., meter readings, historical data)
                 - 'overlapping': Versioned/revised data (e.g., forecasts, estimates)
                   with known_time tracking for changes over time
 
             retention (str, default="medium"):
                 Data retention policy (overlapping series only):
+
                 - 'short': 6 months (fast queries on recent data)
                 - 'medium': 3 years (balanced for forecasts)
                 - 'long': 5 years (historical archival)
