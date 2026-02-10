@@ -41,14 +41,19 @@ def get_dsn(dsn: Optional[str]) -> str:
 
 @app.command()
 def api(
-    host: Annotated[str, typer.Option("--host", help="Host to bind to")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", help="Port to bind to")] = 8000,
-    reload: Annotated[bool, typer.Option("--reload", help="Enable auto-reload for development")] = False,
+    host: Annotated[str, typer.Option("--host", help="Host to bind API server to")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to bind API server to")] = 8000,
+    reload: Annotated[bool, typer.Option("--reload", help="Enable auto-reload for development (watch file changes)")] = False,
 ):
     """
     Start the FastAPI server.
 
-    Example: timedb api --host 127.0.0.1 --port 8000
+    The API server provides REST endpoints for reading and writing time series data.
+
+    Examples:
+        timedb api
+        timedb api --host 0.0.0.0 --port 9000
+        timedb api --reload
     """
     try:
         import uvicorn
@@ -80,19 +85,32 @@ def api(
 
 @create_app.command("tables")
 def create_tables(
-    dsn: Annotated[Optional[str], typer.Option("--dsn", "-d", envvar=["TIMEDB_DSN", "DATABASE_URL"], help="Postgres DSN")] = None,
-    schema: Annotated[Optional[str], typer.Option("--schema", "-s", help="Schema name (sets search_path)")] = None,
-    retention: Annotated[Optional[str], typer.Option("--retention", "-r", help="Default (medium) retention period, e.g. '5 years'")] = None,
-    retention_short: Annotated[str, typer.Option("--retention-short", help="Retention for overlapping_short")] = "6 months",
-    retention_medium: Annotated[str, typer.Option("--retention-medium", help="Retention for overlapping_medium")] = "3 years",
-    retention_long: Annotated[str, typer.Option("--retention-long", help="Retention for overlapping_long")] = "5 years",
+    dsn: Annotated[Optional[str], typer.Option("--dsn", "-d", envvar=["TIMEDB_DSN", "DATABASE_URL"], help="Postgres connection string (or set TIMEDB_DSN/DATABASE_URL)")] = None,
+    schema: Annotated[Optional[str], typer.Option("--schema", "-s", help="Schema name (creates/sets search_path)")] = None,
+    retention: Annotated[Optional[str], typer.Option("--retention", "-r", help="Default retention period (overrides --retention-medium), e.g. '5 years'")] = None,
+    retention_short: Annotated[str, typer.Option("--retention-short", help="Retention for overlapping_short table")] = "6 months",
+    retention_medium: Annotated[str, typer.Option("--retention-medium", help="Retention for overlapping_medium table")] = "3 years",
+    retention_long: Annotated[str, typer.Option("--retention-long", help="Retention for overlapping_long table")] = "5 years",
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print DDL and exit")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show DDL without creating tables")] = False,
 ):
     """
-    Create timedb tables.
+    Create timedb tables and schema in PostgreSQL.
 
-    Example: timedb create tables --dsn postgresql://...
+    This creates all necessary tables, views, and continuous aggregates:
+      • batches_table - Tracks data batch metadata
+      • series_table - Tracks time series definitions
+      • flat - Simple table for non-overlapping data
+      • overlapping_short/medium/long - For overlapping time ranges
+      • Views and continuous aggregates for efficient querying
+
+    Retention policies are applied to overlapping tables (auto-deletes old data).
+
+    Examples:
+        timedb create tables --dsn postgresql://user:pass@localhost/mydb
+        timedb create tables --schema my_schema --retention '2 years'
+        timedb create tables --dry-run
+        TIMEDB_DSN=postgresql://... timedb create tables
     """
     conninfo = get_dsn(dsn)
 
@@ -164,16 +182,26 @@ def create_tables(
 
 @delete_app.command("tables")
 def delete_tables(
-    dsn: Annotated[Optional[str], typer.Option("--dsn", "-d", envvar=["TIMEDB_DSN", "DATABASE_URL"], help="Postgres DSN")] = None,
+    dsn: Annotated[Optional[str], typer.Option("--dsn", "-d", envvar=["TIMEDB_DSN", "DATABASE_URL"], help="Postgres connection string (or set TIMEDB_DSN/DATABASE_URL)")] = None,
     schema: Annotated[Optional[str], typer.Option("--schema", "-s", help="Schema name (sets search_path)")] = None,
-    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt (use with caution!)")] = False,
 ):
     """
-    Delete all timedb tables.
+    Delete all timedb tables from the database.
 
-    [bold red]WARNING:[/bold red] This will delete all data!
+    [bold red]⚠️  WARNING: This is DESTRUCTIVE[/bold red]
 
-    Example: timedb delete tables --dsn postgresql://...
+    This will permanently delete:
+      • All data tables (batches_table, series_table, flat, overlapping_*)
+      • All views and continuous aggregates
+      • All schema data
+
+    This cannot be undone!
+
+    Examples:
+        timedb delete tables --dsn postgresql://user:pass@localhost/mydb
+        timedb delete tables --schema my_schema --yes
+        TIMEDB_DSN=postgresql://... timedb delete tables
     """
     conninfo = get_dsn(dsn)
 
