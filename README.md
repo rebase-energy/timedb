@@ -83,21 +83,32 @@ See the [examples/](examples/) folder for interactive Jupyter notebooks demonstr
 
 ### Three-dimensional time series
 
-Most time series databases are two-dimensional: they map a timestamp to a value. **timedb** adds a third dimension: **time-of-knowledge** (`known_time`).
+Most time series databases are two-dimensional: they map a timestamp to a value. **timedb** adds three time dimensions to track both when data was valid and how it evolved.
 
-This allows you to store overlapping forecasts and revisions while preserving the full history of how values evolved. For example:
+This allows you to store overlapping forecasts, revisions, and manual corrections while preserving the full history of how values changed. For example:
 - A forecast made on Monday for Tuesday can coexist with a forecast made on Tuesday for the same time
 - You can query "what did we know about Tuesday on Monday?" vs "what do we know now?"
+- You can see when and by whom a value was manually corrected
 
-The key dimensions are:
+The three time dimensions are:
+
 - **`valid_time`**: When the value is valid (the timestamp being forecasted/measured)
-- **`known_time`**: When this value became known (when the forecast was made or data arrived)
+- **`known_time`**: When this value became known (when the forecast was made, batch was processed, or data arrived)
+- **`change_time`**: When this specific row was created/modified (timestamps manual edits and updates). Automatically set to `now()` on insert and update.
+
+Supporting metadata:
+
 - **`batch_id`**: Groups values that were inserted together in one batch
+- **`changed_by`**: Who made a manual change (optional, for audit trail)
+- **`annotation`**: Human-readable description of changes
+- **`tags`**: Quality flags for review/validation status
 
 This design naturally supports:
-- **Forecast revisions**: Multiple predictions for the same valid_time from different known_times
-- **Data corrections**: Updates that preserve the original value with full audit trail
+
+- **Forecast revisions**: Multiple predictions for the same `valid_time` from different `known_time`s
+- **Data corrections**: Manual updates that preserve the original value with full audit trail via `change_time`
 - **Backtesting**: Reconstruct what was known at any point in the past
+- **Human review**: Track who changed what, when, and why through `changed_by`, `change_time`, `annotation`, and `tags`
 
 ### Two data classes
 
