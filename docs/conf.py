@@ -10,7 +10,6 @@ import sys
 sys.path.insert(0, os.path.abspath('..'))
 
 # Copy notebook files from examples directory to docs/notebooks for nbsphinx
-# This works both locally and on ReadTheDocs
 import shutil
 import glob
 
@@ -21,14 +20,9 @@ _notebooks_dir = os.path.join(_docs_dir, 'notebooks')
 # Create notebooks directory if it doesn't exist
 os.makedirs(_notebooks_dir, exist_ok=True)
 
-# Notebooks to exclude (empty or incomplete)
-_exclude_notebooks = {'nb_05_multiple_series.ipynb', 'nb_06_advanced_querying.ipynb'}
-
 # Copy all .ipynb files from examples to docs/notebooks
 for nb_file in glob.glob(os.path.join(_examples_src, '*.ipynb')):
     basename = os.path.basename(nb_file)
-    if basename in _exclude_notebooks:
-        continue
     dest = os.path.join(_notebooks_dir, basename)
     # Only copy if source is newer or dest doesn't exist
     if not os.path.exists(dest) or os.path.getmtime(nb_file) > os.path.getmtime(dest):
