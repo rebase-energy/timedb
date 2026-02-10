@@ -6,14 +6,21 @@ set -l BASEDIR (dirname (status -f))
 cd $BASEDIR
 
 printf 'Stopping containers and removing volumes...\n'
-docker compose down -v
+docker compose down -v 2>/dev/null || true
 
 printf 'Removing local ./pgdata (if present)...\n'
 if test -d ./pgdata
-    rm -rf ./pgdata
+    sudo rm -rf ./pgdata
 end
 
 printf 'Starting Postgres containers...\n'
 docker compose up -d
 
-docker ps
+printf 'Waiting for database to be ready...\n'
+sleep 10
+
+printf '\nContainer status:\n'
+docker ps | grep timescaledb
+
+printf '\nDatabase initialization status:\n'
+docker logs local_timescaledb 2>&1 | grep -E '(ready|error|listening)' | tail -3

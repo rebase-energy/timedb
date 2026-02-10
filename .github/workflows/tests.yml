@@ -12,18 +12,18 @@ jobs:
 
     services:
       timescaledb:
-        image: timescale/timescaledb:latest-pg16
+        image: timescale/timescaledb-ha:pg18
         env:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpassword
           POSTGRES_DB: testdb
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U testuser -d testdb"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          - 5432:5432
 
     env:
       TEST_TIMEDB_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
@@ -36,10 +36,35 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[test]"
 
-      - name: Run tests
-        run: pytest
+      - name: Wait for TimescaleDB
+        run: |
+          until pg_isready -h localhost -U testuser -d testdb; do
+            echo "Waiting for TimescaleDB to be ready..."
+            sleep 2
+          done
+        env:
+          PGPASSWORD: testpassword
+
+      - name: Run tests with coverage
+        run: pytest --cov=timedb --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false

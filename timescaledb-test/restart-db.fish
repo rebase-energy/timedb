@@ -8,4 +8,5 @@ cd $BASEDIR
 printf 'Recreating Postgres containers...\n'
 docker compose up -d --force-recreate --remove-orphans
 
-docker ps
+printf '\nContainer status:\n'
+docker ps | grep timescaledb

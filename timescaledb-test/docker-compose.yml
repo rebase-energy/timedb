@@ -1,10 +1,9 @@
 services:
   db:
-    image: postgres:16-alpine
-    container_name: local_postgres
+    image: timescale/timescaledb-ha:pg18
+    container_name: local_timescaledb
     restart: always
     environment:
-      POSTGRES_USER: devuser
       POSTGRES_PASSWORD: devpassword
       POSTGRES_DB: devdb
     ports:
