@@ -1,5 +1,28 @@
-# timedb/cli.py
-"""TimeDB CLI - Command line interface for timedb operations."""
+"""
+TimeDB CLI - Command line interface for timedb operations.
+
+Provides administrative and operational commands for managing timedb:
+- create: Create database schema and series
+- delete: Delete database schema
+- api: Run the REST API server
+
+Environment:
+    - TIMEDB_DSN or DATABASE_URL: Database connection string
+    - Typical usage: timedb --help
+
+Examples:
+    # Start the API server
+    $ timedb api
+
+    # Create database schema
+    $ timedb create schema --dsn postgresql://...
+
+    # Create a series
+    $ timedb create series --dsn postgresql://... --name wind_power --unit MW
+
+    # Delete schema
+    $ timedb delete schema --dsn postgresql://...
+"""
 import os
 from typing import Optional
 from typing_extensions import Annotated

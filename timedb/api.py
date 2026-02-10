@@ -1,6 +1,21 @@
 """
-FastAPI application for timedb - MVP version
+FastAPI application for timedb - REST API
+
 Provides REST API endpoints for time series database operations.
+
+The API exposes endpoints for:
+- Creating and managing time series
+- Reading/querying time series data
+- Uploading batches of data
+- Updating existing records
+
+Interactive documentation:
+    - Swagger UI: /docs
+    - ReDoc: /redoc
+
+Environment:
+    Requires TIMEDB_DSN or DATABASE_URL environment variable
+    for database connection.
 """
 import os
 import uuid
@@ -34,7 +49,20 @@ def get_dsn() -> str:
 
 # Pydantic models for request/response
 class ValueRow(BaseModel):
-    """A single value row for insertion."""
+    """A single value row for insertion.
+
+    Represents one data point to insert into the database. Supports both
+    point-in-time values (just valid_time) and interval values
+    (valid_time and valid_time_end).
+
+    Attributes:
+        valid_time: The time this value is valid for
+        value_key: Identifier for this value within the batch
+        value: The numeric value (optional, can be null)
+        valid_time_end: End of validity interval for interval-based data
+        series_id: Optional UUID of existing series. If not provided, a new series
+                  will be created based on value_key.
+    """
     valid_time: datetime
     value_key: str
     value: Optional[float] = None
@@ -45,7 +73,24 @@ class ValueRow(BaseModel):
 
 
 class CreateBatchRequest(BaseModel):
-    """Request to create a batch with values."""
+    """Request to create a batch with values.
+
+    A batch represents a logical group of data points, typically all inserted
+    at the same time or as part of the same workflow. For overlapping series,
+    the known_time tracks when this data became available.
+
+    Attributes:
+        workflow_id: Workflow identifier (defaults to 'api-workflow')
+        batch_start_time: Start time of the batch (when data generation started)
+        batch_finish_time: End time of the batch (optional)
+        known_time: Time of knowledge - when the data became available.
+                   Defaults to insertion time if not provided.
+                   Important for overlapping series to track forecast updates.
+        batch_params: Custom parameters to store with the batch
+        value_rows: Array of value rows to insert
+        series_descriptions: Optional dict mapping value_key to description.
+                           Used when creating new series automatically.
+    """
     workflow_id: Optional[str] = Field(default="api-workflow", description="Workflow identifier (defaults to 'api-workflow')")
     batch_start_time: datetime
     batch_finish_time: Optional[datetime] = None
@@ -67,12 +112,14 @@ class CreateBatchResponse(BaseModel):
 class RecordUpdateRequest(BaseModel):
     """Request to update a record.
 
-    Supports both flat and overlapping series:
+    Supports both flat and overlapping series with different update semantics:
 
     **Flat series**: In-place update by (series_id, valid_time).
     - No batch_id or known_time needed
+    - Updates the value, annotation, or tags at that timestamp
 
-    **Overlapping series**: Creates new version. Lookup priority:
+    **Overlapping series**: Creates new version with known_time=now().
+    Lookup priority (use what you have available):
     - known_time + valid_time: Exact version lookup
     - batch_id + valid_time: Latest version in that batch
     - Just valid_time: Latest version overall
@@ -82,6 +129,14 @@ class RecordUpdateRequest(BaseModel):
     - Set to null to explicitly clear it
     - Set to a value to update it
 
+    Attributes:
+        valid_time: The valid time of the record to update
+        series_id: UUID of the series to update
+        batch_id: For overlapping: target specific batch
+        known_time: For overlapping: target specific version
+        value: New value (omit to leave unchanged, null to clear, or provide a value)
+        annotation: Text annotation (omit to leave unchanged, null to clear)
+        tags: List of tags (omit to leave unchanged, null or [] to clear)
     """
     valid_time: datetime
     series_id: str
@@ -111,7 +166,17 @@ class ErrorResponse(BaseModel):
 
 
 class CreateSeriesRequest(BaseModel):
-    """Request to create a new time series."""
+    """Request to create a new time series.
+
+    Attributes:
+        name: Human-readable identifier for the series (e.g., 'wind_power_forecast')
+        description: Optional description of the series
+        unit: Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')
+        labels: Labels to differentiate series with the same name
+               (e.g., {'site': 'Gotland', 'turbine': 'T01'})
+        data_class: 'flat' for immutable facts or 'overlapping' for versioned forecasts
+        retention: 'short' (6mo), 'medium' (3yr), or 'long' (5yr). Only relevant for overlapping.
+    """
     name: str = Field(..., description="Human-readable identifier for the series (e.g., 'wind_power_forecast')")
     description: Optional[str] = Field(None, description="Optional description of the series")
     unit: str = Field(default="dimensionless", description="Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')")
@@ -121,7 +186,12 @@ class CreateSeriesRequest(BaseModel):
 
 
 class CreateSeriesResponse(BaseModel):
-    """Response after creating a series."""
+    """Response after creating a series.
+
+    Attributes:
+        series_id: UUID of the newly created series
+        message: Status message
+    """
     series_id: str
     message: str
 

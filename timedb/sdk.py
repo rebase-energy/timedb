@@ -51,9 +51,40 @@ class SeriesCollection:
     """
     A lazy collection of time series that matches a set of filters.
 
-    This class acts as a proxy for one or more series, allowing fluent
-    filtering and operations without requiring the user to manage series IDs.
-    Resolution of series IDs happens just-in-time when an action is performed.
+    SeriesCollection provides a fluent, chainable API for filtering and
+    operating on one or more time series without manually managing series IDs.
+
+    The collection resolves which series match the filters only when an
+    operation like .read(), .insert(), or .update_records() is called.
+    This allows building complex queries progressively.
+
+    Filtering:
+        Series are filtered by name, unit, and labels. You can chain
+        multiple .where() calls to add additional label filters.
+
+    Operations:
+        Once filtered, the collection supports:
+        - read(): Retrieve time series data
+        - insert(): Add new data points
+        - update_records(): Update existing records
+        - count(): Count matching series
+        - list_labels(): List unique label values
+
+    Examples:
+        >>> from timedb import TimeDataClient
+        >>> client = TimeDataClient()
+
+        >>> # Single series with label filter
+        >>> client.series('wind_power').where(site='offshore_1').read()
+
+        >>> # Multiple filters (chained)
+        >>> client.series(unit='MW').where(site='offshore_1', turbine='T01').read()
+
+        >>> # All series with a given unit
+        >>> all_mw = client.series(unit='MW').read()
+
+        >>> # Count matching series
+        >>> count = client.series('wind_power').count()
     """
 
     def __init__(
@@ -77,7 +108,22 @@ class SeriesCollection:
         """
         Add additional label filters to narrow down the collection.
 
-        Returns a new SeriesCollection with the combined filters (immutable).
+        Creates a new SeriesCollection with combined filters. This method is
+        chainable and does not modify the original collection (immutable).
+
+        Args:
+            **labels: Key-value pairs for label filtering.
+                     Example: where(site='offshore_1', turbine='T01')
+
+        Returns:
+            SeriesCollection: New collection with combined filters applied
+
+        Example:
+            >>> coll = client.series('wind_power')
+            >>> # Add filters progressively
+            >>> coll = coll.where(site='offshore_1')
+            >>> coll = coll.where(turbine='T01')
+            >>> df = coll.read()  # Only applies both filters at read time
         """
         new_filters = {**self._label_filters, **labels}
         return SeriesCollection(
@@ -471,6 +517,37 @@ class SeriesCollection:
 class TimeDataClient:
     """
     High-level client for TimeDB with fluent API for series selection.
+
+    The TimeDataClient provides the main entry point for working with timedb.
+    It supports:
+
+    - Creating and deleting database schema
+    - Creating new time series with labels and metadata
+    - Building fluent queries to filter, read, and update series data
+
+    Example:
+        >>> from timedb import TimeDataClient
+        >>> import pandas as pd
+        >>> from datetime import datetime, timezone
+
+        >>> # Create client and schema
+        >>> td = TimeDataClient()
+        >>> td.create()
+
+        >>> # Create a series
+        >>> td.create_series('wind_power', unit='MW', labels={'site': 'offshore_1'})
+
+        >>> # Insert and read data using fluent API
+        >>> df = pd.DataFrame({
+        ...     'valid_time': [datetime.now(timezone.utc)],
+        ...     'wind_power': [100.0]
+        ... })
+        >>> td.series('wind_power').where(site='offshore_1').insert(df)
+        >>> result = td.series('wind_power').where(site='offshore_1').read()
+
+    Environment:
+        Requires TIMEDB_DSN or DATABASE_URL environment variable
+        to connect to the PostgreSQL database.
     """
 
     def __init__(self):
@@ -484,7 +561,24 @@ class TimeDataClient:
         """
         Start building a series collection by name and/or unit.
 
-        Returns a SeriesCollection that can be further filtered using .where().
+        Creates a lazy SeriesCollection that can be further filtered using
+        .where() to add label-based filters. The collection resolves to the
+        actual series only when an operation like .read() or .insert() is called.
+
+        Args:
+            name: Optional series name to filter by (e.g., 'wind_power')
+            unit: Optional unit to filter by (e.g., 'MW')
+
+        Returns:
+            SeriesCollection: A lazy collection that can be further filtered
+                with .where() and then used for read/insert/update operations
+
+        Example:
+            >>> client = TimeDataClient()
+            >>> # Get a specific series
+            >>> client.series('wind_power').where(site='offshore_1').read()
+            >>> # Get all series with unit 'MW'
+            >>> client.series(unit='MW').read()
         """
         return SeriesCollection(
             conninfo=self._conninfo,
@@ -536,18 +630,67 @@ class TimeDataClient:
         retention: str = "medium",
     ) -> uuid.UUID:
         """
-        Create a new series.
+        Create a new time series with metadata and labels.
+
+        Creates a new series in the database with the specified configuration.
+        Each series has a unique name+unit+labels combination.
 
         Args:
-            name: Parameter name (e.g., 'wind_power')
-            unit: Canonical unit (e.g., 'MW', 'dimensionless')
-            labels: Dictionary of labels (e.g., {"site": "Gotland"})
-            description: Optional description
-            data_class: 'flat' or 'overlapping' (default: 'flat')
-            retention: 'short', 'medium', or 'long' (default: 'medium', only for overlapping)
+            name (str):
+                Series name/identifier (e.g., 'wind_power', 'solar_irradiance').
+                Human-readable identifier for the measurement.
+
+            unit (str, default="dimensionless"):
+                Canonical unit for the series. Examples:
+                - 'MW' - megawatts (power)
+                - 'kWh' - kilowatt-hours (energy)
+                - 'C' - celsius (temperature)
+                - 'dimensionless' - unitless values
+
+            labels (dict, optional):
+                Dictionary of key-value labels to differentiate series with same
+                name. Example: {"site": "Gotland", "turbine": "T01"}
+                Enables filtering and organization of related series.
+
+            description (str, optional):
+                Human-readable description of the series and its contents.
+
+            data_class (str, default="flat"):
+                Type of time series data:
+                - 'flat': Immutable facts (e.g., meter readings, historical data)
+                - 'overlapping': Versioned/revised data (e.g., forecasts, estimates)
+                  with known_time tracking for changes over time
+
+            retention (str, default="medium"):
+                Data retention policy (overlapping series only):
+                - 'short': 6 months (fast queries on recent data)
+                - 'medium': 3 years (balanced for forecasts)
+                - 'long': 5 years (historical archival)
 
         Returns:
-            The series_id (UUID) for the newly created series
+            uuid.UUID: The unique series_id for this series, used in read/write operations
+
+        Raises:
+            ValueError: If series with same name+unit+labels already exists
+
+        Example:
+            >>> client = TimeDataClient()
+            >>> # Create a flat series for meter readings
+            >>> series_id = client.create_series(
+            ...     name='power_consumption',
+            ...     unit='kWh',
+            ...     labels={'building': 'main', 'floor': '3'},
+            ...     description='Power consumption for floor 3 of main building',
+            ...     data_class='flat'
+            ... )
+            >>> # Create an overlapping series for weather forecasts
+            >>> series_id = client.create_series(
+            ...     name='wind_speed',
+            ...     unit='m/s',
+            ...     labels={'site': 'offshore_1'},
+            ...     data_class='overlapping',
+            ...     retention='medium'
+            ... )
         """
         return _create_series(
             name=name,

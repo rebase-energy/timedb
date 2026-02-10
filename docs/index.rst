@@ -65,10 +65,11 @@ Documentation
    :caption: Contents:
 
    installation
+   api_reference
+   examples
    cli
    sdk
    api_setup
-   examples
 
 Indices and tables
 ==================
