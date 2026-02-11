@@ -14,7 +14,7 @@ Data model:
   (list-partitioned by retention) with known_time versioning.
 """
 import os
-from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any, FrozenSet
+from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timezone
 import pandas as pd
 
@@ -32,6 +32,7 @@ from .units import (
 import pint
 import psycopg
 from psycopg import errors
+from psycopg_pool import ConnectionPool
 
 load_dotenv(find_dotenv())
 
@@ -89,16 +90,16 @@ class SeriesCollection:
         name: Optional[str] = None,
         unit: Optional[str] = None,
         label_filters: Optional[Dict[str, str]] = None,
-        _id_cache: Optional[Dict[Tuple[str, FrozenSet[Tuple[str, str]]], int]] = None,
-        _meta_cache: Optional[Dict[int, Dict[str, str]]] = None,
+        _registry: Optional[Dict[int, Dict[str, Any]]] = None,
+        _pool: Optional[ConnectionPool] = None,
     ):
         self._conninfo = conninfo
         self._name = name
         self._unit = unit
         self._label_filters = label_filters or {}
-        self._id_cache = _id_cache or {}
-        self._meta_cache = _meta_cache or {}  # series_id -> {data_class, retention}
+        self._registry = _registry or {}  # series_id -> {name, unit, labels, data_class, retention}
         self._resolved = False
+        self._pool = _pool
 
     def where(self, **labels) -> 'SeriesCollection':
         """
@@ -127,21 +128,21 @@ class SeriesCollection:
             name=self._name,
             unit=self._unit,
             label_filters=new_filters,
-            _id_cache=self._id_cache.copy(),
-            _meta_cache=self._meta_cache.copy(),
+            _registry=self._registry.copy(),
+            _pool=self._pool,
         )
 
     def _resolve_ids(self) -> List[int]:
         """
         Resolve series IDs that match the current filters.
-        Also caches data_class and retention for routing.
+        Also caches data_class, retention, name, and unit for routing and reads.
         """
         if not self._resolved:
-            import psycopg
             import json
-            with psycopg.connect(self._conninfo) as conn:
+
+            def _do_resolve(conn):
                 with conn.cursor() as cur:
-                    sql = "SELECT series_id, name, unit, labels, data_class, retention FROM series_table"
+                    query = "SELECT series_id, name, unit, labels, data_class, retention FROM series_table"
                     clauses: list = []
                     params: list = []
                     if self._name:
@@ -154,30 +155,37 @@ class SeriesCollection:
                         clauses.append("labels @> %s::jsonb")
                         params.append(json.dumps(self._label_filters))
                     if clauses:
-                        sql += " WHERE " + " AND ".join(clauses)
-                    sql += " ORDER BY name, unit, series_id"
-                    cur.execute(sql, params)
-                    rows = cur.fetchall()
+                        query += " WHERE " + " AND ".join(clauses)
+                    query += " ORDER BY name, unit, series_id"
+                    cur.execute(query, params)
+                    return cur.fetchall()
+
+            if self._pool is not None:
+                with self._pool.connection() as conn:
+                    rows = _do_resolve(conn)
+            else:
+                with psycopg.connect(self._conninfo) as conn:
+                    rows = _do_resolve(conn)
 
             for series_id, name, unit, labels, data_class, retention in rows:
                 label_set = frozenset((k, v) for k, v in (labels or {}).items())
-                cache_key = (name, label_set)
-                self._id_cache[cache_key] = series_id
-                self._meta_cache[series_id] = {
+                self._registry[series_id] = {
+                    "name": name,
+                    "unit": unit,
+                    "labels": label_set,
                     "data_class": data_class,
                     "retention": retention,
                 }
             self._resolved = True
 
         if not self._label_filters:
-            return list(self._id_cache.values())
+            return list(self._registry.keys())
 
         matching_ids = []
         filter_set = set(self._label_filters.items())
-        for cache_key, series_id in self._id_cache.items():
-            name, label_set = cache_key
-            if filter_set.issubset(label_set):
-                matching_ids.append(series_id)
+        for sid, meta in self._registry.items():
+            if filter_set.issubset(meta["labels"]):
+                matching_ids.append(sid)
         return matching_ids
 
     def _get_single_id(self) -> int:
@@ -199,25 +207,25 @@ class SeriesCollection:
     def _get_data_classes(self) -> set:
         """Get the set of data_classes for all resolved series."""
         ids = self._resolve_ids()
-        return {self._meta_cache[sid]["data_class"] for sid in ids if sid in self._meta_cache}
+        return {self._registry[sid]["data_class"] for sid in ids if sid in self._registry}
 
     def _get_series_routing(self) -> Dict[int, Dict[str, str]]:
         """Get routing info (data_class, retention) for all resolved series."""
         ids = self._resolve_ids()
-        return {sid: self._meta_cache[sid] for sid in ids if sid in self._meta_cache}
+        return {sid: self._registry[sid] for sid in ids if sid in self._registry}
 
     def _get_name_to_id_mapping(self) -> Dict[str, int]:
         """Build name→series_id mapping from resolved, filtered series.
 
-        Uses the cache keyed by (name, label_set) but only includes
-        series that match the current filters (via _resolve_ids).
-        This ensures labels are respected when multiple series share a name.
+        Uses the registry but only includes series that match the current
+        filters (via _resolve_ids). This ensures labels are respected when
+        multiple series share a name.
         """
         ids = set(self._resolve_ids())
         mapping = {}
-        for (name, label_set), series_id in self._id_cache.items():
-            if series_id in ids:
-                mapping[name] = series_id
+        for sid, meta in self._registry.items():
+            if sid in ids:
+                mapping[meta["name"]] = sid
         return mapping
 
     def insert(
@@ -286,6 +294,8 @@ class SeriesCollection:
                 batch_params=batch_params,
                 series_ids={col_name: series_id},
                 series_routing=series_routing,
+                _pool=self._pool,
+                _registry=self._registry,
             )
         else:
             return _insert(
@@ -299,6 +309,8 @@ class SeriesCollection:
                 batch_params=batch_params,
                 series_ids=self._get_name_to_id_mapping(),
                 series_routing=series_routing,
+                _pool=self._pool,
+                _registry=self._registry,
             )
 
     def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
@@ -364,7 +376,7 @@ class SeriesCollection:
 
             filled_updates.append(u_copy)
 
-        return _update_records(filled_updates)
+        return _update_records(filled_updates, _pool=self._pool)
 
     def read(
         self,
@@ -411,6 +423,8 @@ class SeriesCollection:
                 start_valid=start_valid,
                 end_valid=end_valid,
                 return_mapping=return_mapping,
+                _pool=self._pool,
+                _registry=self._registry,
             )
         elif data_classes == {"overlapping"}:
             if versions:
@@ -421,6 +435,8 @@ class SeriesCollection:
                     start_known=start_known,
                     end_known=end_known,
                     return_mapping=return_mapping,
+                    _pool=self._pool,
+                    _registry=self._registry,
                 )
             else:
                 return _read_overlapping_latest(
@@ -430,11 +446,13 @@ class SeriesCollection:
                     start_known=start_known,
                     end_known=end_known,
                     return_mapping=return_mapping,
+                    _pool=self._pool,
+                    _registry=self._registry,
                 )
         else:
             # Mixed flat and overlapping - read both and merge
-            flat_ids = [sid for sid in series_ids if self._meta_cache[sid]["data_class"] == "flat"]
-            overlapping_ids = [sid for sid in series_ids if self._meta_cache[sid]["data_class"] == "overlapping"]
+            flat_ids = [sid for sid in series_ids if self._registry[sid]["data_class"] == "flat"]
+            overlapping_ids = [sid for sid in series_ids if self._registry[sid]["data_class"] == "overlapping"]
 
             dfs = []
             mappings = {}
@@ -445,6 +463,8 @@ class SeriesCollection:
                     start_valid=start_valid,
                     end_valid=end_valid,
                     return_mapping=True,
+                    _pool=self._pool,
+                    _registry=self._registry,
                 )
                 dfs.append(result[0])
                 mappings.update(result[1])
@@ -458,6 +478,8 @@ class SeriesCollection:
                         start_known=start_known,
                         end_known=end_known,
                         return_mapping=True,
+                        _pool=self._pool,
+                        _registry=self._registry,
                     )
                 else:
                     result = _read_overlapping_latest(
@@ -467,6 +489,8 @@ class SeriesCollection:
                         start_known=start_known,
                         end_known=end_known,
                         return_mapping=True,
+                        _pool=self._pool,
+                        _registry=self._registry,
                     )
                 dfs.append(result[0])
                 mappings.update(result[1])
@@ -488,8 +512,8 @@ class SeriesCollection:
         """List all unique values for a specific label key in this collection."""
         self._resolve_ids()
         values = set()
-        for label_set in self._id_cache.keys():
-            for key, value in label_set:
+        for meta in self._registry.values():
+            for key, value in meta["labels"]:
                 if key == label_key:
                     values.add(value)
         return sorted(list(values))
@@ -541,8 +565,19 @@ class TimeDataClient:
         to connect to the PostgreSQL database.
     """
 
-    def __init__(self):
-        self._conninfo = _get_conninfo()
+    def __init__(self, conninfo: Optional[str] = None, min_size: int = 2, max_size: int = 10):
+        self._conninfo = conninfo or _get_conninfo()
+        self._pool = ConnectionPool(self._conninfo, min_size=min_size, max_size=max_size, open=True)
+
+    def close(self):
+        """Close the connection pool."""
+        self._pool.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def series(
         self,
@@ -575,6 +610,7 @@ class TimeDataClient:
             conninfo=self._conninfo,
             name=name,
             unit=unit,
+            _pool=self._pool,
         )
 
     def create(
@@ -704,7 +740,7 @@ class TimeDataClient:
 
         See SeriesCollection.update_records for full documentation.
         """
-        return _update_records(updates)
+        return _update_records(updates, _pool=self._pool)
 
 
 # =============================================================================
@@ -830,38 +866,72 @@ def _dataframe_to_value_rows(
 
     has_intervals = valid_time_end_col is not None and valid_time_end_col in df.columns
 
-    pint_pandas_cols = {
-        col: extract_unit_from_pint_pandas_series(df[col])
+    # Validate timezone on the column dtype or first value (once, not per-row)
+    vt_series = df[valid_time_col]
+    if hasattr(vt_series.dtype, 'tz'):
+        if vt_series.dtype.tz is None:
+            raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
+    elif len(vt_series) > 0:
+        first_vt = vt_series.iloc[0]
+        if isinstance(first_vt, (pd.Timestamp, datetime)) and first_vt.tzinfo is None:
+            raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
+
+    if has_intervals:
+        vte_series = df[valid_time_end_col]
+        if hasattr(vte_series.dtype, 'tz'):
+            if vte_series.dtype.tz is None:
+                raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
+        elif len(vte_series) > 0:
+            first_vte = vte_series.iloc[0]
+            if isinstance(first_vte, (pd.Timestamp, datetime)) and first_vte.tzinfo is None:
+                raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
+
+    # Detect if any columns use pint
+    has_pint = any(
+        is_pint_pandas_series(df[col]) or (
+            len(df) > 0 and isinstance(df[col].iloc[0], pint.Quantity)
+        )
         for col in series_cols
-        if is_pint_pandas_series(df[col])
-    }
+        if len(df) > 0 and pd.notna(df[col].iloc[0])
+    )
 
+    # Fast path: no pint quantities — use direct indexing (avoids iterrows overhead)
+    if not has_pint:
+        vt_col = df[valid_time_col]
+        vte_col = df[valid_time_end_col] if has_intervals else None
+
+        rows = []
+        for col_name in series_cols:
+            series_id = series_mapping[col_name]
+            val_col = df[col_name]
+
+            for i in range(len(df)):
+                vt = vt_col.iloc[i]
+                val = val_col.iloc[i]
+                converted_value = None if pd.isna(val) else float(val)
+
+                if has_intervals:
+                    vte = vte_col.iloc[i]
+                    rows.append((vt, vte, series_id, converted_value))
+                else:
+                    rows.append((vt, series_id, converted_value))
+
+        return rows
+
+    # Slow path: pint quantities — need per-value unit conversion
     rows = []
-    for _, row in df.iterrows():
-        valid_time = row[valid_time_col]
-
-        if isinstance(valid_time, pd.Timestamp):
-            if valid_time.tzinfo is None:
-                raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
-        elif isinstance(valid_time, datetime):
-            if valid_time.tzinfo is None:
-                raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
+    for row_tuple in df.itertuples(index=False):
+        valid_time = getattr(row_tuple, valid_time_col)
 
         valid_time_end = None
         if has_intervals:
-            valid_time_end = row[valid_time_end_col]
-            if isinstance(valid_time_end, pd.Timestamp):
-                if valid_time_end.tzinfo is None:
-                    raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
-            elif isinstance(valid_time_end, datetime):
-                if valid_time_end.tzinfo is None:
-                    raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
+            valid_time_end = getattr(row_tuple, valid_time_end_col)
 
         for name in series_cols:
             series_id = series_mapping[name]
             canonical_unit = units[name]
 
-            value = row[name]
+            value = getattr(row_tuple, name)
 
             if pd.isna(value):
                 converted_value = None
@@ -971,16 +1041,31 @@ def _read_flat(
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     return_mapping: bool = False,
+    _pool: Optional[ConnectionPool] = None,
+    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
     """Read flat values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
-    df = db.read.read_flat(
-        conninfo,
-        series_ids=series_ids,
-        start_valid=start_valid,
-        end_valid=end_valid,
+    # Use raw variant (no JOIN) when we have cached metadata
+    use_raw = _registry and series_ids and all(
+        sid in _registry and "name" in _registry[sid] for sid in series_ids
     )
+
+    conn_source = _pool if _pool is not None else conninfo
+
+    if use_raw:
+        if _pool is not None:
+            with _pool.connection() as conn:
+                df = db.read.read_flat_raw(conn, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
+        else:
+            df = db.read.read_flat_raw(conninfo, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
+    else:
+        if _pool is not None:
+            with _pool.connection() as conn:
+                df = db.read.read_flat(conn, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
+        else:
+            df = db.read.read_flat(conninfo, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
 
     if len(df) == 0:
         if return_mapping:
@@ -988,17 +1073,22 @@ def _read_flat(
         else:
             return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC"))
 
-    df_reset = df.reset_index()
+    # Build name/unit maps from cache or query results
+    if _registry and series_ids:
+        name_map = {sid: _registry[sid]["name"] for sid in series_ids if sid in _registry}
+        unit_map = {sid: _registry[sid]["unit"] for sid in series_ids if sid in _registry}
+    else:
+        df_reset = df.reset_index() if 'series_id' in df.index.names else df
+        name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
+        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
 
-    name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
-    unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
+    # Pivot: raw variant returns flat df, JOINed variant returns indexed df
+    if use_raw:
+        df_pivoted = df.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
+    else:
+        df_reset = df.reset_index()
+        df_pivoted = df_reset.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
 
-    df_pivoted = df_reset.pivot_table(
-        index='valid_time',
-        columns='series_id',
-        values='value',
-        aggfunc='first',
-    )
     df_pivoted = df_pivoted.sort_index()
 
     for col_series_id in df_pivoted.columns:
@@ -1022,18 +1112,29 @@ def _read_overlapping_latest(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     return_mapping: bool = False,
+    _pool: Optional[ConnectionPool] = None,
+    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
     """Read latest overlapping values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
-    df = db.read.read_overlapping_latest(
-        conninfo,
-        series_ids=series_ids,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    use_raw = _registry and series_ids and all(
+        sid in _registry and "name" in _registry[sid] for sid in series_ids
     )
+
+    read_kwargs = dict(series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+                       start_known=start_known, end_known=end_known)
+
+    if use_raw:
+        read_fn = db.read.read_overlapping_latest_raw
+    else:
+        read_fn = db.read.read_overlapping_latest
+
+    if _pool is not None:
+        with _pool.connection() as conn:
+            df = read_fn(conn, **read_kwargs)
+    else:
+        df = read_fn(conninfo, **read_kwargs)
 
     if len(df) == 0:
         if return_mapping:
@@ -1041,17 +1142,20 @@ def _read_overlapping_latest(
         else:
             return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC"))
 
-    df_reset = df.reset_index()
+    if _registry and series_ids:
+        name_map = {sid: _registry[sid]["name"] for sid in series_ids if sid in _registry}
+        unit_map = {sid: _registry[sid]["unit"] for sid in series_ids if sid in _registry}
+    else:
+        df_reset = df.reset_index() if 'series_id' in df.index.names else df
+        name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
+        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
 
-    name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
-    unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
+    if use_raw:
+        df_pivoted = df.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
+    else:
+        df_reset = df.reset_index()
+        df_pivoted = df_reset.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
 
-    df_pivoted = df_reset.pivot_table(
-        index='valid_time',
-        columns='series_id',
-        values='value',
-        aggfunc='first',
-    )
     df_pivoted = df_pivoted.sort_index()
 
     for col_series_id in df_pivoted.columns:
@@ -1075,18 +1179,29 @@ def _read_overlapping_all(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     return_mapping: bool = False,
+    _pool: Optional[ConnectionPool] = None,
+    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
     """Read all overlapping versions and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
-    df = db.read.read_overlapping_all(
-        conninfo,
-        series_ids=series_ids,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    use_raw = _registry and series_ids and all(
+        sid in _registry and "name" in _registry[sid] for sid in series_ids
     )
+
+    read_kwargs = dict(series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+                       start_known=start_known, end_known=end_known)
+
+    if use_raw:
+        read_fn = db.read.read_overlapping_all_raw
+    else:
+        read_fn = db.read.read_overlapping_all
+
+    if _pool is not None:
+        with _pool.connection() as conn:
+            df = read_fn(conn, **read_kwargs)
+    else:
+        df = read_fn(conninfo, **read_kwargs)
 
     if len(df) == 0:
         empty_index = pd.MultiIndex.from_tuples([], names=["known_time", "valid_time"])
@@ -1095,17 +1210,20 @@ def _read_overlapping_all(
         else:
             return pd.DataFrame(index=empty_index)
 
-    df_reset = df.reset_index()
+    if _registry and series_ids:
+        name_map = {sid: _registry[sid]["name"] for sid in series_ids if sid in _registry}
+        unit_map = {sid: _registry[sid]["unit"] for sid in series_ids if sid in _registry}
+    else:
+        df_reset = df.reset_index() if 'series_id' in df.index.names else df
+        name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
+        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
 
-    name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
-    unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
+    if use_raw:
+        df_pivoted = df.pivot_table(index=['known_time', 'valid_time'], columns='series_id', values='value', aggfunc='first')
+    else:
+        df_reset = df.reset_index()
+        df_pivoted = df_reset.pivot_table(index=['known_time', 'valid_time'], columns='series_id', values='value', aggfunc='first')
 
-    df_pivoted = df_reset.pivot_table(
-        index=['known_time', 'valid_time'],
-        columns='series_id',
-        values='value',
-        aggfunc='first',
-    )
     df_pivoted = df_pivoted.sort_index()
 
     for col_series_id in df_pivoted.columns:
@@ -1133,6 +1251,8 @@ def _insert(
     batch_params: Optional[dict] = None,
     series_ids: Optional[Dict[str, int]] = None,
     series_routing: Optional[Dict[int, Dict[str, str]]] = None,
+    _pool: Optional[ConnectionPool] = None,
+    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> InsertResult:
     """
     Insert a batch with time series data from a pandas DataFrame.
@@ -1163,31 +1283,51 @@ def _insert(
     if series_routing is None:
         series_routing = {}
 
-    with psycopg.connect(conninfo) as conn:
+    # Use meta_cache to avoid a separate DB round-trip for series info
+    if _registry:
         for col_name, canonical_unit in series_info.items():
             provided_series_id = series_ids.get(col_name)
+            if provided_series_id is not None and provided_series_id in _registry:
+                meta = _registry[provided_series_id]
+                series_mapping[col_name] = provided_series_id
+                units[col_name] = meta.get("unit", canonical_unit)
+                if provided_series_id not in series_routing:
+                    series_routing[provided_series_id] = {
+                        "data_class": meta["data_class"],
+                        "retention": meta["retention"],
+                    }
 
-            if provided_series_id is not None:
-                try:
-                    series_info_db = db.series.get_series_info(conn, provided_series_id)
-                    series_id = provided_series_id
-                    canonical_unit = series_info_db['unit']
-                    # Cache routing info if not already present
-                    if series_id not in series_routing:
-                        series_routing[series_id] = {
-                            "data_class": series_info_db['data_class'],
-                            "retention": series_info_db['retention'],
-                        }
-                except ValueError as e:
-                    raise ValueError(f"series_id {provided_series_id} not found in database") from e
-            else:
-                raise ValueError(
-                    f"No series found for column '{col_name}'. "
-                    f"Create the series first with td.create_series(name='{col_name}', ...)"
-                )
+    # Fall back to DB lookup for any series not resolved from cache
+    missing_cols = [col for col in series_info if col not in series_mapping]
+    if missing_cols:
+        def _lookup_series(conn):
+            for col_name in missing_cols:
+                canonical_unit = series_info[col_name]
+                provided_series_id = series_ids.get(col_name)
+                if provided_series_id is not None:
+                    try:
+                        series_info_db = db.series.get_series_info(conn, provided_series_id)
+                        series_mapping[col_name] = provided_series_id
+                        units[col_name] = series_info_db['unit']
+                        if provided_series_id not in series_routing:
+                            series_routing[provided_series_id] = {
+                                "data_class": series_info_db['data_class'],
+                                "retention": series_info_db['retention'],
+                            }
+                    except ValueError as e:
+                        raise ValueError(f"series_id {provided_series_id} not found in database") from e
+                else:
+                    raise ValueError(
+                        f"No series found for column '{col_name}'. "
+                        f"Create the series first with td.create_series(name='{col_name}', ...)"
+                    )
 
-            series_mapping[col_name] = series_id
-            units[col_name] = canonical_unit
+        if _pool is not None:
+            with _pool.connection() as conn:
+                _lookup_series(conn)
+        else:
+            with psycopg.connect(conninfo) as conn:
+                _lookup_series(conn)
 
     value_rows = _dataframe_to_value_rows(
         df=df,
@@ -1198,16 +1338,29 @@ def _insert(
     )
 
     try:
-        batch_id = db.insert.insert_batch_with_values(
-            conninfo=conninfo,
-            workflow_id=workflow_id,
-            batch_start_time=batch_start_time,
-            batch_finish_time=batch_finish_time,
-            value_rows=value_rows,
-            known_time=known_time,
-            batch_params=batch_params,
-            series_routing=series_routing,
-        )
+        if _pool is not None:
+            with _pool.connection() as conn:
+                batch_id = db.insert.insert_batch_with_values(
+                    conninfo=conn,
+                    workflow_id=workflow_id,
+                    batch_start_time=batch_start_time,
+                    batch_finish_time=batch_finish_time,
+                    value_rows=value_rows,
+                    known_time=known_time,
+                    batch_params=batch_params,
+                    series_routing=series_routing,
+                )
+        else:
+            batch_id = db.insert.insert_batch_with_values(
+                conninfo=conninfo,
+                workflow_id=workflow_id,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
+                value_rows=value_rows,
+                known_time=known_time,
+                batch_params=batch_params,
+                series_routing=series_routing,
+            )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         error_msg = str(e)
         if any(t in error_msg for t in ["batches_table", "flat", "overlapping_", "series_table", "does not exist"]):
@@ -1235,13 +1388,17 @@ def _insert(
 
 def _update_records(
     updates: List[Dict[str, Any]],
+    _pool: Optional[ConnectionPool] = None,
 ) -> Dict[str, List]:
     """
     Update overlapping records (flat are immutable).
 
     Wrapper around db.update.update_records that handles the database connection.
     """
-    conninfo = _get_conninfo()
-
-    with psycopg.connect(conninfo) as conn:
-        return db.update.update_records(conn, updates=updates)
+    if _pool is not None:
+        with _pool.connection() as conn:
+            return db.update.update_records(conn, updates=updates)
+    else:
+        conninfo = _get_conninfo()
+        with psycopg.connect(conninfo) as conn:
+            return db.update.update_records(conn, updates=updates)

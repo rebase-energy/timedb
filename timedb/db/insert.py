@@ -1,9 +1,20 @@
 import json
-from typing import Optional, Iterable, Tuple, Dict, List
+from contextlib import contextmanager
+from typing import Optional, Iterable, Tuple, Dict, List, Union
 from datetime import datetime
 from collections import defaultdict
 import psycopg
 from psycopg import sql
+
+
+@contextmanager
+def _ensure_conn(conninfo_or_conn):
+    """Yield a psycopg Connection, creating one only if given a string."""
+    if isinstance(conninfo_or_conn, str):
+        with psycopg.connect(conninfo_or_conn) as conn:
+            yield conn
+    else:
+        yield conninfo_or_conn
 
 _OVERLAPPING_TABLES = {
     "short":  "overlapping_short",
@@ -96,23 +107,11 @@ def _lookup_series_routing(
     return {row[0]: {"data_class": row[1], "retention": row[2]} for row in rows}
 
 
-def insert_flat(
-    conn: psycopg.Connection,
-    *,
-    value_rows: Iterable[Tuple],
-) -> None:
-    """
-    Insert flat (fact) values into the flat table.
+_COPY_THRESHOLD = 50
 
-    Each row is: (valid_time, series_id, value)
-    or with valid_time_end: (valid_time, valid_time_end, series_id, value)
 
-    Uses ON CONFLICT to upsert (update value on duplicate).
-
-    Args:
-        conn: Database connection
-        value_rows: Iterable of value tuples
-    """
+def _validate_value_rows(value_rows: Iterable[Tuple]) -> List[Tuple]:
+    """Validate and normalize value rows, returning (series_id, valid_time, valid_time_end, value) tuples."""
     rows_list = []
     for item in value_rows:
         if len(item) == 3:
@@ -122,7 +121,7 @@ def insert_flat(
             valid_time, valid_time_end, series_id, value = item
         else:
             raise ValueError(
-                "Each flat row must be "
+                "Each row must be "
                 "(valid_time, series_id, value) or "
                 "(valid_time, valid_time_end, series_id, value)"
             )
@@ -141,20 +140,62 @@ def insert_flat(
                 raise ValueError("valid_time_end must be strictly after valid_time")
 
         rows_list.append((series_id, valid_time, valid_time_end, value))
+    return rows_list
+
+
+def insert_flat(
+    conn: psycopg.Connection,
+    *,
+    value_rows: Iterable[Tuple],
+) -> None:
+    """
+    Insert flat (fact) values into the flat table.
+
+    Each row is: (valid_time, series_id, value)
+    or with valid_time_end: (valid_time, valid_time_end, series_id, value)
+
+    Uses ON CONFLICT to upsert (update value on duplicate).
+    For large batches (>=50 rows), uses COPY into a staging table for performance.
+
+    Args:
+        conn: Database connection
+        value_rows: Iterable of value tuples
+    """
+    rows_list = _validate_value_rows(value_rows)
 
     if not rows_list:
         return
 
     with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO flat (series_id, valid_time, valid_time_end, value)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (series_id, valid_time)
-            DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end
-            """,
-            rows_list,
-        )
+        if len(rows_list) >= _COPY_THRESHOLD:
+            # COPY path: staging table → INSERT...ON CONFLICT
+            cur.execute("""
+                CREATE TEMP TABLE _flat_staging (
+                    series_id bigint,
+                    valid_time timestamptz,
+                    valid_time_end timestamptz,
+                    value double precision
+                ) ON COMMIT DROP
+            """)
+            with cur.copy("COPY _flat_staging (series_id, valid_time, valid_time_end, value) FROM STDIN") as copy:
+                for row in rows_list:
+                    copy.write_row(row)
+            cur.execute("""
+                INSERT INTO flat (series_id, valid_time, valid_time_end, value)
+                SELECT series_id, valid_time, valid_time_end, value FROM _flat_staging
+                ON CONFLICT (series_id, valid_time)
+                DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end
+            """)
+        else:
+            cur.executemany(
+                """
+                INSERT INTO flat (series_id, valid_time, valid_time_end, value)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (series_id, valid_time)
+                DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end
+                """,
+                rows_list,
+            )
 
 
 def insert_overlapping(
@@ -173,6 +214,8 @@ def insert_overlapping(
 
     Each row is: (valid_time, series_id, value)
     or with valid_time_end: (valid_time, valid_time_end, series_id, value)
+
+    For large batches (>=50 rows per tier), uses COPY protocol for performance.
 
     Args:
         conn: Database connection
@@ -218,13 +261,22 @@ def insert_overlapping(
     with conn.cursor() as cur:
         for tier, rows in by_tier.items():
             table = _OVERLAPPING_TABLES[tier]
-            cur.executemany(
-                sql.SQL("""
-                INSERT INTO {} (batch_id, series_id, valid_time, valid_time_end, value, known_time)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """).format(sql.Identifier(table)),
-                rows,
-            )
+            if len(rows) >= _COPY_THRESHOLD:
+                # COPY path for large batches
+                copy_sql = sql.SQL(
+                    "COPY {} (batch_id, series_id, valid_time, valid_time_end, value, known_time) FROM STDIN"
+                ).format(sql.Identifier(table))
+                with cur.copy(copy_sql) as copy:
+                    for row in rows:
+                        copy.write_row(row)
+            else:
+                cur.executemany(
+                    sql.SQL("""
+                    INSERT INTO {} (batch_id, series_id, valid_time, valid_time_end, value, known_time)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """).format(sql.Identifier(table)),
+                    rows,
+                )
 
 
 def insert_values(
@@ -299,7 +351,7 @@ def insert_values(
 
 
 def insert_batch_with_values(
-    conninfo: str,
+    conninfo: Union[psycopg.Connection, str],
     *,
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
@@ -320,6 +372,7 @@ def insert_batch_with_values(
       - (valid_time, valid_time_end, series_id, value),      # interval
 
     Args:
+        conninfo: Database connection or connection string
         workflow_id: Optional workflow/pipeline identifier
         batch_start_time: Optional start time of the batch
         batch_finish_time: Optional finish time of the batch
@@ -336,7 +389,7 @@ def insert_batch_with_values(
     # Materialize rows so we can iterate multiple times and extract series_ids
     rows_list = list(value_rows)
 
-    with psycopg.connect(conninfo) as conn:
+    with _ensure_conn(conninfo) as conn:
         with conn.transaction():
             # Look up routing if not provided
             if series_routing is None:
