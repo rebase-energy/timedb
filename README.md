@@ -32,6 +32,14 @@ In practice, teams work around these limitations by overwriting data, duplicatin
 pip install timedb
 ```
 
+## Quick Start
+
+For a hands-on tutorial that gets you up and running, see [QUICKSTART.md](QUICKSTART.md). The quick start guide walks you through:
+- Setting up TimescaleDB with Docker for local testing
+- Installing timedb
+- Running the interactive quickstart notebook
+- Creating your first time series
+
 ## Basic usage
 
 ```python
