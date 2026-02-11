@@ -510,13 +510,49 @@ class SeriesCollection:
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
-        self._resolve_ids()
+        ids = set(self._resolve_ids())
         values = set()
-        for meta in self._registry.values():
-            for key, value in meta["labels"]:
-                if key == label_key:
-                    values.add(value)
+        for sid, meta in self._registry.items():
+            if sid in ids:
+                for key, value in meta["labels"]:
+                    if key == label_key:
+                        values.add(value)
         return sorted(list(values))
+
+    def list_series(self) -> List[Dict[str, Any]]:
+        """List all series matching the current filters with their metadata.
+
+        Returns:
+            List of dicts, each containing:
+            - series_id: int
+            - name: str
+            - unit: str
+            - labels: dict
+            - data_class: str
+            - retention: str
+
+        Example:
+            >>> client.series('wind_power').where(site='Gotland').list_series()
+            [
+                {'series_id': 1, 'name': 'wind_power', 'unit': 'MW',
+                 'labels': {'turbine': 'T01', 'site': 'Gotland', 'type': 'onshore'},
+                 'data_class': 'flat', 'retention': 'medium'},
+                ...
+            ]
+        """
+        ids = self._resolve_ids()
+        return [
+            {
+                "series_id": sid,
+                "name": self._registry[sid]["name"],
+                "unit": self._registry[sid]["unit"],
+                "labels": dict(self._registry[sid]["labels"]),
+                "data_class": self._registry[sid]["data_class"],
+                "retention": self._registry[sid]["retention"],
+            }
+            for sid in ids
+            if sid in self._registry
+        ]
 
     def count(self) -> int:
         """Count how many series match the current filters."""
@@ -1013,21 +1049,10 @@ def _create_series(
                 retention=retention,
             )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        error_msg = str(e)
-        if "series_table" in error_msg or "does not exist" in error_msg:
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
-    except Exception as e:
-        error_msg = str(e)
-        if "series_table" in error_msg or "does not exist" in error_msg:
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
+        raise ValueError(
+            "TimeDB tables do not exist. Please create the schema first by running:\n"
+            "  td.create()"
+        ) from e
 
 
 def _delete() -> None:
@@ -1362,21 +1387,10 @@ def _insert(
                 series_routing=series_routing,
             )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        error_msg = str(e)
-        if any(t in error_msg for t in ["batches_table", "flat", "overlapping_", "series_table", "does not exist"]):
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
-    except Exception as e:
-        error_msg = str(e)
-        if any(t in error_msg for t in ["batches_table", "flat", "overlapping_", "series_table", "does not exist"]):
-            raise ValueError(
-                "TimeDB tables do not exist. Please create the schema first by running:\n"
-                "  td.create()"
-            ) from None
-        raise
+        raise ValueError(
+            "TimeDB tables do not exist. Please create the schema first by running:\n"
+            "  td.create()"
+        ) from e
 
     return InsertResult(
         batch_id=batch_id,
