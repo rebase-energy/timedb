@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from dotenv import load_dotenv
 import pandas as pd
 import psycopg
@@ -6,6 +7,16 @@ from datetime import datetime
 from typing import Optional, List, Union
 
 load_dotenv()
+
+
+@contextmanager
+def _ensure_conn(conninfo_or_conn):
+    """Yield a psycopg Connection, creating one only if given a string."""
+    if isinstance(conninfo_or_conn, str):
+        with psycopg.connect(conninfo_or_conn) as conn:
+            yield conn
+    else:
+        yield conninfo_or_conn
 
 
 def _build_where_clause(
@@ -62,7 +73,7 @@ def _build_where_clause(
 
 
 def read_flat(
-    conninfo: str,
+    conninfo: Union[psycopg.Connection, str],
     *,
     series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
@@ -74,7 +85,7 @@ def read_flat(
     Returns immutable fact data (meter readings, measurements).
 
     Args:
-        conninfo: Database connection string
+        conninfo: Database connection or connection string
         series_ids: Series ID or list of IDs (optional)
         start_valid: Start of time range (optional)
         end_valid: End of time range (optional)
@@ -107,7 +118,7 @@ def read_flat(
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with psycopg.connect(conninfo) as conn:
+        with _ensure_conn(conninfo) as conn:
             df = pd.read_sql(sql, conn, params=params)
 
     if len(df) == 0:
@@ -119,7 +130,7 @@ def read_flat(
 
 
 def read_overlapping_latest(
-    conninfo: str,
+    conninfo: Union[psycopg.Connection, str],
     *,
     series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
@@ -134,7 +145,7 @@ def read_overlapping_latest(
     determined by the most recent known_time via DISTINCT ON.
 
     Args:
-        conninfo: Database connection string
+        conninfo: Database connection or connection string
         series_ids: Series ID or list of IDs (optional)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
@@ -171,7 +182,7 @@ def read_overlapping_latest(
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with psycopg.connect(conninfo) as conn:
+        with _ensure_conn(conninfo) as conn:
             df = pd.read_sql(sql, conn, params=params)
 
     if len(df) == 0:
@@ -183,7 +194,7 @@ def read_overlapping_latest(
 
 
 def read_overlapping_all(
-    conninfo: str,
+    conninfo: Union[psycopg.Connection, str],
     *,
     series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
@@ -198,7 +209,7 @@ def read_overlapping_all(
     Useful for analyzing forecast revisions and backtesting.
 
     Args:
-        conninfo: Database connection string
+        conninfo: Database connection or connection string
         series_ids: Series ID or list of IDs (optional)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
@@ -236,7 +247,7 @@ def read_overlapping_all(
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with psycopg.connect(conninfo) as conn:
+        with _ensure_conn(conninfo) as conn:
             df = pd.read_sql(sql, conn, params=params)
 
     if len(df) == 0:
@@ -250,7 +261,7 @@ def read_overlapping_all(
 
 # Combined read functions (query both flat and overlapping)
 def read_values_flat(
-    conninfo: str,
+    conninfo: Union[psycopg.Connection, str],
     *,
     series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
@@ -295,7 +306,7 @@ def read_values_flat(
 
 
 def read_values_overlapping(
-    conninfo: str,
+    conninfo: Union[psycopg.Connection, str],
     *,
     series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
@@ -345,7 +356,7 @@ def read_values_overlapping(
             import warnings
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-                with psycopg.connect(conninfo) as conn:
+                with _ensure_conn(conninfo) as conn:
                     df_flat = pd.read_sql(sql, conn, params=params)
             if len(df_flat) > 0:
                 df_flat["known_time"] = pd.to_datetime(df_flat["known_time"], utc=True)
@@ -369,6 +380,139 @@ def read_values_overlapping(
         return df_flat
     else:
         return pd.concat([df_flat, df_overlapping]).sort_index()
+
+
+def read_flat_raw(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_ids: Optional[Union[int, List[int]]] = None,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read flat values without JOINing series_table.
+
+    Returns only (valid_time, series_id, value) — no name/unit/labels.
+    Use when the caller already has series metadata cached.
+    """
+    where_clause, params = _build_where_clause(
+        series_ids=series_ids,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        time_col="v.valid_time",
+        known_time_col="v.inserted_at",
+    )
+
+    sql = f"""
+    SELECT v.valid_time, v.series_id, v.value
+    FROM flat v
+    {where_clause}
+    ORDER BY v.valid_time, v.series_id;
+    """
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(sql, conn, params=params)
+
+    if len(df) == 0:
+        return df
+
+    df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
+    return df
+
+
+def read_overlapping_latest_raw(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_ids: Optional[Union[int, List[int]]] = None,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read latest overlapping values without JOINing series_table.
+
+    Returns only (valid_time, series_id, value) — no name/unit/labels.
+    Use when the caller already has series metadata cached.
+    """
+    where_clause, params = _build_where_clause(
+        series_ids=series_ids,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+        time_col="v.valid_time",
+        known_time_col="v.known_time",
+    )
+
+    sql = f"""
+    SELECT DISTINCT ON (v.series_id, v.valid_time)
+        v.valid_time, v.series_id, v.value
+    FROM all_overlapping_raw v
+    {where_clause}
+    ORDER BY v.series_id, v.valid_time, v.known_time DESC;
+    """
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(sql, conn, params=params)
+
+    if len(df) == 0:
+        return df
+
+    df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
+    return df
+
+
+def read_overlapping_all_raw(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_ids: Optional[Union[int, List[int]]] = None,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read all overlapping versions without JOINing series_table.
+
+    Returns only (known_time, valid_time, series_id, value) — no name/unit/labels.
+    Use when the caller already has series metadata cached.
+    """
+    where_clause, params = _build_where_clause(
+        series_ids=series_ids,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+        time_col="v.valid_time",
+        known_time_col="v.known_time",
+    )
+
+    sql = f"""
+    SELECT v.known_time, v.valid_time, v.series_id, v.value
+    FROM all_overlapping_raw v
+    {where_clause}
+    ORDER BY v.known_time, v.valid_time, v.series_id;
+    """
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(sql, conn, params=params)
+
+    if len(df) == 0:
+        return df
+
+    df["known_time"] = pd.to_datetime(df["known_time"], utc=True)
+    df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
+    return df
 
 
 if __name__ == "__main__":
