@@ -13,8 +13,8 @@ Get up and running with timedb in under 10 minutes.
 Navigate to your cloned timedb repository and install it in development mode:
 
 ```bash
-cd /path/to/timedb
-
+git clone https://github.com/FreaxMATE/timedb.git
+cd timedb
 # Using uv (recommended)
 uv sync
 
