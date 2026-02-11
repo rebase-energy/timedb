@@ -18,7 +18,6 @@ Environment:
     for database connection.
 """
 import os
-import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
@@ -67,7 +66,7 @@ class ValueRow(BaseModel):
     value_key: str
     value: Optional[float] = None
     valid_time_end: Optional[datetime] = None  # For interval values
-    series_id: Optional[str] = None  # Optional series_id. If not provided, a new series will be created.
+    series_id: Optional[int] = None  # Optional series_id. If not provided, a new series will be created.
 
     model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
 
@@ -104,9 +103,9 @@ class CreateBatchRequest(BaseModel):
 
 class CreateBatchResponse(BaseModel):
     """Response after creating a batch."""
-    batch_id: str
+    batch_id: int
     message: str
-    series_ids: Dict[str, str]  # Maps name to series_id (UUID as string)
+    series_ids: Dict[str, int]  # Maps name to series_id
 
 
 class RecordUpdateRequest(BaseModel):
@@ -139,8 +138,8 @@ class RecordUpdateRequest(BaseModel):
         tags: List of tags (omit to leave unchanged, null or [] to clear)
     """
     valid_time: datetime
-    series_id: str
-    batch_id: Optional[str] = Field(default=None, description="For overlapping: target specific batch")
+    series_id: int
+    batch_id: Optional[int] = Field(default=None, description="For overlapping: target specific batch")
     known_time: Optional[datetime] = Field(default=None, description="For overlapping: target specific version")
     value: Optional[float] = Field(default=None, description="Omit to leave unchanged, null to clear, or provide a value")
     annotation: Optional[str] = Field(default=None, description="Omit to leave unchanged, null to clear, or provide a value")
@@ -189,10 +188,10 @@ class CreateSeriesResponse(BaseModel):
     """Response after creating a series.
 
     Attributes:
-        series_id: UUID of the newly created series
+        series_id: ID of the newly created series
         message: Status message
     """
-    series_id: str
+    series_id: int
     message: str
 
 
@@ -325,14 +324,13 @@ async def upload_timeseries(
     """
     try:
         dsn = get_dsn()
-        batch_id = uuid.uuid4()
-        
+
         # Ensure timezone-aware datetimes
         if request.batch_start_time.tzinfo is None:
             batch_start_time = request.batch_start_time.replace(tzinfo=timezone.utc)
         else:
             batch_start_time = request.batch_start_time
-            
+
         if request.batch_finish_time is not None:
             if request.batch_finish_time.tzinfo is None:
                 batch_finish_time = request.batch_finish_time.replace(tzinfo=timezone.utc)
@@ -340,7 +338,7 @@ async def upload_timeseries(
                 batch_finish_time = request.batch_finish_time
         else:
             batch_finish_time = None
-        
+
         if request.known_time is not None:
             if request.known_time.tzinfo is None:
                 known_time = request.known_time.replace(tzinfo=timezone.utc)
@@ -348,34 +346,26 @@ async def upload_timeseries(
                 known_time = request.known_time
         else:
             known_time = None  # Will default to now() in insert_batch
-        
-        # Single-tenant: hardcoded default tenant
-        tenant_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
         # workflow_id defaults to "api-workflow" via Field(default="api-workflow")
         workflow_id = request.workflow_id or "api-workflow"
-        
+
         # Get or create series for each unique value_key
-        # Convert value_rows to the format expected by insert_run_with_values:
-        # - (tenant_id, valid_time, series_id, value) for point-in-time
-        # - (tenant_id, valid_time, valid_time_end, series_id, value) for interval
+        # Convert value_rows to the format expected by insert_batch_with_values:
+        # - (valid_time, series_id, value) for point-in-time
+        # - (valid_time, valid_time_end, series_id, value) for interval
         import psycopg
         with psycopg.connect(dsn) as conn:
-            series_mapping = {}  # Maps value_key to series_id (UUID)
-            series_ids_dict = {}  # Maps value_key to series_id (string) for response
+            series_mapping = {}  # Maps value_key to series_id (int)
             series_descriptions = request.series_descriptions or {}
-            
+
             for row in request.value_rows:
                 if row.value_key not in series_mapping:
                     # Check if series_id is provided in the row
-                    if row.series_id:
-                        try:
-                            provided_series_id = uuid.UUID(row.series_id)
-                            # Verify the series exists - just fetch series info
-                            series_info = db.series.get_series_info(conn, provided_series_id)
-                            series_id = provided_series_id
-                        except ValueError as e:
-                            raise HTTPException(status_code=400, detail=f"Invalid series_id format: {e}")
+                    if row.series_id is not None:
+                        # Verify the series exists
+                        db.series.get_series_info(conn, row.series_id)
+                        series_id = row.series_id
                     else:
                         # Create a new series using create_series
                         description = series_descriptions.get(row.value_key)
@@ -386,36 +376,30 @@ async def upload_timeseries(
                             unit="dimensionless",  # API doesn't support units yet
                         )
                     series_mapping[row.value_key] = series_id
-                    series_ids_dict[row.value_key] = str(series_id)
-        
+
         # Convert value_rows to the correct format
         value_rows = []
         for row in request.value_rows:
             series_id = series_mapping[row.value_key]
             if row.valid_time_end is not None:
-                # Interval value: (tenant_id, valid_time, valid_time_end, series_id, value)
-                value_rows.append((tenant_id, row.valid_time, row.valid_time_end, series_id, row.value))
+                value_rows.append((row.valid_time, row.valid_time_end, series_id, row.value))
             else:
-                # Point-in-time value: (tenant_id, valid_time, series_id, value)
-                value_rows.append((tenant_id, row.valid_time, series_id, row.value))
-        
-        db.insert.insert_batch_with_values(
+                value_rows.append((row.valid_time, series_id, row.value))
+
+        batch_id = db.insert.insert_batch_with_values(
             conninfo=dsn,
-            batch_id=batch_id,
-            tenant_id=tenant_id,
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
             known_time=known_time,
             value_rows=value_rows,
             batch_params=request.batch_params,
-            changed_by=None,
         )
-        
+
         return CreateBatchResponse(
-            batch_id=str(batch_id),
+            batch_id=batch_id,
             message="Batch created successfully",
-            series_ids=series_ids_dict
+            series_ids=series_mapping,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating batch: {str(e)}")
@@ -442,13 +426,6 @@ async def update_records(
         # Convert request updates to update dicts
         updates = []
         for req_update in request.updates:
-            # Parse UUIDs
-            try:
-                series_id_uuid = uuid.UUID(req_update.series_id)
-                batch_id_uuid = uuid.UUID(req_update.batch_id) if req_update.batch_id else None
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid UUID format: {e}")
-
             # Ensure timezone-aware datetime
             valid_time = req_update.valid_time
             if valid_time.tzinfo is None:
@@ -464,12 +441,12 @@ async def update_records(
             # Build update dict - required fields
             update_dict = {
                 "valid_time": valid_time,
-                "series_id": series_id_uuid,
+                "series_id": req_update.series_id,
             }
 
             # Add optional lookup fields if provided
-            if batch_id_uuid is not None:
-                update_dict["batch_id"] = batch_id_uuid
+            if req_update.batch_id is not None:
+                update_dict["batch_id"] = req_update.batch_id
             if known_time is not None:
                 update_dict["known_time"] = known_time
 
@@ -494,11 +471,11 @@ async def update_records(
         for r in outcome["updated"]:
             item = {
                 "valid_time": r["valid_time"].isoformat(),
-                "series_id": str(r["series_id"]),
+                "series_id": r["series_id"],
             }
             # Include optional fields if present
             if "batch_id" in r and r["batch_id"] is not None:
-                item["batch_id"] = str(r["batch_id"])
+                item["batch_id"] = r["batch_id"]
             if "overlapping_id" in r:
                 item["overlapping_id"] = r["overlapping_id"]
             if "flat_id" in r:
@@ -507,7 +484,7 @@ async def update_records(
 
         skipped = [
             {
-                k: str(v) if isinstance(v, uuid.UUID) else v.isoformat() if isinstance(v, datetime) else v
+                k: v.isoformat() if isinstance(v, datetime) else v
                 for k, v in item.items()
             }
             for item in outcome["skipped_no_ops"]
@@ -552,7 +529,7 @@ async def create_series(
             )
 
         return CreateSeriesResponse(
-            series_id=str(series_id),
+            series_id=series_id,
             message="Series created successfully"
         )
     except Exception as e:

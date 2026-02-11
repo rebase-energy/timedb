@@ -2,7 +2,6 @@
 import os
 import pytest
 import psycopg
-import uuid
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 from timedb import TimeDataClient

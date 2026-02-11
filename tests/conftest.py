@@ -3,7 +3,6 @@ import os
 import pytest
 import psycopg
 from datetime import datetime, timezone
-import uuid
 
 from timedb.db import create, delete
 
@@ -36,12 +35,6 @@ def clean_db(test_db_conninfo):
 
 
 @pytest.fixture
-def sample_batch_id():
-    """Generate a sample batch ID for testing."""
-    return uuid.uuid4()
-
-
-@pytest.fixture
 def sample_workflow_id():
     """Sample workflow ID for testing."""
     return "test-workflow"
@@ -51,10 +44,3 @@ def sample_workflow_id():
 def sample_datetime():
     """Sample datetime for testing."""
     return datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-
-
-@pytest.fixture
-def sample_series_id():
-    """Generate a sample series ID for testing."""
-    return uuid.uuid4()

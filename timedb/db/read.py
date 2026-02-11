@@ -4,14 +4,12 @@ import pandas as pd
 import psycopg
 from datetime import datetime
 from typing import Optional, List, Union
-import uuid
 
 load_dotenv()
 
 
 def _build_where_clause(
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
+    series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -32,17 +30,13 @@ def _build_where_clause(
     filters = []
     params = {}
 
-    if tenant_id is not None:
-        filters.append("v.tenant_id = %(tenant_id)s")
-        params["tenant_id"] = tenant_id
-
     if series_ids is not None:
-        if isinstance(series_ids, uuid.UUID):
+        if isinstance(series_ids, int):
             id_list = [series_ids]
         elif isinstance(series_ids, (list, tuple, set)):
             id_list = list(series_ids)
         else:
-            raise ValueError("series_ids must be a UUID or an iterable of UUIDs")
+            raise ValueError("series_ids must be an int or an iterable of ints")
         filters.append("v.series_id = ANY(%(series_ids)s)")
         params["series_ids"] = id_list
 
@@ -70,8 +64,7 @@ def _build_where_clause(
 def read_flat(
     conninfo: str,
     *,
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
+    series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
 ) -> pd.DataFrame:
@@ -82,8 +75,7 @@ def read_flat(
 
     Args:
         conninfo: Database connection string
-        tenant_id: Tenant UUID (optional)
-        series_ids: Series UUID or list of UUIDs (optional)
+        series_ids: Series ID or list of IDs (optional)
         start_valid: Start of time range (optional)
         end_valid: End of time range (optional)
 
@@ -91,7 +83,6 @@ def read_flat(
         DataFrame with index (valid_time, series_id) and columns (value, name, unit, labels)
     """
     where_clause, params = _build_where_clause(
-        tenant_id=tenant_id,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -130,8 +121,7 @@ def read_flat(
 def read_overlapping_latest(
     conninfo: str,
     *,
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
+    series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -145,8 +135,7 @@ def read_overlapping_latest(
 
     Args:
         conninfo: Database connection string
-        tenant_id: Tenant UUID (optional)
-        series_ids: Series UUID or list of UUIDs (optional)
+        series_ids: Series ID or list of IDs (optional)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
         start_known: Start of known_time range (optional)
@@ -156,7 +145,6 @@ def read_overlapping_latest(
         DataFrame with index (valid_time, series_id) and columns (value, name, unit, labels)
     """
     where_clause, params = _build_where_clause(
-        tenant_id=tenant_id,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -197,8 +185,7 @@ def read_overlapping_latest(
 def read_overlapping_all(
     conninfo: str,
     *,
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
+    series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -212,8 +199,7 @@ def read_overlapping_all(
 
     Args:
         conninfo: Database connection string
-        tenant_id: Tenant UUID (optional)
-        series_ids: Series UUID or list of UUIDs (optional)
+        series_ids: Series ID or list of IDs (optional)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
         start_known: Start of known_time range (optional)
@@ -223,7 +209,6 @@ def read_overlapping_all(
         DataFrame with index (known_time, valid_time, series_id) and columns (value, name, unit, labels)
     """
     where_clause, params = _build_where_clause(
-        tenant_id=tenant_id,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -267,8 +252,7 @@ def read_overlapping_all(
 def read_values_flat(
     conninfo: str,
     *,
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
+    series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -286,7 +270,6 @@ def read_values_flat(
     if start_known is None and end_known is None:
         df_flat = read_flat(
             conninfo,
-            tenant_id=tenant_id,
             series_ids=series_ids,
             start_valid=start_valid,
             end_valid=end_valid,
@@ -295,7 +278,6 @@ def read_values_flat(
     # Read latest overlapping
     df_overlapping = read_overlapping_latest(
         conninfo,
-        tenant_id=tenant_id,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -315,8 +297,7 @@ def read_values_flat(
 def read_values_overlapping(
     conninfo: str,
     *,
-    tenant_id: Optional[uuid.UUID] = None,
-    series_ids: Optional[Union[uuid.UUID, List[uuid.UUID]]] = None,
+    series_ids: Optional[Union[int, List[int]]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -333,7 +314,6 @@ def read_values_overlapping(
     if start_known is None and end_known is None:
         df_flat_raw = read_flat(
             conninfo,
-            tenant_id=tenant_id,
             series_ids=series_ids,
             start_valid=start_valid,
             end_valid=end_valid,
@@ -342,7 +322,6 @@ def read_values_overlapping(
         if len(df_flat_raw) > 0:
             # Query flat with inserted_at to use as known_time
             where_clause, params = _build_where_clause(
-                tenant_id=tenant_id,
                 series_ids=series_ids,
                 start_valid=start_valid,
                 end_valid=end_valid,
@@ -376,7 +355,6 @@ def read_values_overlapping(
     # Read all overlapping versions
     df_overlapping = read_overlapping_all(
         conninfo,
-        tenant_id=tenant_id,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,

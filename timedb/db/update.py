@@ -17,7 +17,6 @@ For overlapping updates, the latest value is determined by ORDER BY known_time D
 from __future__ import annotations
 
 from typing import Any, Optional, List, Dict, Tuple
-import uuid
 import datetime as dt
 
 import psycopg
@@ -94,7 +93,7 @@ def _canonicalize_annotation_stored(annotation) -> Optional[str]:
     return s or None
 
 
-def _get_series_routing(conn: psycopg.Connection, series_id: uuid.UUID) -> Tuple[str, Optional[str]]:
+def _get_series_routing(conn: psycopg.Connection, series_id: int) -> Tuple[str, Optional[str]]:
     """Get routing info for a series.
 
     Returns:
@@ -142,7 +141,7 @@ def update_records(
         updates: List of update dictionaries. Required fields vary by data_class:
 
             For flat series:
-            - series_id (uuid.UUID): Series identifier
+            - series_id (int): Series identifier
             - valid_time (datetime): Time the value is valid for
             - value (float, optional): New value
             - annotation (str, optional): Annotation text
@@ -150,12 +149,12 @@ def update_records(
             - changed_by (str, optional): Who made the change
 
             For overlapping series (flexible lookup):
-            - series_id (uuid.UUID): Series identifier
+            - series_id (int): Series identifier
             - valid_time (datetime): Time the value is valid for
             - Plus ONE of these to identify the version:
               - overlapping_id (int): Direct row lookup (fastest)
               - known_time (datetime): Exact version by known_time
-              - batch_id (uuid.UUID): Latest version in that batch
+              - batch_id (int): Latest version in that batch
               - (none): Latest version overall
             - value (float, optional): New value
             - annotation (str, optional): Annotation text
@@ -174,7 +173,7 @@ def update_records(
     skipped: List[Dict[str, Any]] = []
 
     # Cache series routing: series_id -> (data_class, table_name)
-    series_routing_map: Dict[uuid.UUID, Tuple[str, str]] = {}
+    series_routing_map: Dict[int, Tuple[str, str]] = {}
 
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
@@ -183,7 +182,7 @@ def update_records(
                 if series_id is None:
                     raise ValueError("Each update must include 'series_id'.")
                 if isinstance(series_id, str):
-                    series_id = uuid.UUID(series_id)
+                    series_id = int(series_id)
 
                 if series_id not in series_routing_map:
                     routing = _get_series_routing(conn, series_id)
@@ -208,14 +207,13 @@ def _process_flat_update(
     skipped: List[Dict[str, Any]],
 ) -> None:
     """Process an update for a flat series (in-place, no versioning)."""
-    tenant_id = u.get("tenant_id", uuid.UUID('00000000-0000-0000-0000-000000000000'))
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
 
     if valid_time is None or series_id is None:
         raise ValueError("Flat updates require 'valid_time' and 'series_id'")
     if isinstance(series_id, str):
-        series_id = uuid.UUID(series_id)
+        series_id = int(series_id)
     if isinstance(valid_time, str):
         valid_time = dt.datetime.fromisoformat(valid_time.replace('Z', '+00:00'))
     if valid_time.tzinfo is None:
@@ -230,12 +228,10 @@ def _process_flat_update(
         """
         SELECT flat_id, value, annotation, tags, changed_by
         FROM flat
-        WHERE tenant_id = %(tenant_id)s
-          AND series_id = %(series_id)s
+        WHERE series_id = %(series_id)s
           AND valid_time = %(valid_time)s
         """,
         {
-            "tenant_id": tenant_id,
             "series_id": series_id,
             "valid_time": valid_time,
         },
@@ -285,7 +281,6 @@ def _process_flat_update(
             and new_changed_by == current_changed_by):
         skipped.append({
             "flat_id": flat_id,
-            "tenant_id": tenant_id,
             "series_id": series_id,
             "valid_time": valid_time,
         })
@@ -312,7 +307,6 @@ def _process_flat_update(
     )
     updated.append({
         "flat_id": flat_id,
-        "tenant_id": tenant_id,
         "series_id": series_id,
         "valid_time": valid_time,
     })
@@ -330,7 +324,7 @@ def _process_update_by_id(
 
     cur.execute(
         f"""
-        SELECT overlapping_id, batch_id, tenant_id, valid_time, valid_time_end,
+        SELECT overlapping_id, batch_id, valid_time, valid_time_end,
                series_id, value, known_time, annotation, metadata, tags, changed_by
         FROM {table}
         WHERE overlapping_id = %(overlapping_id)s
@@ -380,18 +374,17 @@ def _process_update_by_id(
     cur.execute(
         f"""
         INSERT INTO {table} (
-            batch_id, tenant_id, series_id, valid_time, valid_time_end,
+            batch_id, series_id, valid_time, valid_time_end,
             value, known_time, annotation, metadata, tags, changed_by
         )
         VALUES (
-            %(batch_id)s, %(tenant_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
+            %(batch_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
             %(value)s, now(), %(annotation)s, %(metadata)s, %(tags)s, %(changed_by)s
         )
         RETURNING overlapping_id
         """,
         {
             "batch_id": current["batch_id"],
-            "tenant_id": current["tenant_id"],
             "series_id": current["series_id"],
             "valid_time": current["valid_time"],
             "valid_time_end": current["valid_time_end"],
@@ -406,7 +399,6 @@ def _process_update_by_id(
     updated.append({
         "overlapping_id": new_id,
         "batch_id": current["batch_id"],
-        "tenant_id": current["tenant_id"],
         "valid_time": current["valid_time"],
         "series_id": current["series_id"],
     })
@@ -426,7 +418,6 @@ def _process_update_by_key(
     2. batch_id + valid_time: Latest version in that batch
     3. Just valid_time: Latest version overall
     """
-    tenant_id = u.get("tenant_id", uuid.UUID('00000000-0000-0000-0000-000000000000'))
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
     batch_id = u.get("batch_id")
@@ -435,14 +426,14 @@ def _process_update_by_key(
     if valid_time is None or series_id is None:
         raise ValueError("Overlapping updates require 'valid_time' and 'series_id'")
     if isinstance(series_id, str):
-        series_id = uuid.UUID(series_id)
+        series_id = int(series_id)
     if isinstance(valid_time, str):
         valid_time = dt.datetime.fromisoformat(valid_time.replace('Z', '+00:00'))
     if valid_time.tzinfo is None:
         raise ValueError(f"valid_time must be timezone-aware (timestamptz). Bad update: {u}")
 
     if batch_id is not None and isinstance(batch_id, str):
-        batch_id = uuid.UUID(batch_id)
+        batch_id = int(batch_id)
     if known_time is not None:
         if isinstance(known_time, str):
             known_time = dt.datetime.fromisoformat(known_time.replace('Z', '+00:00'))
@@ -462,13 +453,11 @@ def _process_update_by_key(
             f"""
             SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
             FROM {table}
-            WHERE tenant_id = %(tenant_id)s
-              AND series_id = %(series_id)s
+            WHERE series_id = %(series_id)s
               AND valid_time = %(valid_time)s
               AND known_time = %(known_time)s
             """,
             {
-                "tenant_id": tenant_id,
                 "series_id": series_id,
                 "valid_time": valid_time,
                 "known_time": known_time,
@@ -480,15 +469,13 @@ def _process_update_by_key(
             f"""
             SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
             FROM {table}
-            WHERE tenant_id = %(tenant_id)s
-              AND series_id = %(series_id)s
+            WHERE series_id = %(series_id)s
               AND valid_time = %(valid_time)s
               AND batch_id = %(batch_id)s
             ORDER BY known_time DESC
             LIMIT 1
             """,
             {
-                "tenant_id": tenant_id,
                 "series_id": series_id,
                 "valid_time": valid_time,
                 "batch_id": batch_id,
@@ -500,14 +487,12 @@ def _process_update_by_key(
             f"""
             SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
             FROM {table}
-            WHERE tenant_id = %(tenant_id)s
-              AND series_id = %(series_id)s
+            WHERE series_id = %(series_id)s
               AND valid_time = %(valid_time)s
             ORDER BY known_time DESC
             LIMIT 1
             """,
             {
-                "tenant_id": tenant_id,
                 "series_id": series_id,
                 "valid_time": valid_time,
             },
@@ -560,7 +545,6 @@ def _process_update_by_key(
             and new_changed_by == current_changed_by):
         skipped.append({
             "batch_id": batch_id,
-            "tenant_id": tenant_id,
             "valid_time": valid_time,
             "series_id": series_id,
         })
@@ -569,18 +553,17 @@ def _process_update_by_key(
     cur.execute(
         f"""
         INSERT INTO {table} (
-            batch_id, tenant_id, series_id, valid_time, valid_time_end,
+            batch_id, series_id, valid_time, valid_time_end,
             value, known_time, annotation, metadata, tags, changed_by
         )
         VALUES (
-            %(batch_id)s, %(tenant_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
+            %(batch_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
             %(value)s, now(), %(annotation)s, %(metadata)s, %(tags)s, %(changed_by)s
         )
         RETURNING overlapping_id
         """,
         {
             "batch_id": batch_id,
-            "tenant_id": tenant_id,
             "series_id": series_id,
             "valid_time": valid_time,
             "valid_time_end": valid_time_end,
@@ -595,7 +578,6 @@ def _process_update_by_key(
     updated.append({
         "overlapping_id": new_id,
         "batch_id": batch_id,
-        "tenant_id": tenant_id,
         "valid_time": valid_time,
         "series_id": series_id,
     })

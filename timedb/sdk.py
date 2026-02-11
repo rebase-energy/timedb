@@ -14,7 +14,6 @@ Data model:
   (list-partitioned by retention) with known_time versioning.
 """
 import os
-import uuid
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any, FrozenSet
 from datetime import datetime, timezone
 import pandas as pd
@@ -36,15 +35,12 @@ from psycopg import errors
 
 load_dotenv(find_dotenv())
 
-# Default tenant ID for single-tenant installations (all zeros UUID)
-DEFAULT_TENANT_ID = uuid.UUID('00000000-0000-0000-0000-000000000000')
-
 
 class InsertResult(NamedTuple):
     """Result from insert containing the IDs that were used."""
-    batch_id: uuid.UUID
+    batch_id: int
     workflow_id: str
-    series_ids: Dict[str, uuid.UUID]  # Maps name to series_id
+    series_ids: Dict[str, int]  # Maps name to series_id
 
 
 class SeriesCollection:
@@ -93,8 +89,8 @@ class SeriesCollection:
         name: Optional[str] = None,
         unit: Optional[str] = None,
         label_filters: Optional[Dict[str, str]] = None,
-        _id_cache: Optional[Dict[FrozenSet[Tuple[str, str]], uuid.UUID]] = None,
-        _meta_cache: Optional[Dict[uuid.UUID, Dict[str, str]]] = None,
+        _id_cache: Optional[Dict[Tuple[str, FrozenSet[Tuple[str, str]]], int]] = None,
+        _meta_cache: Optional[Dict[int, Dict[str, str]]] = None,
     ):
         self._conninfo = conninfo
         self._name = name
@@ -135,7 +131,7 @@ class SeriesCollection:
             _meta_cache=self._meta_cache.copy(),
         )
 
-    def _resolve_ids(self) -> List[uuid.UUID]:
+    def _resolve_ids(self) -> List[int]:
         """
         Resolve series IDs that match the current filters.
         Also caches data_class and retention for routing.
@@ -165,9 +161,7 @@ class SeriesCollection:
 
             for series_id, name, unit, labels, data_class, retention in rows:
                 label_set = frozenset((k, v) for k, v in (labels or {}).items())
-                # Cache key is unique (name, unit, label_set) to avoid collisions when
-                # multiple series share the same labels but different names/units
-                cache_key = (name, unit, label_set)
+                cache_key = (name, label_set)
                 self._id_cache[cache_key] = series_id
                 self._meta_cache[series_id] = {
                     "data_class": data_class,
@@ -181,12 +175,12 @@ class SeriesCollection:
         matching_ids = []
         filter_set = set(self._label_filters.items())
         for cache_key, series_id in self._id_cache.items():
-            name, unit, label_set = cache_key
+            name, label_set = cache_key
             if filter_set.issubset(label_set):
                 matching_ids.append(series_id)
         return matching_ids
 
-    def _get_single_id(self) -> uuid.UUID:
+    def _get_single_id(self) -> int:
         """Get a single series ID. Raises error if filters match multiple series."""
         ids = self._resolve_ids()
         if len(ids) == 0:
@@ -207,21 +201,21 @@ class SeriesCollection:
         ids = self._resolve_ids()
         return {self._meta_cache[sid]["data_class"] for sid in ids if sid in self._meta_cache}
 
-    def _get_series_routing(self) -> Dict[uuid.UUID, Dict[str, str]]:
+    def _get_series_routing(self) -> Dict[int, Dict[str, str]]:
         """Get routing info (data_class, retention) for all resolved series."""
         ids = self._resolve_ids()
         return {sid: self._meta_cache[sid] for sid in ids if sid in self._meta_cache}
 
-    def _get_name_to_id_mapping(self) -> Dict[str, uuid.UUID]:
+    def _get_name_to_id_mapping(self) -> Dict[str, int]:
         """Build name→series_id mapping from resolved, filtered series.
 
-        Uses the cache keyed by (name, unit, label_set) but only includes
+        Uses the cache keyed by (name, label_set) but only includes
         series that match the current filters (via _resolve_ids).
         This ensures labels are respected when multiple series share a name.
         """
         ids = set(self._resolve_ids())
         mapping = {}
-        for (name, unit, label_set), series_id in self._id_cache.items():
+        for (name, label_set), series_id in self._id_cache.items():
             if series_id in ids:
                 mapping[name] = series_id
         return mapping
@@ -229,7 +223,6 @@ class SeriesCollection:
     def insert(
         self,
         df: pd.DataFrame,
-        batch_id: Optional[uuid.UUID] = None,
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
@@ -247,7 +240,6 @@ class SeriesCollection:
 
         Args:
             df: DataFrame with time series data
-            batch_id: Batch UUID (optional, auto-generated)
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
@@ -285,7 +277,6 @@ class SeriesCollection:
             col_name = list(series_info.keys())[0]
             return _insert(
                 df=df,
-                batch_id=batch_id,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
                 batch_finish_time=batch_finish_time,
@@ -299,7 +290,6 @@ class SeriesCollection:
         else:
             return _insert(
                 df=df,
-                batch_id=batch_id,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
                 batch_finish_time=batch_finish_time,
@@ -384,7 +374,7 @@ class SeriesCollection:
         end_known: Optional[datetime] = None,
         versions: bool = False,
         return_mapping: bool = False,
-    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
         """
         Read time series data for this collection.
 
@@ -629,12 +619,12 @@ class TimeDataClient:
         description: Optional[str] = None,
         data_class: str = "flat",
         retention: str = "medium",
-    ) -> uuid.UUID:
+    ) -> int:
         """
         Create a new time series with metadata and labels.
 
         Creates a new series in the database with the specified configuration.
-        Each series has a unique name+unit+labels combination.
+        Each series has a unique name+labels combination.
 
         Args:
             name (str):
@@ -672,10 +662,10 @@ class TimeDataClient:
                 - 'long': 5 years (historical archival)
 
         Returns:
-            uuid.UUID: The unique series_id for this series, used in read/write operations
+            int: The unique series_id for this series, used in read/write operations
 
         Raises:
-            ValueError: If series with same name+unit+labels already exists
+            ValueError: If series with same name+labels already exists
 
         Example:
             >>> client = TimeDataClient()
@@ -813,7 +803,7 @@ def _detect_series_from_dataframe(
 
 def _dataframe_to_value_rows(
     df: pd.DataFrame,
-    series_mapping: Dict[str, uuid.UUID],
+    series_mapping: Dict[str, int],
     units: Dict[str, str],
     valid_time_col: str = 'valid_time',
     valid_time_end_col: Optional[str] = None,
@@ -823,8 +813,8 @@ def _dataframe_to_value_rows(
 
     Returns:
         List of tuples:
-        - Point-in-time: (tenant_id, valid_time, series_id, value)
-        - Interval: (tenant_id, valid_time, valid_time_end, series_id, value)
+        - Point-in-time: (valid_time, series_id, value)
+        - Interval: (valid_time, valid_time_end, series_id, value)
     """
     if valid_time_col not in df.columns:
         raise ValueError(f"Column '{valid_time_col}' not found in DataFrame")
@@ -895,9 +885,9 @@ def _dataframe_to_value_rows(
                     ) from e
 
             if has_intervals:
-                rows.append((DEFAULT_TENANT_ID, valid_time, valid_time_end, series_id, converted_value))
+                rows.append((valid_time, valid_time_end, series_id, converted_value))
             else:
-                rows.append((DEFAULT_TENANT_ID, valid_time, series_id, converted_value))
+                rows.append((valid_time, series_id, converted_value))
 
     return rows
 
@@ -924,7 +914,7 @@ def _create_series(
     description: Optional[str] = None,
     data_class: str = "flat",
     retention: str = "medium",
-) -> uuid.UUID:
+) -> int:
     """
     Create a new time series.
 
@@ -937,7 +927,7 @@ def _create_series(
         retention: 'short', 'medium', or 'long' (default: 'medium')
 
     Returns:
-        The series_id (UUID) for the newly created series
+        The series_id (int) for the newly created series
     """
     conninfo = _get_conninfo()
 
@@ -977,17 +967,16 @@ def _delete() -> None:
 
 
 def _read_flat(
-    series_ids: Optional[List[uuid.UUID]] = None,
+    series_ids: Optional[List[int]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     return_mapping: bool = False,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
     """Read flat values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
     df = db.read.read_flat(
         conninfo,
-        tenant_id=DEFAULT_TENANT_ID,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -1027,19 +1016,18 @@ def _read_flat(
 
 
 def _read_overlapping_latest(
-    series_ids: Optional[List[uuid.UUID]] = None,
+    series_ids: Optional[List[int]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     return_mapping: bool = False,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
     """Read latest overlapping values and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
     df = db.read.read_overlapping_latest(
         conninfo,
-        tenant_id=DEFAULT_TENANT_ID,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -1081,19 +1069,18 @@ def _read_overlapping_latest(
 
 
 def _read_overlapping_all(
-    series_ids: Optional[List[uuid.UUID]] = None,
+    series_ids: Optional[List[int]] = None,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     return_mapping: bool = False,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[uuid.UUID, str]]]:
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
     """Read all overlapping versions and pivot into a wide DataFrame."""
     conninfo = _get_conninfo()
 
     df = db.read.read_overlapping_all(
         conninfo,
-        tenant_id=DEFAULT_TENANT_ID,
         series_ids=series_ids,
         start_valid=start_valid,
         end_valid=end_valid,
@@ -1137,7 +1124,6 @@ def _read_overlapping_all(
 
 def _insert(
     df: pd.DataFrame,
-    batch_id: Optional[uuid.UUID] = None,
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
@@ -1145,8 +1131,8 @@ def _insert(
     valid_time_end_col: Optional[str] = None,
     known_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
-    series_ids: Optional[Dict[str, uuid.UUID]] = None,
-    series_routing: Optional[Dict[uuid.UUID, Dict[str, str]]] = None,
+    series_ids: Optional[Dict[str, int]] = None,
+    series_routing: Optional[Dict[int, Dict[str, str]]] = None,
 ) -> InsertResult:
     """
     Insert a batch with time series data from a pandas DataFrame.
@@ -1156,8 +1142,6 @@ def _insert(
     """
     conninfo = _get_conninfo()
 
-    if batch_id is None:
-        batch_id = uuid.uuid4()
     if workflow_id is None:
         workflow_id = "sdk-workflow"
     if batch_start_time is None:
@@ -1214,10 +1198,8 @@ def _insert(
     )
 
     try:
-        db.insert.insert_batch_with_values(
+        batch_id = db.insert.insert_batch_with_values(
             conninfo=conninfo,
-            batch_id=batch_id,
-            tenant_id=DEFAULT_TENANT_ID,
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
@@ -1260,9 +1242,6 @@ def _update_records(
     Wrapper around db.update.update_records that handles the database connection.
     """
     conninfo = _get_conninfo()
-
-    for update_dict in updates:
-        update_dict["tenant_id"] = DEFAULT_TENANT_ID
 
     with psycopg.connect(conninfo) as conn:
         return db.update.update_records(conn, updates=updates)

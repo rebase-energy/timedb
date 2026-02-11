@@ -12,8 +12,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- A. BATCHES
 CREATE TABLE IF NOT EXISTS batches_table (
-  batch_id          uuid PRIMARY KEY,
-  tenant_id         uuid NOT NULL,
+  batch_id          bigserial PRIMARY KEY,
   workflow_id       text,
   batch_start_time  timestamptz,
   batch_finish_time timestamptz,
@@ -23,11 +22,10 @@ CREATE TABLE IF NOT EXISTS batches_table (
   CONSTRAINT batch_params_is_object
     CHECK (batch_params IS NULL OR jsonb_typeof(batch_params) = 'object')
 );
-CREATE INDEX IF NOT EXISTS batches_tenant_known_idx ON batches_table (tenant_id, known_time DESC);
 
 -- B. SERIES
 CREATE TABLE IF NOT EXISTS series_table (
-  series_id     uuid PRIMARY KEY,
+  series_id     bigserial PRIMARY KEY,
   name          text NOT NULL,
   unit          text NOT NULL,
   labels        jsonb NOT NULL DEFAULT '{}',
@@ -50,8 +48,7 @@ CREATE INDEX IF NOT EXISTS series_labels_gin_idx ON series_table USING GIN (labe
 
 CREATE TABLE IF NOT EXISTS flat (
   flat_id         bigserial,
-  tenant_id       uuid NOT NULL,
-  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
+  series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
@@ -68,7 +65,7 @@ CREATE TABLE IF NOT EXISTS flat (
     CHECK (annotation IS NULL OR length(btrim(annotation)) > 0),
   CONSTRAINT tags_not_empty_array_flat
     CHECK (tags IS NULL OR cardinality(tags) > 0),
-  UNIQUE (tenant_id, series_id, valid_time)
+  UNIQUE (series_id, valid_time)
 );
 
 
@@ -82,9 +79,8 @@ CREATE TABLE IF NOT EXISTS flat (
 -- TIER 1: SHORT (6 Months retention)
 CREATE TABLE IF NOT EXISTS overlapping_short (
   overlapping_id  bigserial,
-  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
-  tenant_id       uuid NOT NULL,
-  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
+  batch_id        bigint NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
@@ -97,15 +93,14 @@ CREATE TABLE IF NOT EXISTS overlapping_short (
 
   CONSTRAINT valid_time_interval_check_short
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (tenant_id, series_id, valid_time, known_time)
+  UNIQUE (series_id, valid_time, known_time)
 );
 
 -- TIER 2: MEDIUM (3 Years retention)
 CREATE TABLE IF NOT EXISTS overlapping_medium (
   overlapping_id  bigserial,
-  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
-  tenant_id       uuid NOT NULL,
-  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
+  batch_id        bigint NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
@@ -118,15 +113,14 @@ CREATE TABLE IF NOT EXISTS overlapping_medium (
 
   CONSTRAINT valid_time_interval_check_medium
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (tenant_id, series_id, valid_time, known_time)
+  UNIQUE (series_id, valid_time, known_time)
 );
 
 -- TIER 3: LONG (5 Years retention)
 CREATE TABLE IF NOT EXISTS overlapping_long (
   overlapping_id  bigserial,
-  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
-  tenant_id       uuid NOT NULL,
-  series_id       uuid NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
+  batch_id        bigint NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
@@ -139,7 +133,7 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
 
   CONSTRAINT valid_time_interval_check_long
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (tenant_id, series_id, valid_time, known_time)
+  UNIQUE (series_id, valid_time, known_time)
 );
 
 
@@ -147,9 +141,9 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
 -- 4) INDEXES ON OVERLAPPING TABLES
 -- ============================================================================
 
-CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (tenant_id, series_id, valid_time, known_time DESC);
-CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (tenant_id, series_id, valid_time, known_time DESC);
-CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (tenant_id, series_id, valid_time, known_time DESC);
+CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (series_id, valid_time, known_time DESC);
+CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (series_id, valid_time, known_time DESC);
+CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (series_id, valid_time, known_time DESC);
 
 
 -- ============================================================================

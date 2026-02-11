@@ -30,7 +30,7 @@ def _setup_overlapping_series(clean_db, sample_datetime):
 # Update value tests
 # =============================================================================
 
-def test_update_overlapping_value(clean_db, sample_batch_id, sample_series_id, sample_datetime):
+def test_update_overlapping_value(clean_db, sample_datetime):
     """Test updating a overlapping's value creates a new version."""
     td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 

@@ -1,4 +1,3 @@
-import uuid
 import json
 from typing import Optional, Iterable, Tuple, Dict, List
 from datetime import datetime
@@ -17,22 +16,16 @@ _OVERLAPPING_TABLES = {
 def insert_batch(
     conn: psycopg.Connection,
     *,
-    batch_id: uuid.UUID,
-    tenant_id: uuid.UUID,
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
     known_time: Optional[datetime] = None,
     batch_params: Optional[Dict] = None,
-) -> datetime:
+) -> Tuple[int, datetime]:
     """
     Insert one batch into batches_table.
 
-    Uses ON CONFLICT so retries are safe.
-
     Args:
-        batch_id: Unique identifier for the batch
-        tenant_id: Tenant identifier
         workflow_id: Optional workflow/pipeline identifier (NULL for manual insertions)
         batch_start_time: Optional start time of the batch
         batch_finish_time: Optional finish time of the batch
@@ -41,7 +34,7 @@ def insert_batch(
         batch_params: Optional parameters/config used for this batch
 
     Returns:
-        The known_time that was used (either provided or database now())
+        Tuple of (batch_id, known_time)
     """
     batch_params_json = json.dumps(batch_params) if batch_params is not None else None
 
@@ -58,50 +51,34 @@ def insert_batch(
             cur.execute(
                 """
                 INSERT INTO batches_table (
-                    batch_id, tenant_id, workflow_id,
-                    batch_start_time, batch_finish_time, known_time, batch_params
+                    workflow_id, batch_start_time, batch_finish_time,
+                    known_time, batch_params
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT (batch_id) DO NOTHING
-                RETURNING known_time;
+                VALUES (%s, %s, %s, %s, %s::jsonb)
+                RETURNING batch_id, known_time;
                 """,
-                (batch_id, tenant_id, workflow_id, batch_start_time, batch_finish_time, known_time, batch_params_json),
+                (workflow_id, batch_start_time, batch_finish_time, known_time, batch_params_json),
             )
-            result = cur.fetchone()
-            if result:
-                return result[0]
-            cur.execute("SELECT known_time FROM batches_table WHERE batch_id = %s", (batch_id,))
-            existing = cur.fetchone()
-            if existing is None:
-                raise ValueError(f"Batch {batch_id} not found after conflict - unexpected state")
-            return existing[0]
         else:
             cur.execute(
                 """
                 INSERT INTO batches_table (
-                    batch_id, tenant_id, workflow_id,
-                    batch_start_time, batch_finish_time, batch_params
+                    workflow_id, batch_start_time, batch_finish_time,
+                    batch_params
                 )
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT (batch_id) DO NOTHING
-                RETURNING known_time;
+                VALUES (%s, %s, %s, %s::jsonb)
+                RETURNING batch_id, known_time;
                 """,
-                (batch_id, tenant_id, workflow_id, batch_start_time, batch_finish_time, batch_params_json),
+                (workflow_id, batch_start_time, batch_finish_time, batch_params_json),
             )
-            result = cur.fetchone()
-            if result:
-                return result[0]
-            cur.execute("SELECT known_time FROM batches_table WHERE batch_id = %s", (batch_id,))
-            existing = cur.fetchone()
-            if existing is None:
-                raise ValueError(f"Batch {batch_id} not found after conflict - unexpected state")
-            return existing[0]
+        result = cur.fetchone()
+        return result[0], result[1]
 
 
 def _lookup_series_routing(
     conn: psycopg.Connection,
-    series_ids: List[uuid.UUID],
-) -> Dict[uuid.UUID, Dict[str, str]]:
+    series_ids: List[int],
+) -> Dict[int, Dict[str, str]]:
     """
     Look up data_class and retention for a list of series IDs.
 
@@ -127,8 +104,8 @@ def insert_flat(
     """
     Insert flat (fact) values into the flat table.
 
-    Each row is: (tenant_id, valid_time, series_id, value)
-    or with valid_time_end: (tenant_id, valid_time, valid_time_end, series_id, value)
+    Each row is: (valid_time, series_id, value)
+    or with valid_time_end: (valid_time, valid_time_end, series_id, value)
 
     Uses ON CONFLICT to upsert (update value on duplicate).
 
@@ -138,22 +115,18 @@ def insert_flat(
     """
     rows_list = []
     for item in value_rows:
-        if len(item) == 4:
-            tenant_id, valid_time, series_id, value = item
+        if len(item) == 3:
+            valid_time, series_id, value = item
             valid_time_end = None
-        elif len(item) == 5:
-            tenant_id, valid_time, valid_time_end, series_id, value = item
+        elif len(item) == 4:
+            valid_time, valid_time_end, series_id, value = item
         else:
             raise ValueError(
                 "Each flat row must be "
-                "(tenant_id, valid_time, series_id, value) or "
-                "(tenant_id, valid_time, valid_time_end, series_id, value)"
+                "(valid_time, series_id, value) or "
+                "(valid_time, valid_time_end, series_id, value)"
             )
 
-        if not isinstance(tenant_id, uuid.UUID):
-            raise ValueError("tenant_id must be a UUID")
-        if not isinstance(series_id, uuid.UUID):
-            raise ValueError("series_id must be a UUID")
         if not isinstance(valid_time, datetime):
             raise ValueError("valid_time must be a datetime")
         if valid_time.tzinfo is None:
@@ -167,7 +140,7 @@ def insert_flat(
             if not (valid_time_end > valid_time):
                 raise ValueError("valid_time_end must be strictly after valid_time")
 
-        rows_list.append((tenant_id, series_id, valid_time, valid_time_end, value))
+        rows_list.append((series_id, valid_time, valid_time_end, value))
 
     if not rows_list:
         return
@@ -175,9 +148,9 @@ def insert_flat(
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO flat (tenant_id, series_id, valid_time, valid_time_end, value)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (tenant_id, series_id, valid_time)
+            INSERT INTO flat (series_id, valid_time, valid_time_end, value)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (series_id, valid_time)
             DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end
             """,
             rows_list,
@@ -187,10 +160,10 @@ def insert_flat(
 def insert_overlapping(
     conn: psycopg.Connection,
     *,
-    batch_id: uuid.UUID,
+    batch_id: int,
     known_time: datetime,
     value_rows: Iterable[Tuple],
-    series_routing: Dict[uuid.UUID, Dict[str, str]],
+    series_routing: Dict[int, Dict[str, str]],
 ) -> None:
     """
     Insert overlapping values into the correct tier table.
@@ -198,12 +171,12 @@ def insert_overlapping(
     Routes rows to overlapping_short/medium/long based on the series'
     retention from series_routing.
 
-    Each row is: (tenant_id, valid_time, series_id, value)
-    or with valid_time_end: (tenant_id, valid_time, valid_time_end, series_id, value)
+    Each row is: (valid_time, series_id, value)
+    or with valid_time_end: (valid_time, valid_time_end, series_id, value)
 
     Args:
         conn: Database connection
-        batch_id: UUID of the batch these values belong to
+        batch_id: ID of the batch these values belong to
         known_time: The known_time for these overlapping entries
         value_rows: Iterable of value tuples
         series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}
@@ -212,22 +185,18 @@ def insert_overlapping(
     by_tier: Dict[str, List[Tuple]] = defaultdict(list)
 
     for item in value_rows:
-        if len(item) == 4:
-            tenant_id, valid_time, series_id, value = item
+        if len(item) == 3:
+            valid_time, series_id, value = item
             valid_time_end = None
-        elif len(item) == 5:
-            tenant_id, valid_time, valid_time_end, series_id, value = item
+        elif len(item) == 4:
+            valid_time, valid_time_end, series_id, value = item
         else:
             raise ValueError(
                 "Each overlapping row must be "
-                "(tenant_id, valid_time, series_id, value) or "
-                "(tenant_id, valid_time, valid_time_end, series_id, value)"
+                "(valid_time, series_id, value) or "
+                "(valid_time, valid_time_end, series_id, value)"
             )
 
-        if not isinstance(tenant_id, uuid.UUID):
-            raise ValueError("tenant_id must be a UUID")
-        if not isinstance(series_id, uuid.UUID):
-            raise ValueError("series_id must be a UUID")
         if not isinstance(valid_time, datetime):
             raise ValueError("valid_time must be a datetime")
         if valid_time.tzinfo is None:
@@ -243,7 +212,7 @@ def insert_overlapping(
 
         retention = series_routing[series_id]["retention"]
         by_tier[retention].append(
-            (batch_id, tenant_id, series_id, valid_time, valid_time_end, value, known_time)
+            (batch_id, series_id, valid_time, valid_time_end, value, known_time)
         )
 
     with conn.cursor() as cur:
@@ -251,8 +220,8 @@ def insert_overlapping(
             table = _OVERLAPPING_TABLES[tier]
             cur.executemany(
                 sql.SQL("""
-                INSERT INTO {} (batch_id, tenant_id, series_id, valid_time, valid_time_end, value, known_time)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO {} (batch_id, series_id, valid_time, valid_time_end, value, known_time)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """).format(sql.Identifier(table)),
                 rows,
             )
@@ -261,22 +230,22 @@ def insert_overlapping(
 def insert_values(
     conn: psycopg.Connection,
     *,
-    batch_id: uuid.UUID,
+    batch_id: int,
     known_time: datetime,
     value_rows: Iterable[Tuple],
-    series_routing: Dict[uuid.UUID, Dict[str, str]],
+    series_routing: Dict[int, Dict[str, str]],
     changed_by: Optional[str] = None,
 ) -> None:
     """
     Route and insert values to the correct table based on series data_class and retention.
 
     Accepts rows in either of two shapes:
-      - (tenant_id, valid_time, series_id, value)                       # point-in-time
-      - (tenant_id, valid_time, valid_time_end, series_id, value)       # interval
+      - (valid_time, series_id, value)                       # point-in-time
+      - (valid_time, valid_time_end, series_id, value)       # interval
 
     Args:
         conn: Database connection
-        batch_id: UUID of the batch these values belong to
+        batch_id: ID of the batch these values belong to
         known_time: The known_time from the batch
         value_rows: Iterable of value tuples
         series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}
@@ -287,16 +256,16 @@ def insert_values(
     overlapping_rows: List[Tuple] = []
 
     for item in value_rows:
-        if len(item) == 4:
-            tenant_id, valid_time, series_id, value = item
+        if len(item) == 3:
+            valid_time, series_id, value = item
             valid_time_end = None
-        elif len(item) == 5:
-            tenant_id, valid_time, valid_time_end, series_id, value = item
+        elif len(item) == 4:
+            valid_time, valid_time_end, series_id, value = item
         else:
             raise ValueError(
                 "Each value row must be either "
-                "(tenant_id, valid_time, series_id, value) or "
-                "(tenant_id, valid_time, valid_time_end, series_id, value)"
+                "(valid_time, series_id, value) or "
+                "(valid_time, valid_time_end, series_id, value)"
             )
 
         routing = series_routing.get(series_id)
@@ -305,14 +274,14 @@ def insert_values(
 
         if routing["data_class"] == "flat":
             if valid_time_end is not None:
-                flat_rows.append((tenant_id, valid_time, valid_time_end, series_id, value))
+                flat_rows.append((valid_time, valid_time_end, series_id, value))
             else:
-                flat_rows.append((tenant_id, valid_time, series_id, value))
+                flat_rows.append((valid_time, series_id, value))
         else:
             if valid_time_end is not None:
-                overlapping_rows.append((tenant_id, valid_time, valid_time_end, series_id, value))
+                overlapping_rows.append((valid_time, valid_time_end, series_id, value))
             else:
-                overlapping_rows.append((tenant_id, valid_time, series_id, value))
+                overlapping_rows.append((valid_time, series_id, value))
 
     # Insert flat
     if flat_rows:
@@ -332,8 +301,6 @@ def insert_values(
 def insert_batch_with_values(
     conninfo: str,
     *,
-    batch_id: uuid.UUID,
-    tenant_id: uuid.UUID,
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
@@ -341,20 +308,18 @@ def insert_batch_with_values(
     known_time: Optional[datetime] = None,
     batch_params: Optional[Dict] = None,
     changed_by: Optional[str] = None,
-    series_routing: Optional[Dict[uuid.UUID, Dict[str, str]]] = None,
-) -> None:
+    series_routing: Optional[Dict[int, Dict[str, str]]] = None,
+) -> int:
     """
     One-shot helper: inserts the batch + all values atomically.
 
     Routes values to flat or overlapping tables based on series_routing.
 
     value_rows is expected to be an iterable where each item is either:
-      - (tenant_id, valid_time, series_id, value),                      # point-in-time
-      - (tenant_id, valid_time, valid_time_end, series_id, value),      # interval
+      - (valid_time, series_id, value),                      # point-in-time
+      - (valid_time, valid_time_end, series_id, value),      # interval
 
     Args:
-        batch_id: Unique identifier for the batch
-        tenant_id: Tenant ID for the batch entry
         workflow_id: Optional workflow/pipeline identifier
         batch_start_time: Optional start time of the batch
         batch_finish_time: Optional finish time of the batch
@@ -364,6 +329,9 @@ def insert_batch_with_values(
         changed_by: Optional user identifier
         series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}.
                        If None, will be looked up from the database.
+
+    Returns:
+        int: The auto-generated batch_id
     """
     # Materialize rows so we can iterate multiple times and extract series_ids
     rows_list = list(value_rows)
@@ -374,25 +342,15 @@ def insert_batch_with_values(
             if series_routing is None:
                 series_ids_in_rows = set()
                 for item in rows_list:
-                    if len(item) == 4:
+                    if len(item) == 3:
+                        series_ids_in_rows.add(item[1])  # series_id at index 1
+                    elif len(item) == 4:
                         series_ids_in_rows.add(item[2])  # series_id at index 2
-                    elif len(item) == 5:
-                        series_ids_in_rows.add(item[3])  # series_id at index 3
                 series_routing = _lookup_series_routing(conn, list(series_ids_in_rows))
 
-            # Check if any overlapping entries exist (need a batch for them)
-            has_overlapping = any(
-                series_routing.get(
-                    item[2] if len(item) == 4 else item[3], {}
-                ).get("data_class") == "overlapping"
-                for item in rows_list
-            )
-
-            # Insert batch (always, for tracking purposes)
-            batch_known_time = insert_batch(
+            # Insert batch (DB auto-generates batch_id)
+            batch_id, batch_known_time = insert_batch(
                 conn,
-                batch_id=batch_id,
-                tenant_id=tenant_id,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
                 batch_finish_time=batch_finish_time,
@@ -409,3 +367,5 @@ def insert_batch_with_values(
                 series_routing=series_routing,
                 changed_by=changed_by,
             )
+
+    return batch_id

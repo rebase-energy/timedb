@@ -27,17 +27,17 @@ SELECT add_retention_policy('overlapping_long',   INTERVAL '{retention_long}', i
 -- ============================================================================
 
 -- Flat
-ALTER TABLE flat SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id, tenant_id', timescaledb.compress_orderby = 'valid_time DESC');
+ALTER TABLE flat SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id', timescaledb.compress_orderby = 'valid_time DESC');
 SELECT add_compression_policy('flat', INTERVAL '14 days', if_not_exists => TRUE);
 
 -- Overlapping Short
-ALTER TABLE overlapping_short SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id, tenant_id', timescaledb.compress_orderby = 'valid_time DESC');
+ALTER TABLE overlapping_short SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id', timescaledb.compress_orderby = 'valid_time DESC');
 SELECT add_compression_policy('overlapping_short', INTERVAL '14 days', if_not_exists => TRUE);
 
 -- Overlapping Medium
-ALTER TABLE overlapping_medium SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id, tenant_id', timescaledb.compress_orderby = 'valid_time DESC');
+ALTER TABLE overlapping_medium SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id', timescaledb.compress_orderby = 'valid_time DESC');
 SELECT add_compression_policy('overlapping_medium', INTERVAL '14 days', if_not_exists => TRUE);
 
 -- Overlapping Long
-ALTER TABLE overlapping_long SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id, tenant_id', timescaledb.compress_orderby = 'valid_time DESC');
+ALTER TABLE overlapping_long SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id', timescaledb.compress_orderby = 'valid_time DESC');
 SELECT add_compression_policy('overlapping_long', INTERVAL '14 days', if_not_exists => TRUE);
