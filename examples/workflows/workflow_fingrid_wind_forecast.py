@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import modal
 
-from timedb.db.insert import insert_batch_with_values
+from timedb.db.insert import insert_values
 
 load_dotenv()
 
@@ -81,7 +81,7 @@ def main():
 
     run_finish_time = datetime.now(timezone.utc)
 
-    insert_batch_with_values(
+    insert_values(
         conninfo=os.getenv("NEON_PG_URL"),
         run_id=uuid.UUID(run_id),
         tenant_id=tenant_id,

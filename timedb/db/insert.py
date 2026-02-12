@@ -22,9 +22,112 @@ _OVERLAPPING_TABLES = {
     "long":   "overlapping_long",
 }
 
+_COPY_THRESHOLD = 50
 
 
-def insert_batch(
+# ── Public API ───────────────────────────────────────────────────────────────
+
+def insert_values(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    workflow_id: Optional[str] = None,
+    batch_start_time: Optional[datetime] = None,
+    batch_finish_time: Optional[datetime] = None,
+    value_rows: Iterable[Tuple],
+    known_time: Optional[datetime] = None,
+    batch_params: Optional[Dict] = None,
+    series_routing: Optional[Dict[int, Dict[str, str]]] = None,
+) -> Optional[int]:
+    """
+    Insert values into the correct tables based on series overlapping flag.
+
+    Flat series: inserted directly (upsert), no batch created.
+    Overlapping series: a batch is created and values are appended with known_time.
+
+    value_rows is expected to be an iterable where each item is either:
+      - (valid_time, series_id, value),                      # point-in-time
+      - (valid_time, valid_time_end, series_id, value),      # interval
+
+    Returns:
+        The batch_id if overlapping values were inserted, None for flat-only.
+    """
+    rows_list = list(value_rows)
+    if not rows_list:
+        return None
+
+    with _ensure_conn(conninfo) as conn:
+        with conn.transaction():
+            # Look up routing if not provided
+            if series_routing is None:
+                series_ids_in_rows = set()
+                for item in rows_list:
+                    if len(item) == 3:
+                        series_ids_in_rows.add(item[1])
+                    elif len(item) == 4:
+                        series_ids_in_rows.add(item[2])
+                series_routing = _lookup_series_routing(conn, list(series_ids_in_rows))
+
+            # Separate rows by overlapping flag
+            flat_rows: List[Tuple] = []
+            overlapping_rows: List[Tuple] = []
+
+            for item in rows_list:
+                if len(item) == 3:
+                    valid_time, series_id, value = item
+                    valid_time_end = None
+                elif len(item) == 4:
+                    valid_time, valid_time_end, series_id, value = item
+                else:
+                    raise ValueError(
+                        "Each value row must be either "
+                        "(valid_time, series_id, value) or "
+                        "(valid_time, valid_time_end, series_id, value)"
+                    )
+
+                routing = series_routing.get(series_id)
+                if routing is None:
+                    raise ValueError(f"No routing info for series_id {series_id}. Ensure it exists in series_table.")
+
+                if not routing["overlapping"]:
+                    if valid_time_end is not None:
+                        flat_rows.append((valid_time, valid_time_end, series_id, value))
+                    else:
+                        flat_rows.append((valid_time, series_id, value))
+                else:
+                    if valid_time_end is not None:
+                        overlapping_rows.append((valid_time, valid_time_end, series_id, value))
+                    else:
+                        overlapping_rows.append((valid_time, series_id, value))
+
+            # Insert flat rows (no batch needed)
+            if flat_rows:
+                _insert_flat(conn, value_rows=flat_rows)
+
+            # Insert overlapping rows (batch required)
+            if overlapping_rows:
+                batch_id, batch_known_time = _create_batch(
+                    conn,
+                    workflow_id=workflow_id,
+                    batch_start_time=batch_start_time,
+                    batch_finish_time=batch_finish_time,
+                    known_time=known_time,
+                    batch_params=batch_params,
+                )
+                _insert_overlapping(
+                    conn,
+                    batch_id=batch_id,
+                    known_time=batch_known_time,
+                    value_rows=overlapping_rows,
+                    series_routing=series_routing,
+                )
+                return batch_id
+
+    return None
+
+
+# ── Private helpers ──────────────────────────────────────────────────────────
+
+def _create_batch(
     conn: psycopg.Connection,
     *,
     workflow_id: Optional[str] = None,
@@ -35,14 +138,6 @@ def insert_batch(
 ) -> Tuple[int, datetime]:
     """
     Insert one batch into batches_table.
-
-    Args:
-        workflow_id: Optional workflow/pipeline identifier (NULL for manual insertions)
-        batch_start_time: Optional start time of the batch
-        batch_finish_time: Optional finish time of the batch
-        known_time: Time of knowledge - when the data was known/available.
-                   If not provided, defaults to now() in the database.
-        batch_params: Optional parameters/config used for this batch
 
     Returns:
         Tuple of (batch_id, known_time)
@@ -91,23 +186,20 @@ def _lookup_series_routing(
     series_ids: List[int],
 ) -> Dict[int, Dict[str, str]]:
     """
-    Look up data_class and retention for a list of series IDs.
+    Look up overlapping flag and retention for a list of series IDs.
 
     Returns:
-        Dict mapping series_id -> {'data_class': ..., 'retention': ...}
+        Dict mapping series_id -> {'overlapping': bool, 'retention': str}
     """
     if not series_ids:
         return {}
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT series_id, data_class, retention FROM series_table WHERE series_id = ANY(%s)",
+            "SELECT series_id, overlapping, retention FROM series_table WHERE series_id = ANY(%s)",
             (list(series_ids),),
         )
         rows = cur.fetchall()
-    return {row[0]: {"data_class": row[1], "retention": row[2]} for row in rows}
-
-
-_COPY_THRESHOLD = 50
+    return {row[0]: {"overlapping": row[1], "retention": row[2]} for row in rows}
 
 
 def _validate_value_rows(value_rows: Iterable[Tuple]) -> List[Tuple]:
@@ -143,7 +235,7 @@ def _validate_value_rows(value_rows: Iterable[Tuple]) -> List[Tuple]:
     return rows_list
 
 
-def insert_flat(
+def _insert_flat(
     conn: psycopg.Connection,
     *,
     value_rows: Iterable[Tuple],
@@ -156,10 +248,6 @@ def insert_flat(
 
     Uses ON CONFLICT to upsert (update value on duplicate).
     For large batches (>=50 rows), uses COPY into a staging table for performance.
-
-    Args:
-        conn: Database connection
-        value_rows: Iterable of value tuples
     """
     rows_list = _validate_value_rows(value_rows)
 
@@ -198,7 +286,7 @@ def insert_flat(
             )
 
 
-def insert_overlapping(
+def _insert_overlapping(
     conn: psycopg.Connection,
     *,
     batch_id: int,
@@ -216,13 +304,6 @@ def insert_overlapping(
     or with valid_time_end: (valid_time, valid_time_end, series_id, value)
 
     For large batches (>=50 rows per tier), uses COPY protocol for performance.
-
-    Args:
-        conn: Database connection
-        batch_id: ID of the batch these values belong to
-        known_time: The known_time for these overlapping entries
-        value_rows: Iterable of value tuples
-        series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}
     """
     # Bucket rows by storage tier
     by_tier: Dict[str, List[Tuple]] = defaultdict(list)
@@ -279,146 +360,3 @@ def insert_overlapping(
                 )
 
 
-def insert_values(
-    conn: psycopg.Connection,
-    *,
-    batch_id: int,
-    known_time: datetime,
-    value_rows: Iterable[Tuple],
-    series_routing: Dict[int, Dict[str, str]],
-    changed_by: Optional[str] = None,
-) -> None:
-    """
-    Route and insert values to the correct table based on series data_class and retention.
-
-    Accepts rows in either of two shapes:
-      - (valid_time, series_id, value)                       # point-in-time
-      - (valid_time, valid_time_end, series_id, value)       # interval
-
-    Args:
-        conn: Database connection
-        batch_id: ID of the batch these values belong to
-        known_time: The known_time from the batch
-        value_rows: Iterable of value tuples
-        series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}
-        changed_by: Optional user identifier
-    """
-    # Separate rows by data_class
-    flat_rows: List[Tuple] = []
-    overlapping_rows: List[Tuple] = []
-
-    for item in value_rows:
-        if len(item) == 3:
-            valid_time, series_id, value = item
-            valid_time_end = None
-        elif len(item) == 4:
-            valid_time, valid_time_end, series_id, value = item
-        else:
-            raise ValueError(
-                "Each value row must be either "
-                "(valid_time, series_id, value) or "
-                "(valid_time, valid_time_end, series_id, value)"
-            )
-
-        routing = series_routing.get(series_id)
-        if routing is None:
-            raise ValueError(f"No routing info for series_id {series_id}. Ensure it exists in series_table.")
-
-        if routing["data_class"] == "flat":
-            if valid_time_end is not None:
-                flat_rows.append((valid_time, valid_time_end, series_id, value))
-            else:
-                flat_rows.append((valid_time, series_id, value))
-        else:
-            if valid_time_end is not None:
-                overlapping_rows.append((valid_time, valid_time_end, series_id, value))
-            else:
-                overlapping_rows.append((valid_time, series_id, value))
-
-    # Insert flat
-    if flat_rows:
-        insert_flat(conn, value_rows=flat_rows)
-
-    # Insert overlapping (PostgreSQL partitioning routes by retention)
-    if overlapping_rows:
-        insert_overlapping(
-            conn,
-            batch_id=batch_id,
-            known_time=known_time,
-            value_rows=overlapping_rows,
-            series_routing=series_routing,
-        )
-
-
-def insert_batch_with_values(
-    conninfo: Union[psycopg.Connection, str],
-    *,
-    workflow_id: Optional[str] = None,
-    batch_start_time: Optional[datetime] = None,
-    batch_finish_time: Optional[datetime] = None,
-    value_rows: Iterable[Tuple],
-    known_time: Optional[datetime] = None,
-    batch_params: Optional[Dict] = None,
-    changed_by: Optional[str] = None,
-    series_routing: Optional[Dict[int, Dict[str, str]]] = None,
-) -> int:
-    """
-    One-shot helper: inserts the batch + all values atomically.
-
-    Routes values to flat or overlapping tables based on series_routing.
-
-    value_rows is expected to be an iterable where each item is either:
-      - (valid_time, series_id, value),                      # point-in-time
-      - (valid_time, valid_time_end, series_id, value),      # interval
-
-    Args:
-        conninfo: Database connection or connection string
-        workflow_id: Optional workflow/pipeline identifier
-        batch_start_time: Optional start time of the batch
-        batch_finish_time: Optional finish time of the batch
-        value_rows: Iterable of value tuples
-        known_time: Time of knowledge
-        batch_params: Optional parameters/config
-        changed_by: Optional user identifier
-        series_routing: Dict mapping series_id -> {'data_class': ..., 'retention': ...}.
-                       If None, will be looked up from the database.
-
-    Returns:
-        int: The auto-generated batch_id
-    """
-    # Materialize rows so we can iterate multiple times and extract series_ids
-    rows_list = list(value_rows)
-
-    with _ensure_conn(conninfo) as conn:
-        with conn.transaction():
-            # Look up routing if not provided
-            if series_routing is None:
-                series_ids_in_rows = set()
-                for item in rows_list:
-                    if len(item) == 3:
-                        series_ids_in_rows.add(item[1])  # series_id at index 1
-                    elif len(item) == 4:
-                        series_ids_in_rows.add(item[2])  # series_id at index 2
-                series_routing = _lookup_series_routing(conn, list(series_ids_in_rows))
-
-            # Insert batch (DB auto-generates batch_id)
-            batch_id, batch_known_time = insert_batch(
-                conn,
-                workflow_id=workflow_id,
-                batch_start_time=batch_start_time,
-                batch_finish_time=batch_finish_time,
-                known_time=known_time,
-                batch_params=batch_params,
-            )
-
-            # Insert values with routing
-            insert_values(
-                conn,
-                batch_id=batch_id,
-                known_time=batch_known_time,
-                value_rows=rows_list,
-                series_routing=series_routing,
-                changed_by=changed_by,
-            )
-
-    return batch_id

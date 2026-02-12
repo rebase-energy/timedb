@@ -36,7 +36,7 @@ Quick Start
        name='wind_power',
        unit='MW',
        labels={'site': 'offshore_1'},
-       data_class='overlapping'  # Versioned forecasts
+       overlapping=True  # Versioned forecasts
    )
 
    # Insert data using fluent API

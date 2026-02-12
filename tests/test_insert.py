@@ -11,12 +11,12 @@ from timedb import TimeDataClient
 # Flat insertion tests
 # =============================================================================
 
-def test_insert_flat_creates_batch(clean_db, sample_datetime):
-    """Test inserting flat via SDK creates a batch and rows in the flat table."""
+def test_insert_flat_no_batch(clean_db, sample_datetime):
+    """Test inserting flat via SDK creates no batch and rows in the flat table."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temperature", unit="dimensionless", data_class="flat")
+    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -25,7 +25,7 @@ def test_insert_flat_creates_batch(clean_db, sample_datetime):
 
     result = td.series("temperature").insert(df=df)
 
-    assert result.batch_id is not None
+    assert result.batch_id is None
     assert "temperature" in result.series_ids
 
     # Verify rows in flat table
@@ -34,19 +34,23 @@ def test_insert_flat_creates_batch(clean_db, sample_datetime):
             cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 2
 
+            # Verify no batch was created
+            cur.execute("SELECT COUNT(*) FROM batches_table")
+            assert cur.fetchone()[0] == 0
+
             # Verify no rows in any overlapping table
             cur.execute("SELECT COUNT(*) FROM overlapping_medium")
             assert cur.fetchone()[0] == 0
 
 
 def test_insert_flat_with_known_time(clean_db, sample_datetime):
-    """Test inserting flat with explicit known_time."""
+    """Test inserting flat with explicit known_time still skips batch."""
     known_time = sample_datetime - timedelta(hours=1)
 
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temperature", unit="dimensionless", data_class="flat")
+    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
@@ -59,16 +63,17 @@ def test_insert_flat_with_known_time(clean_db, sample_datetime):
         known_time=known_time,
     )
 
-    # Verify batch exists with correct batch_start_time
+    # Flat inserts should not create a batch even with known_time
+    assert result.batch_id is None
+
+    # Verify data was inserted
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT batch_start_time FROM batches_table WHERE batch_id = %s",
-                (result.batch_id,)
-            )
-            row = cur.fetchone()
-            assert row is not None
-            assert abs((row[0] - sample_datetime).total_seconds()) < 1
+            cur.execute("SELECT COUNT(*) FROM flat")
+            assert cur.fetchone()[0] == 1
+
+            cur.execute("SELECT COUNT(*) FROM batches_table")
+            assert cur.fetchone()[0] == 0
 
 
 def test_insert_flat_point_in_time(clean_db, sample_datetime):
@@ -76,7 +81,7 @@ def test_insert_flat_point_in_time(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", data_class="flat")
+    td.create_series(name="power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [
@@ -100,7 +105,7 @@ def test_insert_flat_interval(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="energy", unit="dimensionless", data_class="flat")
+    td.create_series(name="energy", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
@@ -123,7 +128,7 @@ def test_insert_flat_upsert(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="meter", unit="dimensionless", data_class="flat")
+    td.create_series(name="meter", unit="dimensionless", overlapping=False)
 
     # First insert
     df1 = pd.DataFrame({
@@ -160,7 +165,7 @@ def test_insert_overlapping_creates_batch(clean_db, sample_datetime):
 
     td.create_series(
         name="wind_forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     df = pd.DataFrame({
@@ -197,7 +202,7 @@ def test_insert_overlapping_short_tier(clean_db):
 
     td.create_series(
         name="price_forecast", unit="dimensionless",
-        data_class="overlapping", retention="short",
+        overlapping=True, retention="short",
     )
 
     df = pd.DataFrame({
@@ -226,7 +231,7 @@ def test_insert_overlapping_long_tier(clean_db, sample_datetime):
 
     td.create_series(
         name="climate_forecast", unit="dimensionless",
-        data_class="overlapping", retention="long",
+        overlapping=True, retention="long",
     )
 
     df = pd.DataFrame({
@@ -249,7 +254,7 @@ def test_insert_overlapping_interval(clean_db, sample_datetime):
 
     td.create_series(
         name="energy_forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     df = pd.DataFrame({
@@ -279,7 +284,7 @@ def test_insert_timezone_aware_required(clean_db):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temp", unit="dimensionless", data_class="flat")
+    td.create_series(name="temp", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [datetime(2025, 1, 1, 12, 0)],  # naive datetime

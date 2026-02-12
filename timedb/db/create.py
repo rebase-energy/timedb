@@ -8,7 +8,7 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 # This module creates the TimescaleDB schema for TimeDB:
 #   1) batches_table             → one row per batch
-#   2) series_table              → series metadata (name, unit, labels, data_class, retention)
+#   2) series_table              → series metadata (name, unit, labels, overlapping, retention)
 #   3) flat                      → hypertable for immutable fact data
 #   4) overlapping_short/medium/long → independent hypertables per retention tier
 #   5) all_overlapping_raw       → UNION ALL view across overlapping tables

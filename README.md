@@ -58,7 +58,7 @@ td.create_series(
     name="temperature",
     unit="degC",
     labels={"site": "Gotland"},
-    data_class="overlapping",  # or "flat" for non-versioned data
+    overlapping=True,          # False (default) for non-versioned data
     retention="medium",        # "short", "medium", or "long"
 )
 
@@ -178,7 +178,7 @@ Updates create new rows rather than overwriting, so you maintain a complete audi
 | `unit` | text | Canonical unit for the series (e.g., 'MW', 'degC') |
 | `labels` | jsonb | Dimensions differentiating series (e.g., `{"site": "Gotland"}`) |
 | `description` | text | Human-readable description (optional) |
-| `data_class` | text | `'flat'` or `'overlapping'` (default: `'overlapping'`) |
+| `overlapping` | boolean | `false` (default) for facts, `true` for versioned forecasts |
 | `retention` | text | `'short'`, `'medium'`, or `'long'` (default: `'medium'`) |
 | `inserted_at` | timestamptz | When the series was created (default: now()) |
 
@@ -188,7 +188,7 @@ Updates create new rows rather than overwriting, so you maintain a complete audi
 
 ### flat
 
-For `data_class='flat'` series. Each `(series_id, valid_time)` has exactly one row.
+For flat series (`overlapping=false`). Each `(series_id, valid_time)` has exactly one row.
 
 | Field | Type | Purpose |
 |---|---|---|
@@ -207,7 +207,7 @@ For `data_class='flat'` series. Each `(series_id, valid_time)` has exactly one r
 
 ### overlapping_short / overlapping_medium / overlapping_long
 
-For `data_class='overlapping'` series. Each `(series_id, valid_time, known_time)` combination is unique, allowing multiple revisions.
+For overlapping series (`overlapping=true`). Each `(series_id, valid_time, known_time)` combination is unique, allowing multiple revisions.
 
 | Field | Type | Purpose |
 |---|---|---|

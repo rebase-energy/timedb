@@ -103,7 +103,7 @@ Key Endpoints
    - ``description`` (str, optional): Series description
    - ``unit`` (str, default="dimensionless"): Canonical unit
    - ``labels`` (dict, default={}): Key-value labels for differentiation
-   - ``data_class`` (str, default="flat"): "flat" or "overlapping"
+   - ``overlapping`` (bool, default=false): true for versioned forecasts
    - ``retention`` (str, default="medium"): "short", "medium", or "long"
 
    **Returns:** CreateSeriesResponse with series_id

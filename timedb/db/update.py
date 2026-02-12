@@ -93,33 +93,31 @@ def _canonicalize_annotation_stored(annotation) -> Optional[str]:
     return s or None
 
 
-def _get_series_routing(conn: psycopg.Connection, series_id: int) -> Tuple[str, Optional[str]]:
+def _get_series_routing(conn: psycopg.Connection, series_id: int) -> Tuple[bool, str]:
     """Get routing info for a series.
 
     Returns:
-        Tuple of (data_class, table_name).
-        - For flat: ("flat", "flat")
-        - For overlapping: ("overlapping", "overlapping_medium") etc.
+        Tuple of (is_overlapping, table_name).
+        - For flat: (False, "flat")
+        - For overlapping: (True, "overlapping_medium") etc.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT data_class, retention FROM series_table WHERE series_id = %s",
+            "SELECT overlapping, retention FROM series_table WHERE series_id = %s",
             (series_id,),
         )
         row = cur.fetchone()
     if row is None:
         raise ValueError(f"Series {series_id} not found")
 
-    data_class = row[0]
-    if data_class == "flat":
-        return ("flat", "flat")
-    elif data_class == "overlapping":
+    is_overlapping = row[0]
+    if not is_overlapping:
+        return (False, "flat")
+    else:
         table = _OVERLAPPING_TABLES.get(row[1])
         if table is None:
             raise ValueError(f"Unknown retention '{row[1]}' for series {series_id}")
-        return ("overlapping", table)
-    else:
-        raise ValueError(f"Unknown data_class '{data_class}' for series {series_id}")
+        return (True, table)
 
 
 # -----------------------------------------------------------------------------
@@ -138,7 +136,7 @@ def update_records(
 
     Args:
         conn: Database connection
-        updates: List of update dictionaries. Required fields vary by data_class:
+        updates: List of update dictionaries. Required fields vary by series type:
 
             For flat series:
             - series_id (int): Series identifier
@@ -172,8 +170,8 @@ def update_records(
     updated: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
 
-    # Cache series routing: series_id -> (data_class, table_name)
-    series_routing_map: Dict[int, Tuple[str, str]] = {}
+    # Cache series routing: series_id -> (is_overlapping, table_name)
+    series_routing_map: Dict[int, Tuple[bool, str]] = {}
 
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
@@ -188,9 +186,9 @@ def update_records(
                     routing = _get_series_routing(conn, series_id)
                     series_routing_map[series_id] = routing
 
-                data_class, target_table = series_routing_map[series_id]
+                is_overlapping, target_table = series_routing_map[series_id]
 
-                if data_class == "flat":
+                if not is_overlapping:
                     _process_flat_update(cur, u, updated, skipped)
                 elif "overlapping_id" in u:
                     _process_update_by_id(cur, target_table, u, updated, skipped)

@@ -15,7 +15,7 @@ def create_series(
     unit: str,
     labels: Optional[Dict[str, str]] = None,
     description: Optional[str] = None,
-    data_class: str = "flat",
+    overlapping: bool = False,
     retention: str = "medium",
 ) -> int:
     """
@@ -28,7 +28,7 @@ def create_series(
         unit: Canonical unit (e.g., 'MW', 'dimensionless')
         labels: Optional dict of labels for series differentiation
         description: Optional human-readable description
-        data_class: 'flat' or 'overlapping' (default: 'flat')
+        overlapping: Whether series stores versioned data (default: False)
         retention: 'short', 'medium', or 'long' (default: 'medium')
 
     Returns:
@@ -54,11 +54,11 @@ def create_series(
         description_value = description.strip() if description and description.strip() else None
         cur.execute(
             """
-            INSERT INTO series_table (name, unit, labels, description, data_class, retention)
+            INSERT INTO series_table (name, unit, labels, description, overlapping, retention)
             VALUES (%s, %s, %s::jsonb, %s, %s, %s)
             RETURNING series_id
             """,
-            (name.strip(), unit.strip(), labels_json, description_value, data_class, retention)
+            (name.strip(), unit.strip(), labels_json, description_value, overlapping, retention)
         )
         return cur.fetchone()[0]
 
@@ -75,7 +75,7 @@ def get_series_info(
         series_id: The series_id to look up
 
     Returns:
-        Dict with keys: name, unit, labels, description, data_class, retention
+        Dict with keys: name, unit, labels, description, overlapping, retention
 
     Raises:
         ValueError: If series not found
@@ -83,7 +83,7 @@ def get_series_info(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT name, unit, labels, description, data_class, retention
+            SELECT name, unit, labels, description, overlapping, retention
             FROM series_table
             WHERE series_id = %s
             """,
@@ -99,6 +99,6 @@ def get_series_info(
         'unit': row[1],
         'labels': row[2] or {},
         'description': row[3],
-        'data_class': row[4],
+        'overlapping': row[4],
         'retention': row[5],
     }

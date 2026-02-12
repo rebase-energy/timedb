@@ -92,7 +92,7 @@ Before inserting data, create a series with ``create_series()``:
        name="wind_power",
        unit="MW",
        labels={"site": "offshore_1", "type": "forecast"},
-       data_class="overlapping"  # or "flat"
+       overlapping=True  # False (default) for facts
    )
 
 Parameters:
@@ -101,7 +101,7 @@ Parameters:
 - **unit**: Canonical unit (e.g., "MW", "degC", "dimensionless")
 - **labels**: Optional dict of labels for filtering (e.g., ``{"site": "A", "type": "forecast"}``)
 - **description**: Optional text description
-- **data_class**: ``"flat"`` (default) or ``"overlapping"`` (versioned)
+- **overlapping**: ``False`` (default) for immutable facts, ``True`` for versioned forecasts
 - **retention**: ``"short"``, ``"medium"`` (default), or ``"long"`` (only for overlapping)
 
 The function returns the ``series_id`` (UUID) which can be used directly if needed, but the fluent API handles this automatically via the ``.where()`` filter.
@@ -484,7 +484,7 @@ A complete workflow from setup to analysis:
        name="wind_power",
        unit="MW",
        labels={"site": "Gotland", "type": "offshore"},
-       data_class="overlapping",  # Versioned forecasts
+       overlapping=True,  # Versioned forecasts
        retention="medium"
    )
 

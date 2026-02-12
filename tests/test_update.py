@@ -14,7 +14,7 @@ def _setup_overlapping_series(clean_db, sample_datetime):
 
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     df = pd.DataFrame({
@@ -194,7 +194,7 @@ def test_update_nonexistent_record_without_value(clean_db, sample_datetime):
 
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     # Insert a batch but no values for this specific valid_time
@@ -223,7 +223,7 @@ def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
 
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     # Insert initial data
@@ -336,7 +336,7 @@ def _setup_flat_series(clean_db, sample_datetime):
     td = TimeDataClient()
 
     series_id = td.create_series(
-        name="meter_reading", unit="dimensionless", data_class="flat",
+        name="meter_reading", unit="dimensionless", overlapping=False,
     )
 
     df = pd.DataFrame({

@@ -17,8 +17,8 @@ def test_read_flat_via_sdk(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="temperature", unit="dimensionless", data_class="flat")
-    td.create_series(name="humidity", unit="dimensionless", data_class="flat")
+    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
+    td.create_series(name="humidity", unit="dimensionless", overlapping=False)
 
     df_temp = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -48,7 +48,7 @@ def test_read_flat_db_layer(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", data_class="flat")
+    td.create_series(name="power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -73,7 +73,7 @@ def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", data_class="flat")
+    td.create_series(name="power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [
@@ -112,7 +112,7 @@ def test_read_overlapping_latest_via_sdk(clean_db, sample_datetime):
 
     td.create_series(
         name="wind_forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     df = pd.DataFrame({
@@ -138,7 +138,7 @@ def test_read_overlapping_all_versions_via_sdk(clean_db, sample_datetime):
 
     td.create_series(
         name="wind_forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     # Insert first batch
@@ -177,7 +177,7 @@ def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
 
     td.create_series(
         name="forecast", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     known_time_1 = sample_datetime
@@ -212,7 +212,7 @@ def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
 
     td.create_series(
         name="price", unit="dimensionless",
-        data_class="overlapping", retention="medium",
+        overlapping=True, retention="medium",
     )
 
     # Insert initial forecast

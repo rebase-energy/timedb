@@ -173,14 +173,14 @@ class CreateSeriesRequest(BaseModel):
         unit: Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')
         labels: Labels to differentiate series with the same name
                (e.g., {'site': 'Gotland', 'turbine': 'T01'})
-        data_class: 'flat' for immutable facts or 'overlapping' for versioned forecasts
+        overlapping: Whether this series stores versioned/revised data (default: False)
         retention: 'short' (6mo), 'medium' (3yr), or 'long' (5yr). Only relevant for overlapping.
     """
     name: str = Field(..., description="Human-readable identifier for the series (e.g., 'wind_power_forecast')")
     description: Optional[str] = Field(None, description="Optional description of the series")
     unit: str = Field(default="dimensionless", description="Canonical unit for the series (e.g., 'MW', 'kW', 'MWh', 'dimensionless')")
     labels: Dict[str, str] = Field(default_factory=dict, description="Labels to differentiate series with the same name (e.g., {'site': 'Gotland', 'turbine': 'T01'})")
-    data_class: str = Field(default="flat", description="'flat' for immutable facts or 'overlapping' for versioned forecasts")
+    overlapping: bool = Field(default=False, description="True for versioned/revised data, False for immutable facts")
     retention: str = Field(default="medium", description="'short', 'medium', or 'long' retention (only relevant for overlapping)")
 
 
@@ -201,7 +201,7 @@ class SeriesInfo(BaseModel):
     description: Optional[str] = None
     unit: str
     labels: Dict[str, str] = Field(default_factory=dict)
-    data_class: str = "flat"
+    overlapping: bool = False
     retention: str = "medium"
 
 
@@ -351,7 +351,7 @@ async def upload_timeseries(
         workflow_id = request.workflow_id or "api-workflow"
 
         # Get or create series for each unique value_key
-        # Convert value_rows to the format expected by insert_batch_with_values:
+        # Convert value_rows to the format expected by insert_values:
         # - (valid_time, series_id, value) for point-in-time
         # - (valid_time, valid_time_end, series_id, value) for interval
         import psycopg
@@ -386,7 +386,7 @@ async def upload_timeseries(
             else:
                 value_rows.append((row.valid_time, series_id, row.value))
 
-        batch_id = db.insert.insert_batch_with_values(
+        batch_id = db.insert.insert_values(
             conninfo=dsn,
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
@@ -524,7 +524,7 @@ async def create_series(
                 description=request.description,
                 unit=request.unit,
                 labels=request.labels,
-                data_class=request.data_class,
+                overlapping=request.overlapping,
                 retention=request.retention,
             )
 
@@ -553,7 +553,7 @@ async def list_timeseries():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT series_id, name, description, unit, labels, data_class, retention
+                    SELECT series_id, name, description, unit, labels, overlapping, retention
                     FROM series_table
                     ORDER BY name
                     """
@@ -567,10 +567,10 @@ async def list_timeseries():
                     description=description,
                     unit=unit,
                     labels=labels or {},
-                    data_class=data_class,
+                    overlapping=overlapping,
                     retention=retention,
                 )
-                for series_id, name, description, unit, labels, data_class, retention in rows
+                for series_id, name, description, unit, labels, overlapping, retention in rows
             }
             return result
 

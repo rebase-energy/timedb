@@ -39,8 +39,8 @@ load_dotenv(find_dotenv())
 
 class InsertResult(NamedTuple):
     """Result from insert containing the IDs that were used."""
-    batch_id: int
-    workflow_id: str
+    batch_id: Optional[int]
+    workflow_id: Optional[str]
     series_ids: Dict[str, int]  # Maps name to series_id
 
 
@@ -97,7 +97,7 @@ class SeriesCollection:
         self._name = name
         self._unit = unit
         self._label_filters = label_filters or {}
-        self._registry = _registry or {}  # series_id -> {name, unit, labels, data_class, retention}
+        self._registry = _registry or {}  # series_id -> {name, unit, labels, overlapping, retention}
         self._resolved = False
         self._pool = _pool
 
@@ -135,14 +135,14 @@ class SeriesCollection:
     def _resolve_ids(self) -> List[int]:
         """
         Resolve series IDs that match the current filters.
-        Also caches data_class, retention, name, and unit for routing and reads.
+        Also caches overlapping, retention, name, and unit for routing and reads.
         """
         if not self._resolved:
             import json
 
             def _do_resolve(conn):
                 with conn.cursor() as cur:
-                    query = "SELECT series_id, name, unit, labels, data_class, retention FROM series_table"
+                    query = "SELECT series_id, name, unit, labels, overlapping, retention FROM series_table"
                     clauses: list = []
                     params: list = []
                     if self._name:
@@ -167,13 +167,13 @@ class SeriesCollection:
                 with psycopg.connect(self._conninfo) as conn:
                     rows = _do_resolve(conn)
 
-            for series_id, name, unit, labels, data_class, retention in rows:
+            for series_id, name, unit, labels, overlapping, retention in rows:
                 label_set = frozenset((k, v) for k, v in (labels or {}).items())
                 self._registry[series_id] = {
                     "name": name,
                     "unit": unit,
                     "labels": label_set,
-                    "data_class": data_class,
+                    "overlapping": overlapping,
                     "retention": retention,
                 }
             self._resolved = True
@@ -204,13 +204,13 @@ class SeriesCollection:
             )
         return ids[0]
 
-    def _get_data_classes(self) -> set:
-        """Get the set of data_classes for all resolved series."""
+    def _get_overlapping_set(self) -> set:
+        """Get the set of overlapping flags for all resolved series."""
         ids = self._resolve_ids()
-        return {self._registry[sid]["data_class"] for sid in ids if sid in self._registry}
+        return {self._registry[sid]["overlapping"] for sid in ids if sid in self._registry}
 
     def _get_series_routing(self) -> Dict[int, Dict[str, str]]:
-        """Get routing info (data_class, retention) for all resolved series."""
+        """Get routing info (overlapping, retention) for all resolved series."""
         ids = self._resolve_ids()
         return {sid: self._registry[sid] for sid in ids if sid in self._registry}
 
@@ -242,9 +242,9 @@ class SeriesCollection:
         """
         Insert time series data for this collection.
 
-        Automatically routes data to the correct table based on the series' data_class:
-        - flat: inserts into 'flat' table (immutable facts, upsert on conflict)
-        - overlapping: inserts into 'overlapping_{tier}' table with batch and known_time
+        Automatically routes data to the correct table based on the series' overlapping flag:
+        - flat (overlapping=False): inserts into 'flat' table (immutable facts, upsert on conflict)
+        - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and known_time
 
         Args:
             df: DataFrame with time series data
@@ -390,10 +390,10 @@ class SeriesCollection:
         """
         Read time series data for this collection.
 
-        Automatically reads from the correct table based on the series' data_class:
+        Automatically reads from the correct table based on the series' overlapping flag:
 
-        - flat: reads from 'flat' table (no versioning)
-        - overlapping: reads from 'latest_overlapping_curve' (default) or
+        - flat (overlapping=False): reads from 'flat' table (no versioning)
+        - overlapping (overlapping=True): reads from 'latest_overlapping_curve' (default) or
           'all_overlapping_raw' (if versions=True)
 
         Args:
@@ -415,9 +415,9 @@ class SeriesCollection:
                 f"unit={self._unit}, labels={self._label_filters}"
             )
 
-        data_classes = self._get_data_classes()
+        overlapping_set = self._get_overlapping_set()
 
-        if data_classes == {"flat"}:
+        if overlapping_set == {False}:
             return _read_flat(
                 series_ids=series_ids,
                 start_valid=start_valid,
@@ -426,7 +426,7 @@ class SeriesCollection:
                 _pool=self._pool,
                 _registry=self._registry,
             )
-        elif data_classes == {"overlapping"}:
+        elif overlapping_set == {True}:
             if versions:
                 return _read_overlapping_all(
                     series_ids=series_ids,
@@ -451,8 +451,8 @@ class SeriesCollection:
                 )
         else:
             # Mixed flat and overlapping - read both and merge
-            flat_ids = [sid for sid in series_ids if self._registry[sid]["data_class"] == "flat"]
-            overlapping_ids = [sid for sid in series_ids if self._registry[sid]["data_class"] == "overlapping"]
+            flat_ids = [sid for sid in series_ids if not self._registry[sid]["overlapping"]]
+            overlapping_ids = [sid for sid in series_ids if self._registry[sid]["overlapping"]]
 
             dfs = []
             mappings = {}
@@ -528,7 +528,7 @@ class SeriesCollection:
             - name: str
             - unit: str
             - labels: dict
-            - data_class: str
+            - overlapping: bool
             - retention: str
 
         Example:
@@ -536,7 +536,7 @@ class SeriesCollection:
             [
                 {'series_id': 1, 'name': 'wind_power', 'unit': 'MW',
                  'labels': {'turbine': 'T01', 'site': 'Gotland', 'type': 'onshore'},
-                 'data_class': 'flat', 'retention': 'medium'},
+                 'overlapping': False, 'retention': 'medium'},
                 ...
             ]
         """
@@ -547,7 +547,7 @@ class SeriesCollection:
                 "name": self._registry[sid]["name"],
                 "unit": self._registry[sid]["unit"],
                 "labels": dict(self._registry[sid]["labels"]),
-                "data_class": self._registry[sid]["data_class"],
+                "overlapping": self._registry[sid]["overlapping"],
                 "retention": self._registry[sid]["retention"],
             }
             for sid in ids
@@ -689,7 +689,7 @@ class TimeDataClient:
         unit: str = "dimensionless",
         labels: Optional[Dict[str, str]] = None,
         description: Optional[str] = None,
-        data_class: str = "flat",
+        overlapping: bool = False,
         retention: str = "medium",
     ) -> int:
         """
@@ -719,11 +719,11 @@ class TimeDataClient:
             description (str, optional):
                 Human-readable description of the series and its contents.
 
-            data_class (str, default="flat"):
-                Type of time series data:
+            overlapping (bool, default=False):
+                Whether this series stores versioned/revised data:
 
-                - 'flat': Immutable facts (e.g., meter readings, historical data)
-                - 'overlapping': Versioned/revised data (e.g., forecasts, estimates)
+                - False: Flat/immutable facts (e.g., meter readings, historical data)
+                - True: Versioned/revised data (e.g., forecasts, estimates)
                   with known_time tracking for changes over time
 
             retention (str, default="medium"):
@@ -747,14 +747,13 @@ class TimeDataClient:
             ...     unit='kWh',
             ...     labels={'building': 'main', 'floor': '3'},
             ...     description='Power consumption for floor 3 of main building',
-            ...     data_class='flat'
             ... )
             >>> # Create an overlapping series for weather forecasts
             >>> series_id = client.create_series(
             ...     name='wind_speed',
             ...     unit='m/s',
             ...     labels={'site': 'offshore_1'},
-            ...     data_class='overlapping',
+            ...     overlapping=True,
             ...     retention='medium'
             ... )
         """
@@ -763,7 +762,7 @@ class TimeDataClient:
             unit=unit,
             labels=labels,
             description=description,
-            data_class=data_class,
+            overlapping=overlapping,
             retention=retention,
         )
 
@@ -1018,7 +1017,7 @@ def _create_series(
     unit: str = "dimensionless",
     labels: Optional[Dict[str, str]] = None,
     description: Optional[str] = None,
-    data_class: str = "flat",
+    overlapping: bool = False,
     retention: str = "medium",
 ) -> int:
     """
@@ -1029,7 +1028,7 @@ def _create_series(
         unit: Canonical unit for the series
         labels: Dictionary of labels
         description: Optional description
-        data_class: 'flat' or 'overlapping' (default: 'flat')
+        overlapping: Whether this series stores versioned data (default: False)
         retention: 'short', 'medium', or 'long' (default: 'medium')
 
     Returns:
@@ -1045,7 +1044,7 @@ def _create_series(
                 unit=unit,
                 labels=labels,
                 description=description,
-                data_class=data_class,
+                overlapping=overlapping,
                 retention=retention,
             )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
@@ -1282,7 +1281,7 @@ def _insert(
     """
     Insert a batch with time series data from a pandas DataFrame.
 
-    Routes data to the correct table based on series data_class and retention.
+    Routes data to the correct table based on series overlapping flag and retention.
     Requires all series to exist — use td.create_series() first.
     """
     conninfo = _get_conninfo()
@@ -1318,7 +1317,7 @@ def _insert(
                 units[col_name] = meta.get("unit", canonical_unit)
                 if provided_series_id not in series_routing:
                     series_routing[provided_series_id] = {
-                        "data_class": meta["data_class"],
+                        "overlapping": meta["overlapping"],
                         "retention": meta["retention"],
                     }
 
@@ -1336,7 +1335,7 @@ def _insert(
                         units[col_name] = series_info_db['unit']
                         if provided_series_id not in series_routing:
                             series_routing[provided_series_id] = {
-                                "data_class": series_info_db['data_class'],
+                                "overlapping": series_info_db['overlapping'],
                                 "retention": series_info_db['retention'],
                             }
                     except ValueError as e:
@@ -1365,7 +1364,7 @@ def _insert(
     try:
         if _pool is not None:
             with _pool.connection() as conn:
-                batch_id = db.insert.insert_batch_with_values(
+                batch_id = db.insert.insert_values(
                     conninfo=conn,
                     workflow_id=workflow_id,
                     batch_start_time=batch_start_time,
@@ -1376,7 +1375,7 @@ def _insert(
                     series_routing=series_routing,
                 )
         else:
-            batch_id = db.insert.insert_batch_with_values(
+            batch_id = db.insert.insert_values(
                 conninfo=conninfo,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
