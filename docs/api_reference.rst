@@ -44,6 +44,8 @@ REST API Reference
 ------------------
 
 The REST API provides HTTP endpoints for reading and writing time series data.
+It mirrors the SDK's workflow: create series first, then insert/read/update data
+using name+labels or series_id to identify series.
 
 Interactive Documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -57,41 +59,6 @@ These provide live request/response examples, parameter descriptions, and test c
 
 Key Endpoints
 ~~~~~~~~~~~~~
-
-.. py:function:: GET /values
-
-   Read time series values from the database.
-
-   **Query Parameters:**
-
-   - ``start_valid`` (datetime, optional): Start of valid time range (ISO format)
-   - ``end_valid`` (datetime, optional): End of valid time range (ISO format)
-   - ``start_known`` (datetime, optional): Start of known_time range (ISO format)
-   - ``end_known`` (datetime, optional): End of known_time range (ISO format)
-   - ``mode`` (str, default="flat"): Query mode - "flat" or "overlapping"
-
-   **Modes:**
-
-   - ``flat``: Returns latest value per (valid_time, series_id)
-   - ``overlapping``: Returns all forecast revisions with their known_time
-
-   **Returns:** JSON object with count and data array
-
-.. py:function:: POST /upload
-
-   Upload time series data (create a batch with associated values).
-
-   **Request Body:**
-
-   - ``workflow_id`` (str, optional): Workflow identifier (defaults to "api-workflow")
-   - ``batch_start_time`` (datetime): Start time of the batch
-   - ``batch_finish_time`` (datetime, optional): End time of the batch
-   - ``known_time`` (datetime, optional): Time of knowledge (defaults to now)
-   - ``batch_params`` (dict, optional): Custom batch parameters
-   - ``value_rows`` (list): Array of value rows to insert
-   - ``series_descriptions`` (dict, optional): Descriptions for new series
-
-   **Returns:** CreateBatchResponse with batch_id and series_ids
 
 .. py:function:: POST /series
 
@@ -108,34 +75,119 @@ Key Endpoints
 
    **Returns:** CreateSeriesResponse with series_id
 
-.. py:function:: GET /list_timeseries
+.. py:function:: POST /values
 
-   List all available time series.
+   Insert time series data. Specify the target series by name+labels or series_id.
+   The series must already exist (use POST /series first).
 
-   **Returns:** JSON object mapping series_id to series information
-
-.. py:function:: PUT /values
-
-   Update existing time series records.
+   Routing is automatic: flat series are inserted directly (no batch),
+   overlapping series create a batch with known_time tracking.
 
    **Request Body:**
 
-   - ``updates`` (list): Array of RecordUpdateRequest objects
+   - ``name`` (str, optional): Series name (used with labels to resolve series)
+   - ``labels`` (dict, optional): Labels for resolution
+   - ``series_id`` (int, optional): Direct series_id (alternative to name+labels)
+   - ``workflow_id`` (str, default="api-workflow"): Workflow identifier
+   - ``known_time`` (datetime, optional): Time of knowledge (defaults to now)
+   - ``batch_params`` (dict, optional): Custom batch parameters
+   - ``data`` (list): Array of data points ``[{valid_time, value, valid_time_end?}]``
 
-   **Returns:** UpdateRecordsResponse with updated records
+   **Returns:** InsertResponse with batch_id (null for flat), series_id, rows_inserted
+
+.. py:function:: GET /values
+
+   Read time series values with filtering.
+
+   **Query Parameters:**
+
+   - ``name`` (str, optional): Filter by series name
+   - ``labels`` (str, optional): Filter by labels (JSON string, e.g. ``{"site":"Gotland"}``)
+   - ``series_id`` (int, optional): Filter by series_id
+   - ``start_valid`` (datetime, optional): Start of valid time range (ISO format)
+   - ``end_valid`` (datetime, optional): End of valid time range (ISO format)
+   - ``start_known`` (datetime, optional): Start of known_time range (ISO format)
+   - ``end_known`` (datetime, optional): End of known_time range (ISO format)
+   - ``versions`` (bool, default=false): Return all forecast revisions
+
+   **Returns:** JSON object with count and data array
+
+.. py:function:: PUT /values
+
+   Update existing time series records. Creates new versions for overlapping series.
+
+   Identify the series by ``series_id`` OR by ``name`` (+``labels``).
+
+   For overlapping series, three lookup methods (all optional):
+
+   - ``batch_id`` + ``valid_time``: target specific batch
+   - ``known_time`` + ``valid_time``: target specific version
+   - Just ``valid_time``: target latest version overall
+
+   **Request Body** (``updates`` is a list of objects with these fields):
+
+   - ``valid_time`` (datetime, required): The timestamp to update
+   - ``series_id`` (int, optional): Series ID (alternative to name+labels)
+   - ``name`` (str, optional): Series name (alternative to series_id)
+   - ``labels`` (dict, default={}): Labels for series resolution
+   - ``batch_id`` (int, optional): Target specific batch (overlapping only)
+   - ``known_time`` (datetime, optional): Target specific version (overlapping only)
+   - ``value`` (float, optional): New value (omit to leave unchanged, null to clear)
+   - ``annotation`` (str, optional): Annotation text (omit/null/value tri-state)
+   - ``tags`` (list[str], optional): Tags (omit/null/value tri-state)
+   - ``changed_by`` (str, optional): Who made the change (audit trail)
+
+   **Returns:** UpdateRecordsResponse with updated and skipped records
+
+.. py:function:: GET /series
+
+   List time series, optionally filtered by name, labels, unit, or series_id.
+
+   **Query Parameters:**
+
+   - ``name`` (str, optional): Filter by series name
+   - ``labels`` (str, optional): Filter by labels (JSON string)
+   - ``unit`` (str, optional): Filter by unit
+   - ``series_id`` (int, optional): Filter by series_id
+
+   **Returns:** List of SeriesInfo objects
+
+.. py:function:: GET /series/labels
+
+   List unique values for a specific label key.
+
+   **Query Parameters:**
+
+   - ``label_key`` (str, required): The label key to get unique values for
+   - ``name`` (str, optional): Filter by series name
+   - ``labels`` (str, optional): Filter by labels (JSON string)
+
+   **Returns:** ``{"label_key": "...", "values": [...]}``
+
+.. py:function:: GET /series/count
+
+   Count time series matching filters.
+
+   **Query Parameters:**
+
+   - ``name`` (str, optional): Filter by series name
+   - ``labels`` (str, optional): Filter by labels (JSON string)
+   - ``unit`` (str, optional): Filter by unit
+
+   **Returns:** ``{"count": N}``
 
 Pydantic Models
 ~~~~~~~~~~~~~~~
 
 Request/Response models used by the REST API:
 
-.. autoclass:: timedb.api.ValueRow
+.. autoclass:: timedb.api.DataPoint
    :members:
 
-.. autoclass:: timedb.api.CreateBatchRequest
+.. autoclass:: timedb.api.InsertRequest
    :members:
 
-.. autoclass:: timedb.api.CreateBatchResponse
+.. autoclass:: timedb.api.InsertResponse
    :members:
 
 .. autoclass:: timedb.api.RecordUpdateRequest
