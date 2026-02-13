@@ -16,7 +16,7 @@ Navigate to your cloned timedb repository and install it in development mode:
 git clone https://github.com/FreaxMATE/timedb.git
 cd timedb
 # Using uv (recommended)
-uv sync
+uv sync # --all-extras to use notebooks, tests, docs
 
 # Or using pip
 pip install -e .
