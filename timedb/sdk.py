@@ -38,6 +38,11 @@ class InsertResult(NamedTuple):
     series_id: int
 
 
+class IncompatibleUnitError(ValueError):
+    """Raised when units cannot be converted to each other."""
+    pass
+
+
 class SeriesCollection:
     """
     A lazy collection of time series that matches a set of filters.
@@ -217,6 +222,7 @@ class SeriesCollection:
         """
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
+        series_unit = self._registry.get_cached(series_id)["unit"]
 
         return _insert(
             df=df,
@@ -227,6 +233,7 @@ class SeriesCollection:
             batch_params=batch_params,
             series_id=series_id,
             routing=routing,
+            series_unit=series_unit,
             _pool=self._pool,
             _registry=self._registry,
         )
@@ -288,6 +295,7 @@ class SeriesCollection:
         start_known: Optional[datetime] = None,
         end_known: Optional[datetime] = None,
         versions: bool = False,
+        as_pint: bool = False,
     ) -> pd.DataFrame:
         """
         Read time series data for this collection.
@@ -304,21 +312,24 @@ class SeriesCollection:
             start_known: Start of known_time range (optional, overlapping only)
             end_known: End of known_time range (optional, overlapping only)
             versions: If True, return all overlapping revisions (default: False)
+            as_pint: If True, return value column as pint dtype with series unit (default: False).
+                Requires pint and pint-pandas: pip install pint pint-pandas
 
         Returns:
             DataFrame with index (valid_time,) or (known_time, valid_time) for versions,
-            and columns (value, name, unit, labels)
-            
+            and column (value). If as_pint=True, value column has pint dtype.
+
         Raises:
             ValueError: If collection matches multiple series or no series
-            
+            ImportError: If as_pint=True but pint/pint-pandas not installed
+
         Example:
             >>> # Single series read
             >>> df = td.series("wind_power").where(site="Gotland", turbine="T01").read()
-            >>> 
-            >>> # For multiple series, loop explicitly:
-            >>> turbines = ["T01", "T02", "T03"]
-            >>> dfs = {t: td.series("wind_power").where(turbine=t).read() for t in turbines}
+            >>>
+            >>> # Read with pint units
+            >>> df = td.series("wind_power").where(turbine="T01").read(as_pint=True)
+            >>> print(df["value"].dtype)  # pint[MW]
         """
         series_ids = self._resolve_ids()
 
@@ -327,7 +338,7 @@ class SeriesCollection:
                 f"No series found matching filters: name={self._name}, "
                 f"unit={self._unit}, labels={self._label_filters}"
             )
-        
+
         if len(series_ids) > 1:
             # Show which series matched to help user debug
             matched_series = []
@@ -335,11 +346,11 @@ class SeriesCollection:
                 meta = self._registry.get_cached(sid)
                 labels_str = ", ".join(f"{k}={v}" for k, v in meta.get("labels", {}).items())
                 matched_series.append(f"{meta['name']} ({labels_str})" if labels_str else meta['name'])
-            
+
             series_list = ", ".join(matched_series)
             if len(series_ids) > 5:
                 series_list += f", ... ({len(series_ids) - 5} more)"
-            
+
             raise ValueError(
                 f"Collection matches {len(series_ids)} series. "
                 f"Single-series reads only. Use more specific filters to match exactly one series.\n"
@@ -348,10 +359,11 @@ class SeriesCollection:
             )
 
         series_id = series_ids[0]
-        is_overlapping = self._registry.get_cached(series_id)["overlapping"]
+        meta = self._registry.get_cached(series_id)
+        is_overlapping = meta["overlapping"]
 
         if not is_overlapping:
-            return _read_flat(
+            df = _read_flat(
                 series_id=series_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
@@ -359,7 +371,7 @@ class SeriesCollection:
                 _registry=self._registry,
             )
         elif versions:
-            return _read_overlapping_all(
+            df = _read_overlapping_all(
                 series_id=series_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
@@ -369,7 +381,7 @@ class SeriesCollection:
                 _registry=self._registry,
             )
         else:
-            return _read_overlapping_latest(
+            df = _read_overlapping_latest(
                 series_id=series_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
@@ -378,6 +390,23 @@ class SeriesCollection:
                 _pool=self._pool,
                 _registry=self._registry,
             )
+
+        if as_pint and len(df) > 0:
+            try:
+                import pint
+                import pint_pandas  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "as_pint=True requires pint and pint-pandas. "
+                    "Install with: pip install pint pint-pandas"
+                )
+            ureg = pint.application_registry.get()
+            pa = pint_pandas.PintArray.from_1darray_quantity(
+                pint.Quantity(df["value"].values, ureg(meta["unit"]))
+            )
+            df["value"] = pa
+
+        return df
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
@@ -685,6 +714,60 @@ def _get_connection(_pool: Optional[ConnectionPool] = None, conninfo: Optional[s
             yield conn
 
 
+def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series:
+    """Strip pint dtype from value series, converting units if needed.
+
+    Rules:
+    - Plain float64 (no pint dtype): pass through unchanged, no unit check
+    - Pint dimensionless: treat as series unit, strip to plain float64
+    - Pint with unit: convert to series_unit if compatible, error if not
+    - Same unit: strip to plain float64 (no conversion needed)
+
+    Returns:
+        Plain float64 Series (no pint dtype)
+
+    Raises:
+        IncompatibleUnitError: if units are not convertible
+        ImportError: if pint array detected but pint not installed
+    """
+    dtype = value_series.dtype
+
+    # No pint dtype → pass through (backward compatible, no unit check)
+    if not hasattr(dtype, 'units'):
+        return value_series
+
+    # Pint dtype detected — need pint for conversion
+    try:
+        import pint
+    except ImportError:
+        raise ImportError(
+            "Pint array detected but 'pint' is not installed. "
+            "Install with: pip install pint"
+        )
+
+    source_unit = str(dtype.units)
+
+    # Extract magnitudes (numpy array, no copy if already float64)
+    magnitudes = value_series.values.quantity.magnitude
+
+    # Dimensionless or same unit → no conversion needed
+    ureg = pint.application_registry.get()
+    if ureg.dimensionless == ureg.Unit(source_unit) or source_unit == series_unit:
+        return pd.Series(magnitudes, index=value_series.index, name=value_series.name)
+
+    # Check compatibility and convert
+    try:
+        factor = ureg.Quantity(1, source_unit).to(series_unit).magnitude
+    except pint.DimensionalityError:
+        raise IncompatibleUnitError(
+            f"Cannot convert '{source_unit}' to series unit '{series_unit}'. "
+            f"Units are not dimensionally compatible."
+        )
+
+    converted = magnitudes * factor
+    return pd.Series(converted, index=value_series.index, name=value_series.name)
+
+
 def _dataframe_to_value_rows(
     df: pd.DataFrame,
     series_id: int,
@@ -916,6 +999,7 @@ def _insert(
     batch_params: Optional[dict] = None,
     series_id: int = None,
     routing: Optional[Dict[str, Any]] = None,
+    series_unit: str = "dimensionless",
     _pool: Optional[ConnectionPool] = None,
     _registry: Optional[SeriesRegistry] = None,
 ) -> InsertResult:
@@ -938,9 +1022,13 @@ def _insert(
 
     if series_id is None:
         raise ValueError("series_id must be provided")
-    
+
     if routing is None:
         raise ValueError("routing must be provided")
+
+    # Resolve pint units before row conversion
+    df = df.copy()
+    df['value'] = _resolve_pint_values(df['value'], series_unit)
 
     value_rows = _dataframe_to_value_rows(
         df=df,
