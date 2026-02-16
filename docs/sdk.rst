@@ -128,11 +128,11 @@ Then insert data:
 
    df = pd.DataFrame({
        "valid_time": [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)],
-       "wind_power": [100.0 + i * 2 for i in range(24)]
+       "value": [100.0 + i * 2 for i in range(24)]
    })
 
    result = td.series("wind_power").where(site="offshore_1").insert(df)
-   # result.series_ids = {"wind_power": UUID(...)}
+   # result.series_id, result.batch_id
 
 For overlapping (versioned) series, use ``known_time`` to indicate when the data was created:
 
@@ -147,36 +147,40 @@ Full insert signature:
 
 .. code-block:: python
 
-   result = td.series("name").insert(
-       df=pd.DataFrame(...),
-       batch_id=None,  # Optional, auto-generated
+   result = td.series("name").where(...).insert(
+       df=pd.DataFrame(...),  # Columns: [valid_time, value] or [valid_time, valid_time_end, value]
        workflow_id=None,  # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
        batch_finish_time=None,  # Optional
-       valid_time_col='valid_time',  # Column name for time values
-       valid_time_end_col=None,  # For interval data (start-end times)
        known_time=None,  # Time of knowledge (overlapping only)
        batch_params=None,  # Optional dict of metadata
    )
 
-Using pint-pandas Series
-~~~~~~~~~~~~~~~~~~~~~~~~
+Using pint Units
+~~~~~~~~~~~~~~~~
 
-Using pint-pandas Series
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-You can also use pint-pandas Series with dtype annotations:
+If your DataFrame has pint-pandas dtypes, timedb automatically validates and converts units on insert.
+Install the optional pint dependencies first: ``pip install timedb[pint]``
 
 .. code-block:: python
 
+   import pint_pandas  # noqa
+
    df = pd.DataFrame({
        "valid_time": [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)],
-       "power": pd.Series([100.0] * 24, dtype="pint[MW]"),
-       "temperature": pd.Series([20.0] * 24, dtype="pint[degC]"),
+       "value": pd.Series([500.0] * 24, dtype="pint[kW]"),
    })
 
-   # Series are automatically detected from their units
+   # kW is automatically converted to MW (the series' canonical unit)
    td.series("power").insert(df=df)
+
+Rules:
+
+- **Plain float64**: passed through unchanged, no unit check
+- **Pint with same unit**: stripped to float64, no conversion
+- **Pint with compatible unit**: converted to series unit (e.g., kW → MW)
+- **Pint dimensionless**: treated as series unit
+- **Pint with incompatible unit**: raises ``IncompatibleUnitError`` (e.g., kg into MW series)
 
 Interval-Based Time Series
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -195,13 +199,10 @@ For interval-based data (e.g., energy over a time period):
    df_intervals = pd.DataFrame({
        "valid_time": start_times,
        "valid_time_end": end_times,
-       "energy": [100.0, 105.0, 110.0] * 8
+       "value": [100.0, 105.0, 110.0] * 8
    })
 
-   td.series("energy", unit="MWh").insert(
-       df=df_intervals,
-       valid_time_end_col='valid_time_end'
-   )
+   td.series("energy").where(...).insert(df=df_intervals)
 
 Reading Data
 ------------
@@ -228,8 +229,7 @@ Use the fluent API to read data. Start by selecting a series:
 The returned DataFrame has:
 
 - **Index**: ``valid_time`` (with UTC timezone)
-- **Columns**: One column per matching series
-- **Values**: Pint-pandas dtype with appropriate unit
+- **Column**: ``value`` (float64, or pint dtype if ``as_pint=True``)
 
 Full read signature:
 
@@ -241,8 +241,24 @@ Full read signature:
        start_known=None,  # Optional, start of known_time (overlapping only)
        end_known=None,  # Optional, end of known_time (overlapping only)
        versions=False,  # If True, return all versions (overlapping only)
-       return_mapping=False,  # If True, return (DataFrame, series_id→name mapping)
+       as_pint=False,  # If True, return value column with pint dtype
    )
+
+Reading with Units
+~~~~~~~~~~~~~~~~~~
+
+Use ``as_pint=True`` to get the value column as a pint-pandas dtype with the series' canonical unit:
+
+.. code-block:: python
+
+   df = td.series("power").read(as_pint=True)
+   print(df["value"].dtype)  # pint[MW]
+
+   # Unit-aware arithmetic works naturally
+   df["value"] * 2  # still in MW
+   df["value"].pint.to("kW")  # convert to kW
+
+Requires ``pip install timedb[pint]``.
 
 Reading Latest Values (Default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -293,7 +309,7 @@ Example: Analyzing forecast revisions:
 
        df = pd.DataFrame({
            "valid_time": times,
-           "power": [100.0 + i*10 for _ in range(72)]
+           "value": [100.0 + i*10 for _ in range(72)]
        })
 
        td.series("power").insert(df, known_time=known_time)
@@ -499,7 +515,7 @@ A complete workflow from setup to analysis:
 
    df = pd.DataFrame({
        "valid_time": times,
-       "wind_power": [100.0 + i * 2 for i in range(24)]
+       "value": [100.0 + i * 2 for i in range(24)]
    })
 
    result = td.series("wind_power").where(site="Gotland").insert(
@@ -512,7 +528,7 @@ A complete workflow from setup to analysis:
    revised_time = base_time + timedelta(hours=6)
    df_revised = pd.DataFrame({
        "valid_time": times,
-       "wind_power": [105.0 + i * 2 for i in range(24)]
+       "value": [105.0 + i * 2 for i in range(24)]
    })
 
    td.series("wind_power").where(site="Gotland").insert(
