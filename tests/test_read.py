@@ -22,13 +22,13 @@ def test_read_flat_via_sdk(clean_db, sample_datetime):
 
     df_temp = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "temperature": [20.5, 21.0],
+        "value": [20.5, 21.0],
     })
     td.series("temperature").insert(df=df_temp)
 
     df_hum = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "humidity": [65.0],
+        "value": [65.0],
     })
     td.series("humidity").insert(df=df_hum)
 
@@ -48,24 +48,25 @@ def test_read_flat_db_layer(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", overlapping=False)
+    series_id = td.create_series(name="power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "power": [100.0, 101.0],
+        "value": [100.0, 101.0],
     })
     td.series("power").insert(df=df)
 
     # Read via db layer
     result = read.read_flat(
         clean_db,
+        series_id=series_id,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
     assert isinstance(result, pd.DataFrame)
     assert len(result) == 2
-    assert list(result.index.names) == ["valid_time", "series_id"]
+    assert result.index.name == "valid_time"
 
 
 def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
@@ -73,7 +74,7 @@ def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(name="power", unit="dimensionless", overlapping=False)
+    series_id = td.create_series(name="power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [
@@ -82,13 +83,14 @@ def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
             sample_datetime + timedelta(hours=2),
             sample_datetime + timedelta(hours=3),
         ],
-        "power": [100.0, 101.0, 102.0, 103.0],
+        "value": [100.0, 101.0, 102.0, 103.0],
     })
     td.series("power").insert(df=df)
 
     # Read only a subset
     result = read.read_flat(
         clean_db,
+        series_id=series_id,
         start_valid=sample_datetime + timedelta(hours=1),
         end_valid=sample_datetime + timedelta(hours=3),
     )
@@ -96,7 +98,7 @@ def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
     # Should only get 2 values (hours 1 and 2)
     assert len(result) == 2
     assert all(
-        sample_datetime + timedelta(hours=1) <= idx[0] < sample_datetime + timedelta(hours=3)
+        sample_datetime + timedelta(hours=1) <= idx < sample_datetime + timedelta(hours=3)
         for idx in result.index
     )
 
@@ -117,7 +119,7 @@ def test_read_overlapping_latest_via_sdk(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "wind_forecast": [50.0, 55.0],
+        "value": [50.0, 55.0],
     })
     td.series("wind_forecast").insert(df=df, known_time=sample_datetime)
 
@@ -145,7 +147,7 @@ def test_read_overlapping_all_versions_via_sdk(clean_db, sample_datetime):
     known_time_1 = sample_datetime
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "wind_forecast": [50.0, 55.0],
+        "value": [50.0, 55.0],
     })
     td.series("wind_forecast").insert(df=df1, known_time=known_time_1)
 
@@ -153,7 +155,7 @@ def test_read_overlapping_all_versions_via_sdk(clean_db, sample_datetime):
     known_time_2 = sample_datetime + timedelta(hours=1)
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "wind_forecast": [52.0, 57.0],
+        "value": [52.0, 57.0],
     })
     td.series("wind_forecast").insert(df=df2, known_time=known_time_2)
 
@@ -175,7 +177,7 @@ def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
-    td.create_series(
+    series_id = td.create_series(
         name="forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
@@ -183,26 +185,27 @@ def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
     known_time_1 = sample_datetime
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "forecast": [100.0],
+        "value": [100.0],
     })
     td.series("forecast").insert(df=df1, known_time=known_time_1)
 
     known_time_2 = sample_datetime + timedelta(hours=1)
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "forecast": [105.0],
+        "value": [105.0],
     })
     td.series("forecast").insert(df=df2, known_time=known_time_2)
 
     result = read.read_overlapping_all(
         clean_db,
+        series_id=series_id,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=1),
     )
 
     assert isinstance(result, pd.DataFrame)
     assert len(result) == 2
-    assert list(result.index.names) == ["known_time", "valid_time", "series_id"]
+    assert list(result.index.names) == ["known_time", "valid_time"]
 
 
 def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
@@ -218,14 +221,14 @@ def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
     # Insert initial forecast
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "price": [100.0],
+        "value": [100.0],
     })
     td.series("price").insert(df=df1, known_time=sample_datetime)
 
     # Insert revised forecast with newer known_time
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "price": [110.0],
+        "value": [110.0],
     })
     td.series("price").insert(
         df=df2,
@@ -240,4 +243,4 @@ def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
 
     assert len(result) == 1
     # The latest value should be 110.0
-    assert result.iloc[0, 0].m == 110.0  # .m extracts magnitude from pint quantity
+    assert result.iloc[0, 0] == 110.0

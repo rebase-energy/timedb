@@ -20,13 +20,13 @@ def test_insert_flat_no_batch(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "temperature": [20.5, 21.0],
+        "value": [20.5, 21.0],
     })
 
     result = td.series("temperature").insert(df=df)
 
     assert result.batch_id is None
-    assert "temperature" in result.series_ids
+    assert result.series_id > 0
 
     # Verify rows in flat table
     with psycopg.connect(clean_db) as conn:
@@ -54,7 +54,7 @@ def test_insert_flat_with_known_time(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "temperature": [20.5],
+        "value": [20.5],
     })
 
     result = td.series("temperature").insert(
@@ -89,7 +89,7 @@ def test_insert_flat_point_in_time(clean_db, sample_datetime):
             sample_datetime + timedelta(hours=1),
             sample_datetime + timedelta(hours=2),
         ],
-        "power": [100.5, 101.0, 102.5],
+        "value": [100.5, 101.0, 102.5],
     })
 
     result = td.series("power").insert(df=df)
@@ -110,10 +110,10 @@ def test_insert_flat_interval(clean_db, sample_datetime):
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
         "valid_time_end": [sample_datetime + timedelta(hours=1)],
-        "energy": [500.0],
+        "value": [500.0],
     })
 
-    result = td.series("energy").insert(df=df, valid_time_end_col="valid_time_end")
+    result = td.series("energy").insert(df=df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -133,14 +133,14 @@ def test_insert_flat_upsert(clean_db, sample_datetime):
     # First insert
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "meter": [100.0],
+        "value": [100.0],
     })
     td.series("meter").insert(df=df1)
 
     # Second insert with different value for same valid_time
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "meter": [150.0],
+        "value": [150.0],
     })
     td.series("meter").insert(df=df2)
 
@@ -170,13 +170,13 @@ def test_insert_overlapping_creates_batch(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "wind_forecast": [50.0, 55.0],
+        "value": [50.0, 55.0],
     })
 
     result = td.series("wind_forecast").insert(df=df, known_time=sample_datetime)
 
     assert result.batch_id is not None
-    assert "wind_forecast" in result.series_ids
+    assert result.series_id > 0
 
     # Verify rows in overlapping_medium
     with psycopg.connect(clean_db) as conn:
@@ -207,7 +207,7 @@ def test_insert_overlapping_short_tier(clean_db):
 
     df = pd.DataFrame({
         "valid_time": [recent_time],
-        "price_forecast": [42.0],
+        "value": [42.0],
     })
 
     td.series("price_forecast").insert(df=df, known_time=recent_time)
@@ -236,7 +236,7 @@ def test_insert_overlapping_long_tier(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "climate_forecast": [15.0],
+        "value": [15.0],
     })
 
     td.series("climate_forecast").insert(df=df, known_time=sample_datetime)
@@ -260,11 +260,11 @@ def test_insert_overlapping_interval(clean_db, sample_datetime):
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
         "valid_time_end": [sample_datetime + timedelta(hours=1)],
-        "energy_forecast": [500.0],
+        "value": [500.0],
     })
 
     td.series("energy_forecast").insert(
-        df=df, valid_time_end_col="valid_time_end", known_time=sample_datetime,
+        df=df, known_time=sample_datetime,
     )
 
     with psycopg.connect(clean_db) as conn:
@@ -288,7 +288,7 @@ def test_insert_timezone_aware_required(clean_db):
 
     df = pd.DataFrame({
         "valid_time": [datetime(2025, 1, 1, 12, 0)],  # naive datetime
-        "temp": [20.0],
+        "value": [20.0],
     })
 
     with pytest.raises(ValueError, match="timezone-aware"):

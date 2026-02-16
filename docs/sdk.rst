@@ -356,14 +356,19 @@ For collections matching a single series, ``series_id`` is optional. For multipl
 
    result = td.series("wind_power").where(site="Gotland").update_records(updates)
 
-The function returns:
+The function returns a list of updated records:
 
 .. code-block:: python
 
-   {
-       "updated": [...],  # Successfully updated records
-       "skipped_no_ops": [...]  # Records where no changes were detected
-   }
+   [
+       {
+           "series_id": 123,
+           "valid_time": datetime(...),
+           "value": 150.0,
+           ...
+       },
+       ...
+   ]
 
 For overlapping series, the system creates a new version with the current ``known_time``. You can target specific versions by including:
 

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS flat (
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
+  known_time      timestamptz NOT NULL DEFAULT now(),
   annotation      text,
   metadata        jsonb,
   tags            text[],
