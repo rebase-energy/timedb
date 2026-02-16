@@ -1026,9 +1026,11 @@ def _insert(
     if routing is None:
         raise ValueError("routing must be provided")
 
-    # Resolve pint units before row conversion
-    df = df.copy()
-    df['value'] = _resolve_pint_values(df['value'], series_unit)
+    # Resolve pint units before row conversion (only copy if pint conversion happened)
+    resolved = _resolve_pint_values(df['value'], series_unit)
+    if resolved is not df['value']:
+        df = df.copy()
+        df['value'] = resolved
 
     value_rows = _dataframe_to_value_rows(
         df=df,
