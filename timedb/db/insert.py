@@ -1,6 +1,6 @@
 import json
 from contextlib import contextmanager
-from typing import Optional, Iterable, Tuple, Dict, List, Union
+from typing import Optional, Iterable, Tuple, Dict, List, Union, Any
 from datetime import datetime
 import psycopg
 from psycopg import sql
