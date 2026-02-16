@@ -1,11 +1,158 @@
 """
 Series management for TimeDB.
 
-Handles creation and retrieval of series with their canonical units and labels.
+Handles creation, retrieval, and routing of series with their canonical units and labels.
+Provides SeriesRegistry for caching series metadata across SDK, API, and DB layer.
 """
 import json
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Any
 import psycopg
+
+
+# Table name mapping for overlapping retention tiers
+OVERLAPPING_TABLES = {
+    "short":  "overlapping_short",
+    "medium": "overlapping_medium",
+    "long":   "overlapping_long",
+}
+
+
+def get_table_name(overlapping: bool, retention: str) -> str:
+    """Return the target table name for a series based on its routing info."""
+    if not overlapping:
+        return "flat"
+    table = OVERLAPPING_TABLES.get(retention)
+    if table is None:
+        raise ValueError(f"Unknown retention '{retention}'")
+    return table
+
+
+class SeriesRegistry:
+    """In-memory cache of series metadata.
+
+    Used by SDK, API, and DB layer to avoid repeated DB round-trips.
+    Each entry maps series_id -> {name, unit, labels, description, overlapping, retention, table}.
+    """
+
+    def __init__(self):
+        self._cache: Dict[int, Dict[str, Any]] = {}
+
+    def resolve(
+        self,
+        conn: psycopg.Connection,
+        *,
+        name: Optional[str] = None,
+        unit: Optional[str] = None,
+        labels: Optional[Dict[str, str]] = None,
+        series_id: Optional[int] = None,
+    ) -> List[int]:
+        """Query series_table, cache results, return matching series_ids.
+
+        Builds WHERE clause with name, unit, labels (@> jsonb), series_id.
+        Populates self._cache for each returned row.
+        """
+        query = "SELECT series_id, name, description, unit, labels, overlapping, retention FROM series_table"
+        clauses: list = []
+        params: list = []
+
+        if series_id is not None:
+            clauses.append("series_id = %s")
+            params.append(series_id)
+        if name is not None:
+            clauses.append("name = %s")
+            params.append(name)
+        if unit is not None:
+            clauses.append("unit = %s")
+            params.append(unit)
+        if labels:
+            clauses.append("labels @> %s::jsonb")
+            params.append(json.dumps(labels))
+
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY name, unit, series_id"
+
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+        result_ids = []
+        for row in rows:
+            sid = row[0]
+            self._cache[sid] = {
+                "name": row[1],
+                "description": row[2],
+                "unit": row[3],
+                "labels": row[4] or {},
+                "overlapping": row[5],
+                "retention": row[6],
+                "table": get_table_name(row[5], row[6]),
+            }
+            result_ids.append(sid)
+
+        return result_ids
+
+    def ensure_cached(self, conn: psycopg.Connection, series_ids: List[int]) -> None:
+        """Query and cache any series_ids not already in cache."""
+        missing = [sid for sid in series_ids if sid not in self._cache]
+        if not missing:
+            return
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT series_id, name, description, unit, labels, overlapping, retention "
+                "FROM series_table WHERE series_id = ANY(%s)",
+                (missing,),
+            )
+            for row in cur.fetchall():
+                sid = row[0]
+                self._cache[sid] = {
+                    "name": row[1],
+                    "description": row[2],
+                    "unit": row[3],
+                    "labels": row[4] or {},
+                    "overlapping": row[5],
+                    "retention": row[6],
+                    "table": get_table_name(row[5], row[6]),
+                }
+
+    def get(self, conn: psycopg.Connection, series_id: int) -> Dict[str, Any]:
+        """Get cached info for a series_id, auto-fetching from DB if not cached."""
+        self.ensure_cached(conn, [series_id])
+        return self._cache[series_id]
+
+    def get_cached(self, series_id: int) -> Dict[str, Any]:
+        """Get cached info for a series_id. Raises KeyError if not cached.
+        
+        Use this when you know the series is already cached (e.g., after resolve()).
+        For auto-fetching behavior, use get(conn, series_id) instead.
+        """
+        return self._cache[series_id]
+
+    def get_routing_single(self, conn: psycopg.Connection, series_id: int) -> Dict[str, Any]:
+        """Get routing info for a single series."""
+        self.ensure_cached(conn, [series_id])
+        return {
+            "overlapping": self._cache[series_id]["overlapping"],
+            "retention": self._cache[series_id]["retention"],
+            "table": self._cache[series_id]["table"],
+        }
+
+    def get_series_info(self, conn: psycopg.Connection, series_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Get {name, unit, labels} for read enrichment, auto-fetching from DB if not cached."""
+        self.ensure_cached(conn, series_ids)
+        return {
+            sid: {
+                "name": self._cache[sid]["name"],
+                "unit": self._cache[sid]["unit"],
+                "labels": self._cache[sid]["labels"],
+            }
+            for sid in series_ids
+        }
+
+    @property
+    def cache(self) -> Dict[int, Dict[str, Any]]:
+        """Direct access to the cache dict."""
+        return self._cache
 
 
 def create_series(
@@ -61,44 +208,3 @@ def create_series(
             (name.strip(), unit.strip(), labels_json, description_value, overlapping, retention)
         )
         return cur.fetchone()[0]
-
-
-def get_series_info(
-    conn: psycopg.Connection,
-    series_id: int,
-) -> Dict[str, any]:
-    """
-    Get full metadata for a series.
-
-    Args:
-        conn: psycopg connection
-        series_id: The series_id to look up
-
-    Returns:
-        Dict with keys: name, unit, labels, description, overlapping, retention
-
-    Raises:
-        ValueError: If series not found
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT name, unit, labels, description, overlapping, retention
-            FROM series_table
-            WHERE series_id = %s
-            """,
-            (series_id,)
-        )
-        row = cur.fetchone()
-
-    if row is None:
-        raise ValueError(f"Series {series_id} not found")
-
-    return {
-        'name': row[0],
-        'unit': row[1],
-        'labels': row[2] or {},
-        'description': row[3],
-        'overlapping': row[4],
-        'retention': row[5],
-    }

@@ -19,7 +19,7 @@ def _setup_overlapping_series(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "forecast": [100.0],
+        "value": [100.0],
     })
     result = td.series("forecast").insert(df=df, known_time=sample_datetime)
 
@@ -37,14 +37,12 @@ def test_update_overlapping_value(clean_db, sample_datetime):
     record_update = {
         "batch_id": result.batch_id,
         "valid_time": sample_datetime,
-        "series_id": series_id,
         "value": 150.0,
         "changed_by": "test-user",
     }
-    outcome = td.update_records(updates=[record_update])
+    outcome = td.series("forecast").update_records(updates=[record_update])
 
-    assert len(outcome["updated"]) == 1
-    assert len(outcome["skipped_no_ops"]) == 0
+    assert len(outcome) == 1
 
     # Verify new version exists with updated value
     with psycopg.connect(clean_db) as conn:
@@ -72,13 +70,12 @@ def test_update_overlapping_annotation_only(clean_db, sample_datetime):
     record_update = {
         "batch_id": result.batch_id,
         "valid_time": sample_datetime,
-        "series_id": series_id,
         "annotation": "Updated annotation",
         "changed_by": "test-user",
     }
-    outcome = td.update_records(updates=[record_update])
+    outcome = td.series("forecast").update_records(updates=[record_update])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     # Verify value unchanged, annotation updated
     with psycopg.connect(clean_db) as conn:
@@ -105,13 +102,12 @@ def test_update_overlapping_tags(clean_db, sample_datetime):
     record_update = {
         "batch_id": result.batch_id,
         "valid_time": sample_datetime,
-        "series_id": series_id,
         "tags": ["reviewed", "validated"],
         "changed_by": "test-user",
     }
-    outcome = td.update_records(updates=[record_update])
+    outcome = td.series("forecast").update_records(updates=[record_update])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     # Verify tags were set
     with psycopg.connect(clean_db) as conn:
@@ -136,22 +132,20 @@ def test_update_overlapping_clear_tags(clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     # First add tags
-    td.update_records(updates=[{
+    td.series("forecast").update_records(updates=[{
         "batch_id": result.batch_id,
         "valid_time": sample_datetime,
-        "series_id": series_id,
         "tags": ["tag1", "tag2"],
     }])
 
     # Then clear tags
-    outcome = td.update_records(updates=[{
+    outcome = td.series("forecast").update_records(updates=[{
         "batch_id": result.batch_id,
         "valid_time": sample_datetime,
-        "series_id": series_id,
         "tags": [],  # Empty list clears tags
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     # Verify tags are cleared (NULL)
     with psycopg.connect(clean_db) as conn:
@@ -170,23 +164,6 @@ def test_update_overlapping_clear_tags(clean_db, sample_datetime):
             assert row[0] is None  # Tags cleared
 
 
-def test_update_no_op_skipped(clean_db, sample_datetime):
-    """Test that no-op updates are skipped."""
-    td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
-
-    record_update = {
-        "batch_id": result.batch_id,
-        "valid_time": sample_datetime,
-        "series_id": series_id,
-        "value": 100.0,  # Same value as inserted
-    }
-    outcome = td.update_records(updates=[record_update])
-
-    # Should be skipped
-    assert len(outcome["updated"]) == 0
-    assert len(outcome["skipped_no_ops"]) == 1
-
-
 def test_update_nonexistent_record_without_value(clean_db, sample_datetime):
     """Test that updating a non-existent record without value raises error."""
     os.environ["TIMEDB_DSN"] = clean_db
@@ -200,7 +177,7 @@ def test_update_nonexistent_record_without_value(clean_db, sample_datetime):
     # Insert a batch but no values for this specific valid_time
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "forecast": [100.0],
+        "value": [100.0],
     })
     result = td.series("forecast").insert(df=df, known_time=sample_datetime)
 
@@ -209,11 +186,10 @@ def test_update_nonexistent_record_without_value(clean_db, sample_datetime):
     record_update = {
         "batch_id": result.batch_id,
         "valid_time": non_existent_time,
-        "series_id": series_id,
         "annotation": "annotation only",  # No value provided
     }
     with pytest.raises(ValueError, match="No current row exists"):
-        td.update_records(updates=[record_update])
+        td.series("forecast").update_records(updates=[record_update])
 
 
 def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
@@ -229,7 +205,7 @@ def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
     # Insert initial data
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "forecast": [100.0],
+        "value": [100.0],
     })
     result = td.series("forecast").insert(df=df, known_time=sample_datetime)
 
@@ -238,12 +214,11 @@ def test_update_nonexistent_record_with_value(clean_db, sample_datetime):
     record_update = {
         "batch_id": result.batch_id,
         "valid_time": new_time,
-        "series_id": series_id,
         "value": 200.0,
         "annotation": "new record",
     }
-    outcome = td.update_records(updates=[record_update])
-    assert len(outcome["updated"]) == 1
+    outcome = td.series("forecast").update_records(updates=[record_update])
+    assert len(outcome) == 1
 
 
 # =============================================================================
@@ -261,7 +236,7 @@ def test_update_via_collection(clean_db, sample_datetime):
         "changed_by": "collection-api",
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -298,10 +273,9 @@ def test_update_creates_new_version(clean_db, sample_datetime):
             assert cur.fetchone()[0] == 1
 
     # Update creates a new row
-    td.update_records(updates=[{
+    td.series("forecast").update_records(updates=[{
         "batch_id": result.batch_id,
         "valid_time": sample_datetime,
-        "series_id": series_id,
         "value": 200.0,
     }])
 
@@ -341,7 +315,7 @@ def _setup_flat_series(clean_db, sample_datetime):
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime],
-        "meter_reading": [100.0],
+        "value": [100.0],
     })
     td.series("meter_reading").insert(df=df)
 
@@ -352,15 +326,13 @@ def test_update_flat_value(clean_db, sample_datetime):
     """Test updating a flat value in-place."""
     td, series_id = _setup_flat_series(clean_db, sample_datetime)
 
-    outcome = td.update_records(updates=[{
-        "series_id": series_id,
+    outcome = td.series("meter_reading").update_records(updates=[{
         "valid_time": sample_datetime,
         "value": 150.0,
         "changed_by": "test-user",
     }])
 
-    assert len(outcome["updated"]) == 1
-    assert len(outcome["skipped_no_ops"]) == 0
+    assert len(outcome) == 1
 
     # Verify value was updated in-place
     with psycopg.connect(clean_db) as conn:
@@ -383,13 +355,12 @@ def test_update_flat_annotation_only(clean_db, sample_datetime):
     """Test updating only the annotation on a flat record."""
     td, series_id = _setup_flat_series(clean_db, sample_datetime)
 
-    outcome = td.update_records(updates=[{
-        "series_id": series_id,
+    outcome = td.series("meter_reading").update_records(updates=[{
         "valid_time": sample_datetime,
         "annotation": "Corrected reading",
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     # Verify value unchanged, annotation updated
     with psycopg.connect(clean_db) as conn:
@@ -407,28 +378,13 @@ def test_update_flat_annotation_only(clean_db, sample_datetime):
             assert row[1] == "Corrected reading"
 
 
-def test_update_flat_no_op_skipped(clean_db, sample_datetime):
-    """Test that no-op flat updates are skipped."""
-    td, series_id = _setup_flat_series(clean_db, sample_datetime)
-
-    outcome = td.update_records(updates=[{
-        "series_id": series_id,
-        "valid_time": sample_datetime,
-        "value": 100.0,  # Same value as inserted
-    }])
-
-    assert len(outcome["updated"]) == 0
-    assert len(outcome["skipped_no_ops"]) == 1
-
-
 def test_update_flat_nonexistent_row_errors(clean_db, sample_datetime):
     """Test that updating a non-existent flat row raises an error."""
     td, series_id = _setup_flat_series(clean_db, sample_datetime)
 
     non_existent_time = sample_datetime + timedelta(hours=999)
     with pytest.raises(ValueError, match="No flat row exists"):
-        td.update_records(updates=[{
-            "series_id": series_id,
+        td.series("meter_reading").update_records(updates=[{
             "valid_time": non_existent_time,
             "value": 200.0,
         }])
@@ -444,7 +400,7 @@ def test_update_flat_via_collection(clean_db, sample_datetime):
         "changed_by": "collection-api",
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -472,8 +428,7 @@ def test_update_flat_no_versioning(clean_db, sample_datetime):
             assert cur.fetchone()[0] == 1
 
     # Update should modify in-place, not create new row
-    td.update_records(updates=[{
-        "series_id": series_id,
+    td.series("meter_reading").update_records(updates=[{
         "valid_time": sample_datetime,
         "value": 200.0,
     }])
@@ -494,15 +449,14 @@ def test_update_overlapping_by_known_time(clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     # Update using known_time instead of batch_id
-    outcome = td.update_records(updates=[{
-        "series_id": series_id,
+    outcome = td.series("forecast").update_records(updates=[{
         "valid_time": sample_datetime,
         "known_time": sample_datetime,  # The known_time from insert
         "value": 200.0,
         "changed_by": "known-time-lookup",
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     # Verify new version exists
     with psycopg.connect(clean_db) as conn:
@@ -527,15 +481,14 @@ def test_update_overlapping_latest_no_identifiers(clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(clean_db, sample_datetime)
 
     # Update using only valid_time - should find latest version
-    outcome = td.update_records(updates=[{
-        "series_id": series_id,
+    outcome = td.series("forecast").update_records(updates=[{
         "valid_time": sample_datetime,
         # No batch_id, no known_time - should find latest
         "value": 300.0,
         "changed_by": "latest-lookup",
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     # Verify new version exists with updated value
     with psycopg.connect(clean_db) as conn:
@@ -565,7 +518,7 @@ def test_update_overlapping_via_collection_no_batch_id(clean_db, sample_datetime
         "value": 500.0,
     }])
 
-    assert len(outcome["updated"]) == 1
+    assert len(outcome) == 1
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:

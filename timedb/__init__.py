@@ -39,11 +39,9 @@ from .sdk import (
     SeriesCollection,
     InsertResult,
 )
-from .units import IncompatibleUnitError
 
 __all__ = [
     'TimeDataClient',
     'SeriesCollection',
     'InsertResult',
-    'IncompatibleUnitError',
 ]
