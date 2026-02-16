@@ -5,11 +5,12 @@ Key conventions:
  - Both flat and overlapping series can be updated.
  - Flat: in-place update (no versioning)
  - Overlapping: creates new row with known_time=now() (versioned)
+ - Single-series only: all updates must be for the same series_id
  - At the Python API level, every updatable field is tri-state:
      Omit field => leave unchanged (field not provided)
      None      => explicitly set SQL NULL (clear)
      value     => set to that concrete value
- - No-op updates (canonicalized new == canonicalized current) are skipped.
+ - Updates are always executed (no no-op detection)
  - Values must be in the canonical unit for the series.
 
 For overlapping updates, the latest value is determined by ORDER BY known_time DESC.
@@ -22,11 +23,7 @@ import datetime as dt
 import psycopg
 from psycopg.rows import dict_row
 
-_OVERLAPPING_TABLES = {
-    "short":  "overlapping_short",
-    "medium": "overlapping_medium",
-    "long":   "overlapping_long",
-}
+from .series import SeriesRegistry
 
 # -----------------------------------------------------------------------------
 # Sentinel for tri-state updates
@@ -45,10 +42,13 @@ def _normalize_tag(t: str) -> Optional[str]:
     return s or None
 
 
-def _canonicalize_tags_input(tags) -> Optional[List[str]]:
-    if tags is None:
-        return None
-    if tags is _UNSET:
+def _canonicalize_tags(tags) -> Optional[List[str]]:
+    """
+    Canonicalize tags from any input format to sorted list or None.
+    
+    Handles None, _UNSET, dict, list, or single value.
+    """
+    if tags is None or tags is _UNSET:
         return None
     if isinstance(tags, dict):
         seq = list(tags.keys())
@@ -59,65 +59,24 @@ def _canonicalize_tags_input(tags) -> Optional[List[str]]:
             seq = [tags]
     if not seq:
         return None
-    uniq = {_normalize_tag(x) for x in seq}
-    uniq.discard(None)
+    # Normalize and filter out None values
+    normalized = [_normalize_tag(x) for x in seq]
+    uniq = {tag for tag in normalized if tag is not None}
     if not uniq:
         return None
     return sorted(uniq)
 
 
-def _canonicalize_tags_stored(tags) -> Optional[List[str]]:
-    if tags is None:
-        return None
-    seq = list(tags)
-    if not seq:
-        return None
-    uniq = {_normalize_tag(x) for x in seq}
-    uniq.discard(None)
-    if not uniq:
-        return None
-    return sorted(uniq)
-
-
-def _canonicalize_annotation_input(annotation) -> Optional[str]:
-    if annotation is None:
-        return None
-    s = str(annotation).strip()
-    return s or None
-
-
-def _canonicalize_annotation_stored(annotation) -> Optional[str]:
-    if annotation is None:
-        return None
-    s = str(annotation).strip()
-    return s or None
-
-
-def _get_series_routing(conn: psycopg.Connection, series_id: int) -> Tuple[bool, str]:
-    """Get routing info for a series.
-
-    Returns:
-        Tuple of (is_overlapping, table_name).
-        - For flat: (False, "flat")
-        - For overlapping: (True, "overlapping_medium") etc.
+def _canonicalize_annotation(annotation) -> Optional[str]:
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT overlapping, retention FROM series_table WHERE series_id = %s",
-            (series_id,),
-        )
-        row = cur.fetchone()
-    if row is None:
-        raise ValueError(f"Series {series_id} not found")
-
-    is_overlapping = row[0]
-    if not is_overlapping:
-        return (False, "flat")
-    else:
-        table = _OVERLAPPING_TABLES.get(row[1])
-        if table is None:
-            raise ValueError(f"Unknown retention '{row[1]}' for series {series_id}")
-        return (True, table)
+    Canonicalize annotation string.
+    
+    Returns None for None, _UNSET, empty string, or whitespace-only strings.
+    """
+    if annotation is None or annotation is _UNSET:
+        return None
+    s = str(annotation).strip()
+    return s or None
 
 
 # -----------------------------------------------------------------------------
@@ -125,84 +84,91 @@ def _get_series_routing(conn: psycopg.Connection, series_id: int) -> Tuple[bool,
 # -----------------------------------------------------------------------------
 def update_records(
     conn: psycopg.Connection,
+    registry: SeriesRegistry,
     *,
     updates: List[Dict[str, Any]],
-) -> Dict[str, List]:
+) -> List[Dict[str, Any]]:
     """
     Batch, concurrency-safe updates for time-series values.
+    
+    **Single-series only**: All updates must be for the same series_id.
 
     - Flat series: in-place update (no versioning)
     - Overlapping series: inserts new row with known_time=now() (versioned)
 
     Args:
         conn: Database connection
-        updates: List of update dictionaries. Required fields vary by series type:
-
-            For flat series:
-            - series_id (int): Series identifier
+        registry: SeriesRegistry for fetching series metadata
+        updates: List of update dictionaries. All must have the same series_id.
+        
+            Required fields:
+            - series_id (int): Series identifier (same for all updates)
             - valid_time (datetime): Time the value is valid for
-            - value (float, optional): New value
-            - annotation (str, optional): Annotation text
-            - tags (list[str], optional): Tags
-            - changed_by (str, optional): Who made the change
-
-            For overlapping series (flexible lookup):
-            - series_id (int): Series identifier
-            - valid_time (datetime): Time the value is valid for
-            - Plus ONE of these to identify the version:
-              - overlapping_id (int): Direct row lookup (fastest)
-              - known_time (datetime): Exact version by known_time
-              - batch_id (int): Latest version in that batch
-              - (none): Latest version overall
-            - value (float, optional): New value
-            - annotation (str, optional): Annotation text
-            - tags (list[str], optional): Tags
-            - changed_by (str, optional): Who made the change
+            
+            Optional fields (tri-state):
+            - value (float): New value (omit to keep current)
+            - annotation (str): Annotation text (None to clear)
+            - tags (list[str]): Tags ([] to clear)
+            - changed_by (str): Who made the change
+            
+            For overlapping series (version identification):
+            - known_time (datetime): Exact version by known_time
+            - batch_id (int): Latest version in that batch
+            - (none): Latest version overall
 
     Returns:
-        Dictionary with keys:
-            - 'updated': List of dicts with update info
-            - 'skipped_no_ops': List of dicts for skipped no-op updates
+        List of dicts with update info for each updated record
+        
+    Raises:
+        ValueError: If updates list is empty, contains multiple series_ids, or series not found
     """
     if not updates:
-        return {"updated": [], "skipped_no_ops": []}
-
+        return []
+    
     updated: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, Any]] = []
-
-    # Cache series routing: series_id -> (is_overlapping, table_name)
-    series_routing_map: Dict[int, Tuple[bool, str]] = {}
-
+    
+    # Extract and validate single series_id
+    first_update = updates[0]
+    series_id = first_update.get("series_id")
+    if series_id is None:
+        raise ValueError("Each update must include 'series_id'")
+    if isinstance(series_id, str):
+        series_id = int(series_id)
+    
+    # Validate all updates have the same series_id
+    for u in updates:
+        u_series_id = u.get("series_id")
+        if u_series_id is None:
+            raise ValueError("Each update must include 'series_id'")
+        if isinstance(u_series_id, str):
+            u_series_id = int(u_series_id)
+        if u_series_id != series_id:
+            raise ValueError(
+                f"Single-series updates only. Found multiple series_ids: {series_id}, {u_series_id}"
+            )
+    
+    # Fetch series metadata once (from registry cache or DB)
+    info = registry.get(conn, series_id)
+    
+    is_overlapping = info["overlapping"]
+    target_table = info["table"]
+    
+    # Process all updates (all for same series)
     with conn.transaction():
         with conn.cursor(row_factory=dict_row) as cur:
             for u in updates:
-                series_id = u.get("series_id")
-                if series_id is None:
-                    raise ValueError("Each update must include 'series_id'.")
-                if isinstance(series_id, str):
-                    series_id = int(series_id)
-
-                if series_id not in series_routing_map:
-                    routing = _get_series_routing(conn, series_id)
-                    series_routing_map[series_id] = routing
-
-                is_overlapping, target_table = series_routing_map[series_id]
-
                 if not is_overlapping:
-                    _process_flat_update(cur, u, updated, skipped)
-                elif "overlapping_id" in u:
-                    _process_update_by_id(cur, target_table, u, updated, skipped)
+                    _process_flat_update(cur, u, updated)
                 else:
-                    _process_update_by_key(cur, target_table, u, updated, skipped)
-
-    return {"updated": updated, "skipped_no_ops": skipped}
+                    _process_overlapping_update(cur, target_table, u, updated)
+    
+    return updated
 
 
 def _process_flat_update(
     cur,
     u: Dict[str, Any],
     updated: List[Dict[str, Any]],
-    skipped: List[Dict[str, Any]],
 ) -> None:
     """Process an update for a flat series (in-place, no versioning)."""
     valid_time = u.get("valid_time")
@@ -242,47 +208,28 @@ def _process_flat_update(
             f"Use insert() to create new data."
         )
 
-    current_value = current["value"]
-    current_annotation = current["annotation"]
-    current_tags = current["tags"]
-    current_changed_by = current["changed_by"]
     flat_id = current["flat_id"]
 
     # Resolve tri-state fields
     new_value = u.get("value", _UNSET)
     if new_value is _UNSET:
-        new_value = current_value
+        new_value = current["value"]
 
     new_annotation = u.get("annotation", _UNSET)
     if new_annotation is _UNSET:
-        new_annotation = current_annotation
+        new_annotation = current["annotation"]
     else:
-        new_annotation = _canonicalize_annotation_input(new_annotation)
+        new_annotation = _canonicalize_annotation(new_annotation)
 
     new_tags = u.get("tags", _UNSET)
     if new_tags is _UNSET:
-        new_tags = current_tags
+        new_tags = current["tags"]
     else:
-        new_tags = _canonicalize_tags_input(new_tags)
+        new_tags = _canonicalize_tags(new_tags)
 
     new_changed_by = u.get("changed_by", _UNSET)
     if new_changed_by is _UNSET:
-        new_changed_by = current_changed_by
-
-    current_tags_canonical = _canonicalize_tags_stored(current_tags)
-    current_annotation_canonical = _canonicalize_annotation_stored(current_annotation)
-
-    # Check for no-op
-    if (new_value == current_value
-            and new_annotation == current_annotation_canonical
-            and new_tags == current_tags_canonical
-            and new_changed_by == current_changed_by):
-        skipped.append({
-            "flat_id": flat_id,
-            "series_id": series_id,
-            "valid_time": valid_time,
-        })
-        return
+        new_changed_by = current["changed_by"]
 
     # In-place update (no versioning for flat)
     cur.execute(
@@ -310,111 +257,18 @@ def _process_flat_update(
     })
 
 
-def _process_update_by_id(
+def _process_overlapping_update(
     cur,
     table: str,
     u: Dict[str, Any],
     updated: List[Dict[str, Any]],
-    skipped: List[Dict[str, Any]],
 ) -> None:
-    """Process an update by overlapping_id."""
-    overlapping_id = u["overlapping_id"]
+    """Process an update for an overlapping series (versioned with known_time).
 
-    cur.execute(
-        f"""
-        SELECT overlapping_id, batch_id, valid_time, valid_time_end,
-               series_id, value, known_time, annotation, metadata, tags, changed_by
-        FROM {table}
-        WHERE overlapping_id = %(overlapping_id)s
-        """,
-        {"overlapping_id": overlapping_id},
-    )
-    current = cur.fetchone()
-    if current is None:
-        raise ValueError(f"No row found with overlapping_id={overlapping_id} in {table}")
-
-    # Resolve tri-state fields
-    new_value = u.get("value", _UNSET)
-    if new_value is _UNSET:
-        new_value = current["value"]
-
-    new_annotation = u.get("annotation", _UNSET)
-    if new_annotation is _UNSET:
-        new_annotation = current["annotation"]
-    else:
-        new_annotation = _canonicalize_annotation_input(new_annotation)
-
-    new_tags = u.get("tags", _UNSET)
-    if new_tags is _UNSET:
-        new_tags = current["tags"]
-    else:
-        new_tags = _canonicalize_tags_input(new_tags)
-
-    new_changed_by = u.get("changed_by", _UNSET)
-    if new_changed_by is _UNSET:
-        new_changed_by = current["changed_by"]
-
-    # Check if anything actually changed
-    has_any_update = "value" in u or "annotation" in u or "tags" in u or "changed_by" in u
-    if not has_any_update:
-        raise ValueError("No updates supplied: provide at least one of 'value', 'annotation', 'tags', 'changed_by'.")
-
-    current_tags_canonical = _canonicalize_tags_stored(current["tags"])
-    current_annotation_canonical = _canonicalize_annotation_stored(current["annotation"])
-
-    if (new_value == current["value"]
-            and new_annotation == current_annotation_canonical
-            and new_tags == current_tags_canonical
-            and new_changed_by == current["changed_by"]):
-        skipped.append({"overlapping_id": overlapping_id})
-        return
-
-    cur.execute(
-        f"""
-        INSERT INTO {table} (
-            batch_id, series_id, valid_time, valid_time_end,
-            value, known_time, annotation, metadata, tags, changed_by
-        )
-        VALUES (
-            %(batch_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,
-            %(value)s, now(), %(annotation)s, %(metadata)s, %(tags)s, %(changed_by)s
-        )
-        RETURNING overlapping_id
-        """,
-        {
-            "batch_id": current["batch_id"],
-            "series_id": current["series_id"],
-            "valid_time": current["valid_time"],
-            "valid_time_end": current["valid_time_end"],
-            "value": new_value,
-            "annotation": new_annotation,
-            "metadata": current["metadata"],
-            "tags": new_tags,
-            "changed_by": new_changed_by,
-        },
-    )
-    new_id = cur.fetchone()["overlapping_id"]
-    updated.append({
-        "overlapping_id": new_id,
-        "batch_id": current["batch_id"],
-        "valid_time": current["valid_time"],
-        "series_id": current["series_id"],
-    })
-
-
-def _process_update_by_key(
-    cur,
-    table: str,
-    u: Dict[str, Any],
-    updated: List[Dict[str, Any]],
-    skipped: List[Dict[str, Any]],
-) -> None:
-    """Process an overlapping update with flexible lookup.
-
-    Lookup priority:
-    1. known_time + valid_time: Exact version lookup
-    2. batch_id + valid_time: Latest version in that batch
-    3. Just valid_time: Latest version overall
+    Flexible lookup priority:
+    1. batch_id + valid_time: Latest version in that batch
+    2. known_time + valid_time: Exact version lookup
+    3. Just valid_time: Latest version overall (latest known_time, most recent batch)
     """
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
@@ -445,23 +299,7 @@ def _process_update_by_key(
     has_explicit_value = "value" in u
 
     # Flexible lookup based on what identifiers are provided
-    if known_time is not None:
-        # Exact version lookup by known_time
-        cur.execute(
-            f"""
-            SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
-            FROM {table}
-            WHERE series_id = %(series_id)s
-              AND valid_time = %(valid_time)s
-              AND known_time = %(known_time)s
-            """,
-            {
-                "series_id": series_id,
-                "valid_time": valid_time,
-                "known_time": known_time,
-            },
-        )
-    elif batch_id is not None:
+    if batch_id is not None:
         # Latest version in that batch
         cur.execute(
             f"""
@@ -479,8 +317,24 @@ def _process_update_by_key(
                 "batch_id": batch_id,
             },
         )
+    elif known_time is not None:
+        # Exact version lookup by known_time
+        cur.execute(
+            f"""
+            SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
+            FROM {table}
+            WHERE series_id = %(series_id)s
+              AND valid_time = %(valid_time)s
+              AND known_time = %(known_time)s
+            """,
+            {
+                "series_id": series_id,
+                "valid_time": valid_time,
+                "known_time": known_time,
+            },
+        )
     else:
-        # Latest version overall
+        # Latest version overall (latest known_time, most recent batch)
         cur.execute(
             f"""
             SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
@@ -522,32 +376,19 @@ def _process_update_by_key(
     if new_annotation is _UNSET:
         new_annotation = current_annotation
     else:
-        new_annotation = _canonicalize_annotation_input(new_annotation)
+        new_annotation = _canonicalize_annotation(new_annotation)
 
     new_tags = u.get("tags", _UNSET)
     if new_tags is _UNSET:
         new_tags = current_tags
     else:
-        new_tags = _canonicalize_tags_input(new_tags)
+        new_tags = _canonicalize_tags(new_tags)
 
     new_changed_by = u.get("changed_by", _UNSET)
     if new_changed_by is _UNSET:
         new_changed_by = current_changed_by
 
-    current_tags_canonical = _canonicalize_tags_stored(current_tags)
-    current_annotation_canonical = _canonicalize_annotation_stored(current_annotation)
-
-    if (new_value == current_value
-            and new_annotation == current_annotation_canonical
-            and new_tags == current_tags_canonical
-            and new_changed_by == current_changed_by):
-        skipped.append({
-            "batch_id": batch_id,
-            "valid_time": valid_time,
-            "series_id": series_id,
-        })
-        return
-
+    # Insert new version (overlapping series are always versioned)
     cur.execute(
         f"""
         INSERT INTO {table} (

@@ -2,7 +2,8 @@
 High-level SDK for TimeDB (TimescaleDB version).
 
 Provides a simple interface for working with TimeDB, including automatic
-DataFrame conversion for time series data with unit handling using Pint Quantity objects.
+DataFrame conversion for time series data. All numeric values are treated as
+dimensionless floats - unit conversion is the user's responsibility.
 
 The SDK exposes two main classes:
 - TimeDataClient: Main entry point for database operations
@@ -14,22 +15,15 @@ Data model:
   (list-partitioned by retention) with known_time versioning.
 """
 import os
+from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timezone
+from itertools import repeat
 import pandas as pd
 
 from dotenv import load_dotenv, find_dotenv
 from . import db
-from .units import (
-    convert_to_canonical_unit,
-    convert_quantity_to_canonical_unit,
-    IncompatibleUnitError,
-    extract_unit_from_quantity,
-    extract_value_from_quantity,
-    is_pint_pandas_series,
-    extract_unit_from_pint_pandas_series,
-)
-import pint
+from .db.series import SeriesRegistry
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
@@ -41,7 +35,12 @@ class InsertResult(NamedTuple):
     """Result from insert containing the IDs that were used."""
     batch_id: Optional[int]
     workflow_id: Optional[str]
-    series_ids: Dict[str, int]  # Maps name to series_id
+    series_id: int
+
+
+class IncompatibleUnitError(ValueError):
+    """Raised when units cannot be converted to each other."""
+    pass
 
 
 class SeriesCollection:
@@ -56,7 +55,7 @@ class SeriesCollection:
     This allows building complex queries progressively.
 
     Filtering:
-        Series are filtered by name, unit, and labels. You can chain
+        Series are filtered by name, unit, series_id, and labels. You can chain
         multiple .where() calls to add additional label filters.
 
     Operations:
@@ -77,8 +76,8 @@ class SeriesCollection:
         >>> # Multiple filters (chained)
         >>> client.series(unit='MW').where(site='offshore_1', turbine='T01').read()
 
-        >>> # All series with a given unit
-        >>> all_mw = client.series(unit='MW').read()
+        >>> # Direct lookup by series_id
+        >>> client.series(series_id=123).read()
 
         >>> # Count matching series
         >>> count = client.series('wind_power').count()
@@ -90,14 +89,16 @@ class SeriesCollection:
         name: Optional[str] = None,
         unit: Optional[str] = None,
         label_filters: Optional[Dict[str, str]] = None,
-        _registry: Optional[Dict[int, Dict[str, Any]]] = None,
+        series_id: Optional[int] = None,
+        _registry: Optional[SeriesRegistry] = None,
         _pool: Optional[ConnectionPool] = None,
     ):
         self._conninfo = conninfo
         self._name = name
         self._unit = unit
         self._label_filters = label_filters or {}
-        self._registry = _registry or {}  # series_id -> {name, unit, labels, overlapping, retention}
+        self._series_id = series_id
+        self._registry = _registry or SeriesRegistry()
         self._resolved = False
         self._pool = _pool
 
@@ -128,63 +129,38 @@ class SeriesCollection:
             name=self._name,
             unit=self._unit,
             label_filters=new_filters,
-            _registry=self._registry.copy(),
+            series_id=self._series_id,
+            _registry=self._registry,
             _pool=self._pool,
         )
 
     def _resolve_ids(self) -> List[int]:
         """
         Resolve series IDs that match the current filters.
-        Also caches overlapping, retention, name, and unit for routing and reads.
+        Delegates to SeriesRegistry for DB query and caching.
         """
         if not self._resolved:
-            import json
-
-            def _do_resolve(conn):
-                with conn.cursor() as cur:
-                    query = "SELECT series_id, name, unit, labels, overlapping, retention FROM series_table"
-                    clauses: list = []
-                    params: list = []
-                    if self._name:
-                        clauses.append("name = %s")
-                        params.append(self._name)
-                    if self._unit:
-                        clauses.append("unit = %s")
-                        params.append(self._unit)
-                    if self._label_filters:
-                        clauses.append("labels @> %s::jsonb")
-                        params.append(json.dumps(self._label_filters))
-                    if clauses:
-                        query += " WHERE " + " AND ".join(clauses)
-                    query += " ORDER BY name, unit, series_id"
-                    cur.execute(query, params)
-                    return cur.fetchall()
-
-            if self._pool is not None:
-                with self._pool.connection() as conn:
-                    rows = _do_resolve(conn)
-            else:
-                with psycopg.connect(self._conninfo) as conn:
-                    rows = _do_resolve(conn)
-
-            for series_id, name, unit, labels, overlapping, retention in rows:
-                label_set = frozenset((k, v) for k, v in (labels or {}).items())
-                self._registry[series_id] = {
-                    "name": name,
-                    "unit": unit,
-                    "labels": label_set,
-                    "overlapping": overlapping,
-                    "retention": retention,
-                }
+            with _get_connection(self._pool, self._conninfo) as conn:
+                self._registry.resolve(
+                    conn, name=self._name, unit=self._unit,
+                    labels=self._label_filters if self._label_filters else None,
+                    series_id=self._series_id,
+                )
             self._resolved = True
 
+        # If series_id is specified, return just that (if it exists in cache)
+        if self._series_id is not None:
+            return [self._series_id] if self._series_id in self._registry.cache else []
+        
+        # Filter cached entries by label_filters (in-memory sub-filtering for .where())
         if not self._label_filters:
-            return list(self._registry.keys())
+            return list(self._registry.cache.keys())
 
         matching_ids = []
-        filter_set = set(self._label_filters.items())
-        for sid, meta in self._registry.items():
-            if filter_set.issubset(meta["labels"]):
+        filter_items = self._label_filters.items()
+        for sid, meta in self._registry.cache.items():
+            labels = meta.get("labels", {})
+            if all(labels.get(k) == v for k, v in filter_items):
                 matching_ids.append(sid)
         return matching_ids
 
@@ -204,29 +180,10 @@ class SeriesCollection:
             )
         return ids[0]
 
-    def _get_overlapping_set(self) -> set:
-        """Get the set of overlapping flags for all resolved series."""
-        ids = self._resolve_ids()
-        return {self._registry[sid]["overlapping"] for sid in ids if sid in self._registry}
-
-    def _get_series_routing(self) -> Dict[int, Dict[str, str]]:
-        """Get routing info (overlapping, retention) for all resolved series."""
-        ids = self._resolve_ids()
-        return {sid: self._registry[sid] for sid in ids if sid in self._registry}
-
-    def _get_name_to_id_mapping(self) -> Dict[str, int]:
-        """Build name→series_id mapping from resolved, filtered series.
-
-        Uses the registry but only includes series that match the current
-        filters (via _resolve_ids). This ensures labels are respected when
-        multiple series share a name.
-        """
-        ids = set(self._resolve_ids())
-        mapping = {}
-        for sid, meta in self._registry.items():
-            if sid in ids:
-                mapping[meta["name"]] = sid
-        return mapping
+    def _get_series_routing(self, series_id: int) -> Dict[str, Any]:
+        """Get routing info (overlapping, retention, table) for single series."""
+        with _get_connection(self._pool, self._conninfo) as conn:
+            return self._registry.get_routing_single(conn, series_id)
 
     def insert(
         self,
@@ -234,149 +191,102 @@ class SeriesCollection:
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
-        valid_time_col: str = 'valid_time',
-        valid_time_end_col: Optional[str] = None,
         known_time: Optional[datetime] = None,
         batch_params: Optional[dict] = None,
     ) -> InsertResult:
         """
         Insert time series data for this collection.
 
+        **Single-series inserts only.** DataFrame must have fixed columns:
+        - Point-in-time: [valid_time, value]
+        - Intervals: [valid_time, valid_time_end, value]
+
         Automatically routes data to the correct table based on the series' overlapping flag:
         - flat (overlapping=False): inserts into 'flat' table (immutable facts, upsert on conflict)
         - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and known_time
 
         Args:
-            df: DataFrame with time series data
+            df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
-            valid_time_col: Valid time column name
-            valid_time_end_col: Valid time end column (for intervals)
             known_time: Time of knowledge (optional, used for overlapping)
             batch_params: Batch parameters (optional)
 
         Returns:
-            InsertResult with batch_id, workflow_id, series_ids
+            InsertResult with batch_id, workflow_id, series_id
+
+        Raises:
+            ValueError: If collection matches multiple series (use more specific filters)
+            ValueError: If DataFrame doesn't have the required columns
         """
-        series_ids = self._resolve_ids()
+        series_id = self._get_single_id()
+        routing = self._get_series_routing(series_id)
+        series_unit = self._registry.get_cached(series_id)["unit"]
 
-        if len(series_ids) == 0:
-            raise ValueError(
-                f"No series found matching filters: name={self._name}, "
-                f"unit={self._unit}, labels={self._label_filters}"
-            )
+        return _insert(
+            df=df,
+            workflow_id=workflow_id,
+            batch_start_time=batch_start_time,
+            batch_finish_time=batch_finish_time,
+            known_time=known_time,
+            batch_params=batch_params,
+            series_id=series_id,
+            routing=routing,
+            series_unit=series_unit,
+            _pool=self._pool,
+            _registry=self._registry,
+        )
 
-        series_routing = self._get_series_routing()
-
-        if len(series_ids) == 1:
-            series_id = series_ids[0]
-            series_info = _detect_series_from_dataframe(
-                df=df,
-                valid_time_col=valid_time_col,
-                valid_time_end_col=valid_time_end_col,
-            )
-            if len(series_info) != 1:
-                raise ValueError(
-                    f"DataFrame has {len(series_info)} series columns, "
-                    f"but collection resolves to 1 series. "
-                    f"Expected exactly 1 data column (excluding time columns)."
-                )
-            col_name = list(series_info.keys())[0]
-            return _insert(
-                df=df,
-                workflow_id=workflow_id,
-                batch_start_time=batch_start_time,
-                batch_finish_time=batch_finish_time,
-                valid_time_col=valid_time_col,
-                valid_time_end_col=valid_time_end_col,
-                known_time=known_time,
-                batch_params=batch_params,
-                series_ids={col_name: series_id},
-                series_routing=series_routing,
-                _pool=self._pool,
-                _registry=self._registry,
-            )
-        else:
-            return _insert(
-                df=df,
-                workflow_id=workflow_id,
-                batch_start_time=batch_start_time,
-                batch_finish_time=batch_finish_time,
-                valid_time_col=valid_time_col,
-                valid_time_end_col=valid_time_end_col,
-                known_time=known_time,
-                batch_params=batch_params,
-                series_ids=self._get_name_to_id_mapping(),
-                series_routing=series_routing,
-                _pool=self._pool,
-                _registry=self._registry,
-            )
-
-    def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
+    def update_records(self, updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Update records for series in this collection.
-
+        Update records for this collection.
+        
+        **Single-series only.** Collection must resolve to exactly one series.
+        
         Supports both flat and overlapping series:
-
-        **Flat series**: In-place update (no versioning).
-        - Key: (series_id, valid_time)
-        - Updateable fields: value, annotation, tags, changed_by
-
-        **Overlapping series**: Creates a new version with known_time=now().
-        Lookup priority (use what you have):
-        - known_time + valid_time: Exact version lookup
-        - batch_id + valid_time: Latest version in that batch
-        - Just valid_time: Latest version overall
-
+        - **Flat**: In-place update (no versioning) by (series_id, valid_time)
+        - **Overlapping**: Creates new version with known_time=now(). Three lookup methods:
+          1. known_time + valid_time: Exact version lookup
+          2. batch_id + valid_time: Latest version in that batch
+          3. Just valid_time: Latest version overall
+        
         Args:
-            updates: List of update dicts. Each dict must include:
-                - valid_time: Required for both flat and overlapping
-                - series_id: Required if collection matches multiple series
-                Optional fields:
-                - value: New value (if omitted, keeps current value)
-                - annotation: Text annotation (None to clear)
-                - tags: List of tags ([] to clear)
-                - changed_by: User identifier
+            updates: List of update dicts. Each must include:
+                - valid_time (datetime): Required
+                - value (float, optional): New value (omit to keep current)
+                - annotation (str, optional): Text annotation (None to clear)
+                - tags (list[str], optional): Tags ([] to clear)
+                - changed_by (str, optional): User identifier
                 For overlapping only:
-                - batch_id: Target specific batch
-                - known_time: Target specific version
-
+                - batch_id (int, optional): Target specific batch
+                - known_time (datetime, optional): Target specific version
+        
         Returns:
-            Dict with 'updated' and 'skipped_no_ops' lists.
+            List of dicts with update info for each updated record
+        
+        Raises:
+            ValueError: If collection matches multiple series or no series
+        
+        Example:
+            >>> td.series("temperature").where(site="A").update_records([
+            ...     {"valid_time": dt, "value": 25.0, "annotation": "Corrected"}
+            ... ])
         """
         if not updates:
-            return {"updated": [], "skipped_no_ops": []}
+            return []
 
-        series_ids = self._resolve_ids()
-        if len(series_ids) == 0:
-            raise ValueError(
-                f"No series found matching filters: name={self._name}, unit={self._unit}, labels={self._label_filters}"
-            )
+        series_id = self._get_single_id()
 
-        single_series = len(series_ids) == 1
-        filled_updates: List[Dict[str, Any]] = []
-
+        # Add series_id to all updates
+        filled_updates = []
         for u in updates:
             u_copy = u.copy()
-
-            if "overlapping_id" in u_copy:
-                if "series_id" not in u_copy and single_series:
-                    u_copy["series_id"] = series_ids[0]
-                filled_updates.append(u_copy)
-                continue
-
             if "series_id" not in u_copy:
-                if single_series:
-                    u_copy["series_id"] = series_ids[0]
-                else:
-                    raise ValueError(
-                        "For collections matching multiple series, each update must include 'series_id'."
-                    )
-
+                u_copy["series_id"] = series_id
             filled_updates.append(u_copy)
 
-        return _update_records(filled_updates, _pool=self._pool)
+        return _update_records(filled_updates, _pool=self._pool, _registry=self._registry)
 
     def read(
         self,
@@ -385,16 +295,16 @@ class SeriesCollection:
         start_known: Optional[datetime] = None,
         end_known: Optional[datetime] = None,
         versions: bool = False,
-        return_mapping: bool = False,
-    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
+        as_pint: bool = False,
+    ) -> pd.DataFrame:
         """
         Read time series data for this collection.
 
-        Automatically reads from the correct table based on the series' overlapping flag:
+        **Single-series reads only.** Collection must resolve to exactly one series.
 
+        Automatically reads from the correct table based on the series' overlapping flag:
         - flat (overlapping=False): reads from 'flat' table (no versioning)
-        - overlapping (overlapping=True): reads from 'latest_overlapping_curve' (default) or
-          'all_overlapping_raw' (if versions=True)
+        - overlapping (overlapping=True): reads latest values or all versions (if versions=True)
 
         Args:
             start_valid: Start of valid time range (optional)
@@ -402,10 +312,24 @@ class SeriesCollection:
             start_known: Start of known_time range (optional, overlapping only)
             end_known: End of known_time range (optional, overlapping only)
             versions: If True, return all overlapping revisions (default: False)
-            return_mapping: Return (DataFrame, mapping_dict) if True
+            as_pint: If True, return value column as pint dtype with series unit (default: False).
+                Requires pint and pint-pandas: pip install pint pint-pandas
 
         Returns:
-            DataFrame (or tuple of DataFrame and mapping dict)
+            DataFrame with index (valid_time,) or (known_time, valid_time) for versions,
+            and column (value). If as_pint=True, value column has pint dtype.
+
+        Raises:
+            ValueError: If collection matches multiple series or no series
+            ImportError: If as_pint=True but pint/pint-pandas not installed
+
+        Example:
+            >>> # Single series read
+            >>> df = td.series("wind_power").where(site="Gotland", turbine="T01").read()
+            >>>
+            >>> # Read with pint units
+            >>> df = td.series("wind_power").where(turbine="T01").read(as_pint=True)
+            >>> print(df["value"].dtype)  # pint[MW]
         """
         series_ids = self._resolve_ids()
 
@@ -415,108 +339,85 @@ class SeriesCollection:
                 f"unit={self._unit}, labels={self._label_filters}"
             )
 
-        overlapping_set = self._get_overlapping_set()
+        if len(series_ids) > 1:
+            # Show which series matched to help user debug
+            matched_series = []
+            for sid in series_ids[:5]:  # Show first 5
+                meta = self._registry.get_cached(sid)
+                labels_str = ", ".join(f"{k}={v}" for k, v in meta.get("labels", {}).items())
+                matched_series.append(f"{meta['name']} ({labels_str})" if labels_str else meta['name'])
 
-        if overlapping_set == {False}:
-            return _read_flat(
-                series_ids=series_ids,
+            series_list = ", ".join(matched_series)
+            if len(series_ids) > 5:
+                series_list += f", ... ({len(series_ids) - 5} more)"
+
+            raise ValueError(
+                f"Collection matches {len(series_ids)} series. "
+                f"Single-series reads only. Use more specific filters to match exactly one series.\n"
+                f"Matched series: [{series_list}]\n"
+                f"Tip: Use .where(label_key='value') to narrow down."
+            )
+
+        series_id = series_ids[0]
+        meta = self._registry.get_cached(series_id)
+        is_overlapping = meta["overlapping"]
+
+        if not is_overlapping:
+            df = _read_flat(
+                series_id=series_id,
                 start_valid=start_valid,
                 end_valid=end_valid,
-                return_mapping=return_mapping,
                 _pool=self._pool,
                 _registry=self._registry,
             )
-        elif overlapping_set == {True}:
-            if versions:
-                return _read_overlapping_all(
-                    series_ids=series_ids,
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                    return_mapping=return_mapping,
-                    _pool=self._pool,
-                    _registry=self._registry,
-                )
-            else:
-                return _read_overlapping_latest(
-                    series_ids=series_ids,
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                    return_mapping=return_mapping,
-                    _pool=self._pool,
-                    _registry=self._registry,
-                )
+        elif versions:
+            df = _read_overlapping_all(
+                series_id=series_id,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                start_known=start_known,
+                end_known=end_known,
+                _pool=self._pool,
+                _registry=self._registry,
+            )
         else:
-            # Mixed flat and overlapping - read both and merge
-            flat_ids = [sid for sid in series_ids if not self._registry[sid]["overlapping"]]
-            overlapping_ids = [sid for sid in series_ids if self._registry[sid]["overlapping"]]
+            df = _read_overlapping_latest(
+                series_id=series_id,
+                start_valid=start_valid,
+                end_valid=end_valid,
+                start_known=start_known,
+                end_known=end_known,
+                _pool=self._pool,
+                _registry=self._registry,
+            )
 
-            dfs = []
-            mappings = {}
-
-            if flat_ids:
-                result = _read_flat(
-                    series_ids=flat_ids,
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    return_mapping=True,
-                    _pool=self._pool,
-                    _registry=self._registry,
+        if as_pint and len(df) > 0:
+            try:
+                import pint
+                import pint_pandas  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "as_pint=True requires pint and pint-pandas. "
+                    "Install with: pip install pint pint-pandas"
                 )
-                dfs.append(result[0])
-                mappings.update(result[1])
+            ureg = pint.application_registry.get()
+            pa = pint_pandas.PintArray.from_1darray_quantity(
+                pint.Quantity(df["value"].values, ureg(meta["unit"]))
+            )
+            df["value"] = pa
 
-            if overlapping_ids:
-                if versions:
-                    result = _read_overlapping_all(
-                        series_ids=overlapping_ids,
-                        start_valid=start_valid,
-                        end_valid=end_valid,
-                        start_known=start_known,
-                        end_known=end_known,
-                        return_mapping=True,
-                        _pool=self._pool,
-                        _registry=self._registry,
-                    )
-                else:
-                    result = _read_overlapping_latest(
-                        series_ids=overlapping_ids,
-                        start_valid=start_valid,
-                        end_valid=end_valid,
-                        start_known=start_known,
-                        end_known=end_known,
-                        return_mapping=True,
-                        _pool=self._pool,
-                        _registry=self._registry,
-                    )
-                dfs.append(result[0])
-                mappings.update(result[1])
-
-            if not dfs:
-                empty_index = pd.DatetimeIndex([], name="valid_time", tz="UTC")
-                if return_mapping:
-                    return pd.DataFrame(index=empty_index), {}
-                return pd.DataFrame(index=empty_index)
-
-            combined = pd.concat(dfs, axis=1)
-            if return_mapping:
-                return combined, mappings
-            combined.rename(columns=mappings, inplace=True)
-            combined.columns.name = "name"
-            return combined
+        return df
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
         ids = set(self._resolve_ids())
         values = set()
-        for sid, meta in self._registry.items():
-            if sid in ids:
-                for key, value in meta["labels"]:
-                    if key == label_key:
-                        values.add(value)
+        for sid in ids:
+            meta = self._registry.get_cached(sid)
+            if meta:
+                labels = meta.get("labels", {})
+                if label_key in labels:
+                    values.add(labels[label_key])
         return sorted(list(values))
 
     def list_series(self) -> List[Dict[str, Any]]:
@@ -528,6 +429,7 @@ class SeriesCollection:
             - name: str
             - unit: str
             - labels: dict
+            - description: str (optional)
             - overlapping: bool
             - retention: str
 
@@ -536,23 +438,26 @@ class SeriesCollection:
             [
                 {'series_id': 1, 'name': 'wind_power', 'unit': 'MW',
                  'labels': {'turbine': 'T01', 'site': 'Gotland', 'type': 'onshore'},
+                 'description': 'Onshore wind turbine power output',
                  'overlapping': False, 'retention': 'medium'},
                 ...
             ]
         """
         ids = self._resolve_ids()
-        return [
-            {
-                "series_id": sid,
-                "name": self._registry[sid]["name"],
-                "unit": self._registry[sid]["unit"],
-                "labels": dict(self._registry[sid]["labels"]),
-                "overlapping": self._registry[sid]["overlapping"],
-                "retention": self._registry[sid]["retention"],
-            }
-            for sid in ids
-            if sid in self._registry
-        ]
+        result = []
+        for sid in ids:
+            meta = self._registry.get_cached(sid)
+            if meta:
+                result.append({
+                    "series_id": sid,
+                    "name": meta["name"],
+                    "unit": meta["unit"],
+                    "labels": meta["labels"],
+                    "description": meta.get("description"),
+                    "overlapping": meta["overlapping"],
+                    "retention": meta["retention"],
+                })
+        return result
 
     def count(self) -> int:
         """Count how many series match the current filters."""
@@ -561,7 +466,7 @@ class SeriesCollection:
     def __repr__(self) -> str:
         return (
             f"SeriesCollection(name={self._name!r}, unit={self._unit!r}, "
-            f"labels={self._label_filters!r}, resolved={self._resolved})"
+            f"series_id={self._series_id!r}, labels={self._label_filters!r}, resolved={self._resolved})"
         )
 
 
@@ -619,9 +524,10 @@ class TimeDataClient:
         self,
         name: Optional[str] = None,
         unit: Optional[str] = None,
+        series_id: Optional[int] = None,
     ) -> SeriesCollection:
         """
-        Start building a series collection by name and/or unit.
+        Start building a series collection by name, unit, and/or series_id.
 
         Creates a lazy SeriesCollection that can be further filtered using
         .where() to add label-based filters. The collection resolves to the
@@ -630,6 +536,7 @@ class TimeDataClient:
         Args:
             name: Optional series name to filter by (e.g., 'wind_power')
             unit: Optional unit to filter by (e.g., 'MW')
+            series_id: Optional series_id for direct lookup (e.g., 123)
 
         Returns:
             SeriesCollection: A lazy collection that can be further filtered
@@ -637,15 +544,18 @@ class TimeDataClient:
 
         Example:
             >>> client = TimeDataClient()
-            >>> # Get a specific series
+            >>> # Get a specific series by name and labels
             >>> client.series('wind_power').where(site='offshore_1').read()
             >>> # Get all series with unit 'MW'
             >>> client.series(unit='MW').read()
+            >>> # Get series by ID (if you know it)
+            >>> client.series(series_id=123).read()
         """
         return SeriesCollection(
             conninfo=self._conninfo,
             name=name,
             unit=unit,
+            series_id=series_id,
             _pool=self._pool,
         )
 
@@ -766,18 +676,6 @@ class TimeDataClient:
             retention=retention,
         )
 
-    def update_records(self, updates: List[Dict[str, Any]]) -> Dict[str, List]:
-        """
-        Update records for flat or overlapping series.
-
-        Flat series: In-place update by (series_id, valid_time).
-        Overlapping series: Creates new version. Lookup by known_time, batch_id, or latest.
-
-        See SeriesCollection.update_records for full documentation.
-        """
-        return _update_records(updates, _pool=self._pool)
-
-
 # =============================================================================
 # Internal helper functions (not part of public API)
 # =============================================================================
@@ -792,117 +690,130 @@ def _get_conninfo() -> str:
     return conninfo
 
 
-def _detect_series_from_dataframe(
-    df: pd.DataFrame,
-    valid_time_col: str = 'valid_time',
-    valid_time_end_col: Optional[str] = None,
-) -> Dict[str, str]:
+@contextmanager
+def _get_connection(_pool: Optional[ConnectionPool] = None, conninfo: Optional[str] = None):
     """
-    Detect series from DataFrame columns that contain Pint Quantity objects or pint-pandas Series.
+    Context manager that yields a database connection.
+    
+    Uses connection pool if available, otherwise creates a new connection.
+    
+    Args:
+        _pool: Optional connection pool
+        conninfo: Optional connection string (fetched via _get_conninfo() if not provided)
+    
+    Yields:
+        psycopg.Connection
+    """
+    if _pool is not None:
+        with _pool.connection() as conn:
+            yield conn
+    else:
+        if conninfo is None:
+            conninfo = _get_conninfo()
+        with psycopg.connect(conninfo) as conn:
+            yield conn
+
+
+def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series:
+    """Strip pint dtype from value series, converting units if needed.
+
+    Rules:
+    - Plain float64 (no pint dtype): pass through unchanged, no unit check
+    - Pint dimensionless: treat as series unit, strip to plain float64
+    - Pint with unit: convert to series_unit if compatible, error if not
+    - Same unit: strip to plain float64 (no conversion needed)
 
     Returns:
-        Dictionary mapping name (column name) to unit (canonical unit string)
+        Plain float64 Series (no pint dtype)
+
+    Raises:
+        IncompatibleUnitError: if units are not convertible
+        ImportError: if pint array detected but pint not installed
     """
-    exclude_cols = {valid_time_col}
-    if valid_time_end_col is not None:
-        exclude_cols.add(valid_time_end_col)
+    dtype = value_series.dtype
 
-    series_cols = [col for col in df.columns if col not in exclude_cols]
+    # No pint dtype → pass through (backward compatible, no unit check)
+    if not hasattr(dtype, 'units'):
+        return value_series
 
-    if not series_cols:
-        raise ValueError("No series columns found in DataFrame (excluding time columns)")
+    # Pint dtype detected — need pint for conversion
+    try:
+        import pint
+    except ImportError:
+        raise ImportError(
+            "Pint array detected but 'pint' is not installed. "
+            "Install with: pip install pint"
+        )
 
-    series_info = {}
+    source_unit = str(dtype.units)
 
-    for col in series_cols:
-        if is_pint_pandas_series(df[col]):
-            unit = extract_unit_from_pint_pandas_series(df[col])
-            if unit is None:
-                raise ValueError(f"Column '{col}' has pint dtype but unit extraction failed")
-            series_info[col] = unit
-            continue
+    # Extract magnitudes (numpy array, no copy if already float64)
+    magnitudes = value_series.values.quantity.magnitude
 
-        first_value = None
-        for val in df[col]:
-            if pd.notna(val):
-                first_value = val
-                break
+    # Dimensionless or same unit → no conversion needed
+    ureg = pint.application_registry.get()
+    if ureg.dimensionless == ureg.Unit(source_unit) or source_unit == series_unit:
+        return pd.Series(magnitudes, index=value_series.index, name=value_series.name)
 
-        if first_value is None:
-            raise ValueError(
-                f"Column '{col}' has no non-null values. Cannot determine unit."
-            )
+    # Check compatibility and convert
+    try:
+        factor = ureg.Quantity(1, source_unit).to(series_unit).magnitude
+    except pint.DimensionalityError:
+        raise IncompatibleUnitError(
+            f"Cannot convert '{source_unit}' to series unit '{series_unit}'. "
+            f"Units are not dimensionally compatible."
+        )
 
-        unit = extract_unit_from_quantity(first_value)
-
-        if unit is None:
-            has_quantity = False
-            for val in df[col]:
-                if pd.notna(val) and isinstance(val, pint.Quantity):
-                    has_quantity = True
-                    break
-
-            if has_quantity:
-                raise ValueError(
-                    f"Column '{col}' has mixed Pint Quantity and regular values. "
-                    "All values in a column must be either Pint Quantities or regular values."
-                )
-            unit = "dimensionless"
-        else:
-            for val in df[col]:
-                if pd.notna(val):
-                    if not isinstance(val, pint.Quantity):
-                        raise ValueError(
-                            f"Column '{col}' has mixed Pint Quantity and regular values. "
-                            "All values in a column must be Pint Quantities if the first value is a Quantity."
-                        )
-                    val_unit = extract_unit_from_quantity(val)
-                    if val_unit is not None and val_unit != unit:
-                        try:
-                            from .units import validate_unit_compatibility
-                            validate_unit_compatibility(val_unit, unit)
-                        except IncompatibleUnitError:
-                            raise ValueError(
-                                f"Column '{col}' has inconsistent units: "
-                                f"found {unit} and {val_unit} which are incompatible"
-                            )
-
-        series_info[col] = unit
-
-    return series_info
+    converted = magnitudes * factor
+    return pd.Series(converted, index=value_series.index, name=value_series.name)
 
 
 def _dataframe_to_value_rows(
     df: pd.DataFrame,
-    series_mapping: Dict[str, int],
-    units: Dict[str, str],
-    valid_time_col: str = 'valid_time',
-    valid_time_end_col: Optional[str] = None,
+    series_id: int,
 ) -> List[Tuple]:
     """
     Convert a pandas DataFrame to TimeDB value_rows format.
+    All numeric values are treated as dimensionless floats.
+
+    DataFrame must have fixed columns:
+    - Point-in-time: [valid_time, value]
+    - Intervals: [valid_time, valid_time_end, value]
+
+    Args:
+        df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
+        series_id: Series ID for all rows
 
     Returns:
         List of tuples:
         - Point-in-time: (valid_time, series_id, value)
         - Interval: (valid_time, valid_time_end, series_id, value)
     """
-    if valid_time_col not in df.columns:
-        raise ValueError(f"Column '{valid_time_col}' not found in DataFrame")
-
-    exclude_cols = {valid_time_col}
-    if valid_time_end_col is not None:
-        exclude_cols.add(valid_time_end_col)
-
-    series_cols = [col for col in df.columns if col not in exclude_cols]
-
-    if not series_cols:
-        raise ValueError("No series columns found in DataFrame (excluding time columns)")
-
-    has_intervals = valid_time_end_col is not None and valid_time_end_col in df.columns
+    cols = list(df.columns)
+    
+    # Validate column structure
+    if len(cols) == 2:
+        if cols != ['valid_time', 'value']:
+            raise ValueError(
+                f"For point-in-time data, DataFrame must have columns ['valid_time', 'value']. "
+                f"Found: {cols}"
+            )
+        has_intervals = False
+    elif len(cols) == 3:
+        if cols != ['valid_time', 'valid_time_end', 'value']:
+            raise ValueError(
+                f"For interval data, DataFrame must have columns ['valid_time', 'valid_time_end', 'value']. "
+                f"Found: {cols}"
+            )
+        has_intervals = True
+    else:
+        raise ValueError(
+            f"DataFrame must have 2 columns ['valid_time', 'value'] or 3 columns ['valid_time', 'valid_time_end', 'value']. "
+            f"Found {len(cols)} columns: {cols}"
+        )
 
     # Validate timezone on the column dtype or first value (once, not per-row)
-    vt_series = df[valid_time_col]
+    vt_series = df['valid_time']
     if hasattr(vt_series.dtype, 'tz'):
         if vt_series.dtype.tz is None:
             raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
@@ -912,7 +823,7 @@ def _dataframe_to_value_rows(
             raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
 
     if has_intervals:
-        vte_series = df[valid_time_end_col]
+        vte_series = df['valid_time_end']
         if hasattr(vte_series.dtype, 'tz'):
             if vte_series.dtype.tz is None:
                 raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
@@ -921,78 +832,26 @@ def _dataframe_to_value_rows(
             if isinstance(first_vte, (pd.Timestamp, datetime)) and first_vte.tzinfo is None:
                 raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
 
-    # Detect if any columns use pint
-    has_pint = any(
-        is_pint_pandas_series(df[col]) or (
-            len(df) > 0 and isinstance(df[col].iloc[0], pint.Quantity)
-        )
-        for col in series_cols
-        if len(df) > 0 and pd.notna(df[col].iloc[0])
-    )
+    # Convert time columns to numpy arrays once (much faster than repeated .iloc access)
+    vt_array = df['valid_time'].values
+    vte_array = df['valid_time_end'].values if has_intervals else None
+    n_rows = len(df)
+    
+    # Convert datetime64 to Python datetime objects (psycopg3 requires this)
+    vt_list = [pd.Timestamp(x).to_pydatetime() for x in vt_array]
+    vte_list = [pd.Timestamp(x).to_pydatetime() for x in vte_array] if has_intervals else None
 
-    # Fast path: no pint quantities — use direct indexing (avoids iterrows overhead)
-    if not has_pint:
-        vt_col = df[valid_time_col]
-        vte_col = df[valid_time_end_col] if has_intervals else None
-
-        rows = []
-        for col_name in series_cols:
-            series_id = series_mapping[col_name]
-            val_col = df[col_name]
-
-            for i in range(len(df)):
-                vt = vt_col.iloc[i]
-                val = val_col.iloc[i]
-                converted_value = None if pd.isna(val) else float(val)
-
-                if has_intervals:
-                    vte = vte_col.iloc[i]
-                    rows.append((vt, vte, series_id, converted_value))
-                else:
-                    rows.append((vt, series_id, converted_value))
-
-        return rows
-
-    # Slow path: pint quantities — need per-value unit conversion
-    rows = []
-    for row_tuple in df.itertuples(index=False):
-        valid_time = getattr(row_tuple, valid_time_col)
-
-        valid_time_end = None
-        if has_intervals:
-            valid_time_end = getattr(row_tuple, valid_time_end_col)
-
-        for name in series_cols:
-            series_id = series_mapping[name]
-            canonical_unit = units[name]
-
-            value = getattr(row_tuple, name)
-
-            if pd.isna(value):
-                converted_value = None
-            else:
-                try:
-                    if isinstance(value, pint.Quantity):
-                        converted_value = convert_quantity_to_canonical_unit(value, canonical_unit)
-                    else:
-                        submitted_value = extract_value_from_quantity(value)
-                        submitted_unit = extract_unit_from_quantity(value)
-                        converted_value = convert_to_canonical_unit(
-                            value=submitted_value,
-                            submitted_unit=submitted_unit,
-                            canonical_unit=canonical_unit,
-                        )
-                except IncompatibleUnitError:
-                    raise
-                except Exception as e:
-                    raise ValueError(
-                        f"Unit conversion error for series '{name}', value {value}: {e}"
-                    ) from e
-
-            if has_intervals:
-                rows.append((valid_time, valid_time_end, series_id, converted_value))
-            else:
-                rows.append((valid_time, series_id, converted_value))
+    # Convert value column to float array (vectorized operation)
+    values = df['value'].astype(float).values
+    
+    # Convert NaN to None (vectorized check with list comprehension)
+    values_clean = [None if pd.isna(v) else v for v in values]
+    
+    if has_intervals:
+        # Use zip with itertools.repeat - avoids creating intermediate list
+        rows = list(zip(vt_list, vte_list, repeat(series_id, n_rows), values_clean))
+    else:
+        rows = list(zip(vt_list, repeat(series_id, n_rows), values_clean))
 
     return rows
 
@@ -1061,207 +920,74 @@ def _delete() -> None:
 
 
 def _read_flat(
-    series_ids: Optional[List[int]] = None,
+    series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
-    return_mapping: bool = False,
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
-    """Read flat values and pivot into a wide DataFrame."""
+    _registry: Optional[SeriesRegistry] = None,
+) -> pd.DataFrame:
+    """Read flat values for a single series."""
     conninfo = _get_conninfo()
 
-    # Use raw variant (no JOIN) when we have cached metadata
-    use_raw = _registry and series_ids and all(
-        sid in _registry and "name" in _registry[sid] for sid in series_ids
-    )
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_flat(
+            conn,
+            series_id=series_id,
+            start_valid=start_valid,
+            end_valid=end_valid,
+        )
 
-    conn_source = _pool if _pool is not None else conninfo
-
-    if use_raw:
-        if _pool is not None:
-            with _pool.connection() as conn:
-                df = db.read.read_flat_raw(conn, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
-        else:
-            df = db.read.read_flat_raw(conninfo, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
-    else:
-        if _pool is not None:
-            with _pool.connection() as conn:
-                df = db.read.read_flat(conn, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
-        else:
-            df = db.read.read_flat(conninfo, series_ids=series_ids, start_valid=start_valid, end_valid=end_valid)
-
-    if len(df) == 0:
-        if return_mapping:
-            return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC")), {}
-        else:
-            return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC"))
-
-    # Build name/unit maps from cache or query results
-    if _registry and series_ids:
-        name_map = {sid: _registry[sid]["name"] for sid in series_ids if sid in _registry}
-        unit_map = {sid: _registry[sid]["unit"] for sid in series_ids if sid in _registry}
-    else:
-        df_reset = df.reset_index() if 'series_id' in df.index.names else df
-        name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
-        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
-
-    # Pivot: raw variant returns flat df, JOINed variant returns indexed df
-    if use_raw:
-        df_pivoted = df.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
-    else:
-        df_reset = df.reset_index()
-        df_pivoted = df_reset.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
-
-    df_pivoted = df_pivoted.sort_index()
-
-    for col_series_id in df_pivoted.columns:
-        unit = unit_map.get(col_series_id)
-        if unit:
-            df_pivoted[col_series_id] = df_pivoted[col_series_id].astype(f"pint[{unit}]")
-
-    if return_mapping:
-        df_pivoted.columns.name = "series_id"
-        return df_pivoted, name_map
-    else:
-        df_pivoted.rename(columns=name_map, inplace=True)
-        df_pivoted.columns.name = "name"
-        return df_pivoted
+    return df
 
 
 def _read_overlapping_latest(
-    series_ids: Optional[List[int]] = None,
+    series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    return_mapping: bool = False,
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
-    """Read latest overlapping values and pivot into a wide DataFrame."""
+    _registry: Optional[SeriesRegistry] = None,
+) -> pd.DataFrame:
+    """Read latest overlapping values for a single series."""
     conninfo = _get_conninfo()
 
-    use_raw = _registry and series_ids and all(
-        sid in _registry and "name" in _registry[sid] for sid in series_ids
-    )
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_overlapping_latest(
+            conn,
+            series_id=series_id,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+        )
 
-    read_kwargs = dict(series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
-                       start_known=start_known, end_known=end_known)
-
-    if use_raw:
-        read_fn = db.read.read_overlapping_latest_raw
-    else:
-        read_fn = db.read.read_overlapping_latest
-
-    if _pool is not None:
-        with _pool.connection() as conn:
-            df = read_fn(conn, **read_kwargs)
-    else:
-        df = read_fn(conninfo, **read_kwargs)
-
-    if len(df) == 0:
-        if return_mapping:
-            return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC")), {}
-        else:
-            return pd.DataFrame(index=pd.DatetimeIndex([], name="valid_time", tz="UTC"))
-
-    if _registry and series_ids:
-        name_map = {sid: _registry[sid]["name"] for sid in series_ids if sid in _registry}
-        unit_map = {sid: _registry[sid]["unit"] for sid in series_ids if sid in _registry}
-    else:
-        df_reset = df.reset_index() if 'series_id' in df.index.names else df
-        name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
-        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
-
-    if use_raw:
-        df_pivoted = df.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
-    else:
-        df_reset = df.reset_index()
-        df_pivoted = df_reset.pivot_table(index='valid_time', columns='series_id', values='value', aggfunc='first')
-
-    df_pivoted = df_pivoted.sort_index()
-
-    for col_series_id in df_pivoted.columns:
-        unit = unit_map.get(col_series_id)
-        if unit:
-            df_pivoted[col_series_id] = df_pivoted[col_series_id].astype(f"pint[{unit}]")
-
-    if return_mapping:
-        df_pivoted.columns.name = "series_id"
-        return df_pivoted, name_map
-    else:
-        df_pivoted.rename(columns=name_map, inplace=True)
-        df_pivoted.columns.name = "name"
-        return df_pivoted
+    return df
 
 
 def _read_overlapping_all(
-    series_ids: Optional[List[int]] = None,
+    series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    return_mapping: bool = False,
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
-) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[int, str]]]:
-    """Read all overlapping versions and pivot into a wide DataFrame."""
+    _registry: Optional[SeriesRegistry] = None,
+) -> pd.DataFrame:
+    """Read all overlapping versions for a single series."""
     conninfo = _get_conninfo()
 
-    use_raw = _registry and series_ids and all(
-        sid in _registry and "name" in _registry[sid] for sid in series_ids
-    )
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_overlapping_all(
+            conn,
+            series_id=series_id,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+        )
 
-    read_kwargs = dict(series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
-                       start_known=start_known, end_known=end_known)
-
-    if use_raw:
-        read_fn = db.read.read_overlapping_all_raw
-    else:
-        read_fn = db.read.read_overlapping_all
-
-    if _pool is not None:
-        with _pool.connection() as conn:
-            df = read_fn(conn, **read_kwargs)
-    else:
-        df = read_fn(conninfo, **read_kwargs)
-
-    if len(df) == 0:
-        empty_index = pd.MultiIndex.from_tuples([], names=["known_time", "valid_time"])
-        if return_mapping:
-            return pd.DataFrame(index=empty_index), {}
-        else:
-            return pd.DataFrame(index=empty_index)
-
-    if _registry and series_ids:
-        name_map = {sid: _registry[sid]["name"] for sid in series_ids if sid in _registry}
-        unit_map = {sid: _registry[sid]["unit"] for sid in series_ids if sid in _registry}
-    else:
-        df_reset = df.reset_index() if 'series_id' in df.index.names else df
-        name_map = df_reset[['series_id', 'name']].drop_duplicates().set_index('series_id')['name'].to_dict()
-        unit_map = df_reset[['series_id', 'unit']].drop_duplicates().set_index('series_id')['unit'].to_dict()
-
-    if use_raw:
-        df_pivoted = df.pivot_table(index=['known_time', 'valid_time'], columns='series_id', values='value', aggfunc='first')
-    else:
-        df_reset = df.reset_index()
-        df_pivoted = df_reset.pivot_table(index=['known_time', 'valid_time'], columns='series_id', values='value', aggfunc='first')
-
-    df_pivoted = df_pivoted.sort_index()
-
-    for col_series_id in df_pivoted.columns:
-        unit = unit_map.get(col_series_id)
-        if unit:
-            df_pivoted[col_series_id] = df_pivoted[col_series_id].astype(f"pint[{unit}]")
-
-    if return_mapping:
-        df_pivoted.columns.name = "series_id"
-        return df_pivoted, name_map
-    else:
-        df_pivoted.rename(columns=name_map, inplace=True)
-        df_pivoted.columns.name = "name"
-        return df_pivoted
+    return df
 
 
 def _insert(
@@ -1269,20 +995,21 @@ def _insert(
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
-    valid_time_col: str = 'valid_time',
-    valid_time_end_col: Optional[str] = None,
     known_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
-    series_ids: Optional[Dict[str, int]] = None,
-    series_routing: Optional[Dict[int, Dict[str, str]]] = None,
+    series_id: int = None,
+    routing: Optional[Dict[str, Any]] = None,
+    series_unit: str = "dimensionless",
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[Dict[int, Dict[str, Any]]] = None,
+    _registry: Optional[SeriesRegistry] = None,
 ) -> InsertResult:
     """
-    Insert a batch with time series data from a pandas DataFrame.
+    Insert time series data from a pandas DataFrame.
 
+    DataFrame must have columns [valid_time, value] or [valid_time, valid_time_end, value].
     Routes data to the correct table based on series overlapping flag and retention.
-    Requires all series to exist — use td.create_series() first.
+    Supports single-series inserts only.
+    Requires series to exist — use td.create_series() first.
     """
     conninfo = _get_conninfo()
 
@@ -1293,97 +1020,35 @@ def _insert(
     elif batch_start_time.tzinfo is None:
         raise ValueError("batch_start_time must be timezone-aware")
 
-    series_info = _detect_series_from_dataframe(
-        df=df,
-        valid_time_col=valid_time_col,
-        valid_time_end_col=valid_time_end_col,
-    )
+    if series_id is None:
+        raise ValueError("series_id must be provided")
 
-    series_mapping = {}
-    units = {}
+    if routing is None:
+        raise ValueError("routing must be provided")
 
-    if series_ids is None:
-        series_ids = {}
-    if series_routing is None:
-        series_routing = {}
-
-    # Use meta_cache to avoid a separate DB round-trip for series info
-    if _registry:
-        for col_name, canonical_unit in series_info.items():
-            provided_series_id = series_ids.get(col_name)
-            if provided_series_id is not None and provided_series_id in _registry:
-                meta = _registry[provided_series_id]
-                series_mapping[col_name] = provided_series_id
-                units[col_name] = meta.get("unit", canonical_unit)
-                if provided_series_id not in series_routing:
-                    series_routing[provided_series_id] = {
-                        "overlapping": meta["overlapping"],
-                        "retention": meta["retention"],
-                    }
-
-    # Fall back to DB lookup for any series not resolved from cache
-    missing_cols = [col for col in series_info if col not in series_mapping]
-    if missing_cols:
-        def _lookup_series(conn):
-            for col_name in missing_cols:
-                canonical_unit = series_info[col_name]
-                provided_series_id = series_ids.get(col_name)
-                if provided_series_id is not None:
-                    try:
-                        series_info_db = db.series.get_series_info(conn, provided_series_id)
-                        series_mapping[col_name] = provided_series_id
-                        units[col_name] = series_info_db['unit']
-                        if provided_series_id not in series_routing:
-                            series_routing[provided_series_id] = {
-                                "overlapping": series_info_db['overlapping'],
-                                "retention": series_info_db['retention'],
-                            }
-                    except ValueError as e:
-                        raise ValueError(f"series_id {provided_series_id} not found in database") from e
-                else:
-                    raise ValueError(
-                        f"No series found for column '{col_name}'. "
-                        f"Create the series first with td.create_series(name='{col_name}', ...)"
-                    )
-
-        if _pool is not None:
-            with _pool.connection() as conn:
-                _lookup_series(conn)
-        else:
-            with psycopg.connect(conninfo) as conn:
-                _lookup_series(conn)
+    # Resolve pint units before row conversion (only copy if pint conversion happened)
+    resolved = _resolve_pint_values(df['value'], series_unit)
+    if resolved is not df['value']:
+        df = df.copy()
+        df['value'] = resolved
 
     value_rows = _dataframe_to_value_rows(
         df=df,
-        series_mapping=series_mapping,
-        units=units,
-        valid_time_col=valid_time_col,
-        valid_time_end_col=valid_time_end_col,
+        series_id=series_id,
     )
 
     try:
-        if _pool is not None:
-            with _pool.connection() as conn:
-                batch_id = db.insert.insert_values(
-                    conninfo=conn,
-                    workflow_id=workflow_id,
-                    batch_start_time=batch_start_time,
-                    batch_finish_time=batch_finish_time,
-                    value_rows=value_rows,
-                    known_time=known_time,
-                    batch_params=batch_params,
-                    series_routing=series_routing,
-                )
-        else:
+        with _get_connection(_pool, conninfo) as conn:
             batch_id = db.insert.insert_values(
-                conninfo=conninfo,
+                conninfo=conn,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
                 batch_finish_time=batch_finish_time,
                 value_rows=value_rows,
                 known_time=known_time,
                 batch_params=batch_params,
-                series_routing=series_routing,
+                series_id=series_id,
+                routing=routing,
             )
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         raise ValueError(
@@ -1394,7 +1059,7 @@ def _insert(
     return InsertResult(
         batch_id=batch_id,
         workflow_id=workflow_id,
-        series_ids=series_mapping,
+        series_id=series_id,
     )
 
 
@@ -1402,16 +1067,13 @@ def _insert(
 def _update_records(
     updates: List[Dict[str, Any]],
     _pool: Optional[ConnectionPool] = None,
-) -> Dict[str, List]:
+    _registry: Optional[SeriesRegistry] = None,
+) -> List[Dict[str, Any]]:
     """
-    Update overlapping records (flat are immutable).
+    Update records (flat or overlapping).
 
     Wrapper around db.update.update_records that handles the database connection.
     """
-    if _pool is not None:
-        with _pool.connection() as conn:
-            return db.update.update_records(conn, updates=updates)
-    else:
-        conninfo = _get_conninfo()
-        with psycopg.connect(conninfo) as conn:
-            return db.update.update_records(conn, updates=updates)
+    registry = _registry or SeriesRegistry()
+    with _get_connection(_pool) as conn:
+        return db.update.update_records(conn, registry, updates=updates)

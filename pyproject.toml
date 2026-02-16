@@ -25,8 +25,6 @@ dependencies = [
   "uvicorn[standard]>=0.24.0",
   "pydantic>=2.0.0",
   "pandas>=2.0.0",
-  "pint>=0.23",               # Unit handling and conversion
-  "pint-pandas>=0.3",         # Pandas integration for Pint units
   "requests>=2.32.5",
   "modal>=1.2.6",
 ]
@@ -41,6 +39,10 @@ notebooks = [
   "jupyter>=1.1.1",
   "notebook>=7.5.2",
   "seaborn>=0.13.2",
+]
+pint = [
+  "pint>=0.23",
+  "pint-pandas>=0.6",
 ]
 docs = [
   "sphinx>=7.4.7",

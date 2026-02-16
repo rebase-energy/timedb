@@ -151,7 +151,6 @@ Or using Python requests:
    )
    result = response.json()
    print(f"Updated: {len(result['updated'])}")
-   print(f"Skipped: {len(result['skipped_no_ops'])}")
 
 Production Deployment
 ---------------------
