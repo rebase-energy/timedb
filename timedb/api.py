@@ -27,13 +27,9 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 import pandas as pd
 
 from .sdk import TimeDataClient
-
-# Load .env file but DO NOT override existing environment variables
-load_dotenv(override=False)
 
 
 # Database connection string from environment

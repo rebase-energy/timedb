@@ -30,9 +30,6 @@ from typing_extensions import Annotated
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # Initialize Typer apps
 app = typer.Typer(
