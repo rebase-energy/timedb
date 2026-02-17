@@ -137,18 +137,6 @@ class SeriesRegistry:
             "table": self._cache[series_id]["table"],
         }
 
-    def get_series_info(self, conn: psycopg.Connection, series_ids: List[int]) -> Dict[int, Dict[str, Any]]:
-        """Get {name, unit, labels} for read enrichment, auto-fetching from DB if not cached."""
-        self.ensure_cached(conn, series_ids)
-        return {
-            sid: {
-                "name": self._cache[sid]["name"],
-                "unit": self._cache[sid]["unit"],
-                "labels": self._cache[sid]["labels"],
-            }
-            for sid in series_ids
-        }
-
     @property
     def cache(self) -> Dict[int, Dict[str, Any]]:
         """Direct access to the cache dict."""

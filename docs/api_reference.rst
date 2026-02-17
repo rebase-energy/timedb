@@ -36,7 +36,7 @@ Data Classes
 Exceptions
 ~~~~~~~~~~
 
-.. autoexception:: timedb.units.IncompatibleUnitError
+.. autoexception:: timedb.IncompatibleUnitError
    :members:
    :no-index:
 
@@ -243,6 +243,7 @@ For additional CLI commands, see :doc:`cli`.
 Units and Validation
 --------------------
 
-.. automodule:: timedb.units
-   :members:
-   :show-inheritance:
+Unit handling is integrated into the SDK. The ``IncompatibleUnitError`` exception
+is raised when pint unit conversion fails (e.g., inserting kg values into an MW series).
+
+See the :doc:`SDK documentation <sdk>` for details on pint unit support.

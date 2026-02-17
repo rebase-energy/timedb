@@ -368,7 +368,6 @@ class SeriesCollection:
                 start_valid=start_valid,
                 end_valid=end_valid,
                 _pool=self._pool,
-                _registry=self._registry,
             )
         elif versions:
             df = _read_overlapping_all(
@@ -378,7 +377,6 @@ class SeriesCollection:
                 start_known=start_known,
                 end_known=end_known,
                 _pool=self._pool,
-                _registry=self._registry,
             )
         else:
             df = _read_overlapping_latest(
@@ -388,7 +386,6 @@ class SeriesCollection:
                 start_known=start_known,
                 end_known=end_known,
                 _pool=self._pool,
-                _registry=self._registry,
             )
 
         if as_pint and len(df) > 0:
@@ -924,7 +921,6 @@ def _read_flat(
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[SeriesRegistry] = None,
 ) -> pd.DataFrame:
     """Read flat values for a single series."""
     conninfo = _get_conninfo()
@@ -947,7 +943,6 @@ def _read_overlapping_latest(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[SeriesRegistry] = None,
 ) -> pd.DataFrame:
     """Read latest overlapping values for a single series."""
     conninfo = _get_conninfo()
@@ -972,7 +967,6 @@ def _read_overlapping_all(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[SeriesRegistry] = None,
 ) -> pd.DataFrame:
     """Read all overlapping versions for a single series."""
     conninfo = _get_conninfo()

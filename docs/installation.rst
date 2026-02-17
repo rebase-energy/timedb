@@ -47,11 +47,15 @@ timedb includes the following key dependencies:
 
 - ``psycopg[binary]>=3.1`` - PostgreSQL adapter (psycopg3)
 - ``pandas>=2.0.0`` - Data manipulation
-- ``pint>=0.23`` - Unit handling and conversion
-- ``pint-pandas>=0.3`` - Pandas integration for Pint units
 - ``fastapi>=0.104.0`` - API framework (for REST API server)
 - ``uvicorn[standard]>=0.24.0`` - ASGI server (for REST API server)
 - ``typer>=0.9.0`` - CLI framework
+
+Optional dependencies can be installed with extras:
+
+.. code-block:: bash
+
+   pip install timedb[pint]       # pint and pint-pandas for unit handling
 
 Database Setup
 --------------
@@ -74,7 +78,7 @@ The project includes a ``timescaledb-test`` directory with a pre-configured Dock
 This starts a TimescaleDB container with:
 
 - Host: ``localhost``
-- Port: ``5432``
+- Port: ``5433`` (mapped from container port 5432)
 - User: ``postgres``
 - Password: ``devpassword``
 - Database: ``devdb``
@@ -107,16 +111,16 @@ Example connection strings:
 .. code-block:: bash
 
    # Using TIMEDB_DSN (for local Docker setup)
-   export TIMEDB_DSN="postgresql://postgres:devpassword@localhost:5432/devdb"
+   export TIMEDB_DSN="postgresql://postgres:devpassword@localhost:5433/devdb"
 
    # Or using DATABASE_URL
-   export DATABASE_URL="postgresql://postgres:devpassword@localhost:5432/devdb"
+   export DATABASE_URL="postgresql://postgres:devpassword@localhost:5433/devdb"
 
 You can also use a ``.env`` file in your project root:
 
 .. code-block:: text
 
-   TIMEDB_DSN=postgresql://postgres:devpassword@localhost:5432/devdb
+   TIMEDB_DSN=postgresql://postgres:devpassword@localhost:5433/devdb
 
 The ``python-dotenv`` package (included in dependencies) will automatically load this file.
 
@@ -141,7 +145,8 @@ Or using Python:
 
 .. code-block:: python
 
-   import timedb as td
+   from timedb import TimeDataClient
+   td = TimeDataClient()
    td.create()
 
 Next Steps

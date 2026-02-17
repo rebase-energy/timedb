@@ -96,11 +96,13 @@ API Endpoints Overview
 The API provides the following endpoints:
 
 - ``GET /`` - API information and available endpoints
+- ``POST /values`` - Insert time series data
 - ``GET /values`` - Read time series values
-- ``POST /runs`` - Create a new run with values
 - ``PUT /values`` - Update existing time series records
-- ``POST /schema/create`` - Create database schema
-- ``DELETE /schema/delete`` - Delete database schema
+- ``POST /series`` - Create a new time series
+- ``GET /series`` - List/filter time series
+- ``GET /series/labels`` - List unique label values for a key
+- ``GET /series/count`` - Count matching time series
 
 Visit ``/docs`` when the server is running for detailed endpoint documentation with request/response schemas.
 
@@ -116,9 +118,9 @@ Update overlapping records using the ``PUT /values`` endpoint:
      -d '{
        "updates": [
          {
-           "batch_id": "550e8400-e29b-41d4-a716-446655440000",
            "valid_time": "2025-01-01T12:00:00Z",
-           "series_id": "660e8400-e29b-41d4-a716-446655440000",
+           "series_id": 1,
+           "batch_id": 42,
            "value": 150.0,
            "annotation": "Corrected reading",
            "tags": ["reviewed"],
@@ -138,9 +140,9 @@ Or using Python requests:
        json={
            "updates": [
                {
-                   "batch_id": str(batch_id),
                    "valid_time": valid_time.isoformat(),
-                   "series_id": str(series_id),
+                   "series_id": series_id,
+                   "batch_id": batch_id,
                    "value": 150.0,
                    "annotation": "Corrected",
                    "tags": ["reviewed"],

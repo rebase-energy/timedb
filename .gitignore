@@ -4,7 +4,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-loc_graph.py
 
 # =========================
 # Virtual environments
@@ -72,3 +71,5 @@ docs/_build/
 docs/notebooks
 
 testing_scripts/
+loc_graph.py
+architecture/

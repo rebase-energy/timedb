@@ -104,7 +104,7 @@ Parameters:
 - **overlapping**: ``False`` (default) for immutable facts, ``True`` for versioned forecasts
 - **retention**: ``"short"``, ``"medium"`` (default), or ``"long"`` (only for overlapping)
 
-The function returns the ``series_id`` (UUID) which can be used directly if needed, but the fluent API handles this automatically via the ``.where()`` filter.
+The function returns the ``series_id`` (integer) which can be used directly if needed, but the fluent API handles this automatically via the ``.where()`` filter.
 
 Inserting Data
 --------------
@@ -342,7 +342,7 @@ List unique label values and count series in a collection:
 Updating Records
 ----------------
 
-Update records for overlapping series (flat series are immutable facts):
+Update records for both flat and overlapping series. Flat series are updated in-place, while overlapping series create new versions with ``known_time=now()``:
 
 .. code-block:: python
 
@@ -364,7 +364,7 @@ For collections matching a single series, ``series_id`` is optional. For multipl
    # For multi-series collection
    updates = [
        {
-           "series_id": UUID(...),
+           "series_id": 123,
            "valid_time": datetime(...),
            "value": 150.0,
        }

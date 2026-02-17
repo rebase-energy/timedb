@@ -43,7 +43,7 @@ Quick Start
    base_time = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
    df = pd.DataFrame({
        'valid_time': [base_time + timedelta(hours=i) for i in range(24)],
-       'wind_power': [100.0 + i * 2 for i in range(24)]
+       'value': [100.0 + i * 2 for i in range(24)]
    })
 
    result = td.series('wind_power').where(site='offshore_1').insert(

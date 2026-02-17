@@ -20,7 +20,7 @@ High-level SDK usage:
     # Insert data using the fluent API
     df = pd.DataFrame({
         'valid_time': times,
-        'wind_power': values
+        'value': values
     })
     result = td.series('wind_power').where(site='offshore_1', type='forecast').insert(
         df=df,
@@ -38,10 +38,12 @@ from .sdk import (
     TimeDataClient,
     SeriesCollection,
     InsertResult,
+    IncompatibleUnitError,
 )
 
 __all__ = [
     'TimeDataClient',
     'SeriesCollection',
     'InsertResult',
+    'IncompatibleUnitError',
 ]

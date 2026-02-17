@@ -30,8 +30,7 @@ Available Notebooks
    notebooks/nb_02_units_validation
    notebooks/nb_03_forecast_revisions
    notebooks/nb_04_timeseries_changes
-   notebooks/nb_05_multiple_series
-   notebooks/nb_06_api_usage
+   notebooks/nb_05_api_usage
 
 Notebook Descriptions
 ---------------------
@@ -46,8 +45,4 @@ Notebook Descriptions
 
 **nb_04_timeseries_changes**: Demonstrates updating records in-place for flat series and tracking changes over time.
 
-**nb_05_multiple_series**: Work with multiple unrelated series in a single operation.
-
-**nb_06_api_usage**: Examples of using the REST API for reading and writing time series data.
-
-**nb_06_api_usage**: Learn how to use the REST API endpoints for all database operations.
+**nb_05_api_usage**: Examples of using the REST API for reading and writing time series data.

@@ -23,7 +23,7 @@ docker compose up -d
 docker ps  # Verify the container is running
 ```
 
-You'll have a TimescaleDB Community Edition instance running on port `5432`.
+You'll have a TimescaleDB Community Edition instance running on port `5433`.
 
 ## Database Connection
 
@@ -35,7 +35,7 @@ Python scripts require the `TIMEDB_DSN` environment variable.
 Create a `.env` file in the project root:
 
 ```bash
-TIMEDB_DSN=postgresql://postgres:devpassword@127.0.0.1:5432/devdb
+TIMEDB_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 ```
 
 The application will automatically load this file. Note: Do not include quotes around the connection string value.
@@ -45,26 +45,26 @@ The application will automatically load this file. Note: Do not include quotes a
 **Bash/zsh:**
 ```bash
 # Session-specific
-export TIMEDB_DSN='postgresql://postgres:devpassword@127.0.0.1:5432/devdb'
+export TIMEDB_DSN='postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
 
 # Global (add to ~/.bashrc or ~/.zshrc)
-export TIMEDB_DSN='postgresql://postgres:devpassword@127.0.0.1:5432/devdb'
+export TIMEDB_DSN='postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
 ```
 
 **Fish shell:**
 ```bash
 # Session-specific
-set -x TIMEDB_DSN 'postgresql://postgres:devpassword@127.0.0.1:5432/devdb'
+set -x TIMEDB_DSN 'postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
 
 # Global (permanent)
-set -Ux TIMEDB_DSN 'postgresql://postgres:devpassword@127.0.0.1:5432/devdb'
+set -Ux TIMEDB_DSN 'postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
 ```
 
 
 ### Inspect the Database
 
 ```bash
-psql postgresql://postgres:devpassword@127.0.0.1:5432/devdb
+psql postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 ```
 
 ## Database Management
