@@ -1,9 +1,6 @@
 import os
 from importlib import resources
-from dotenv import load_dotenv
 import psycopg
-
-load_dotenv()
 
 # -----------------------------------------------------------------------------
 # This module creates the TimescaleDB schema for TimeDB:

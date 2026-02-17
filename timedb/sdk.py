@@ -21,14 +21,11 @@ from datetime import datetime, timezone
 from itertools import repeat
 import pandas as pd
 
-from dotenv import load_dotenv, find_dotenv
 from . import db
 from .db.series import SeriesRegistry
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
-
-load_dotenv(find_dotenv())
 
 
 class InsertResult(NamedTuple):
@@ -765,6 +762,30 @@ def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series
     return pd.Series(converted, index=value_series.index, name=value_series.name)
 
 
+def _validate_df_columns(df: pd.DataFrame) -> bool:
+    """Validate DataFrame column structure. Returns True if interval data, False if point-in-time."""
+    cols = list(df.columns)
+    if len(cols) == 2:
+        if cols != ['valid_time', 'value']:
+            raise ValueError(
+                f"For point-in-time data, DataFrame must have columns ['valid_time', 'value']. "
+                f"Found: {cols}"
+            )
+        return False
+    elif len(cols) == 3:
+        if cols != ['valid_time', 'valid_time_end', 'value']:
+            raise ValueError(
+                f"For interval data, DataFrame must have columns ['valid_time', 'valid_time_end', 'value']. "
+                f"Found: {cols}"
+            )
+        return True
+    else:
+        raise ValueError(
+            f"DataFrame must have 2 columns ['valid_time', 'value'] or 3 columns ['valid_time', 'valid_time_end', 'value']. "
+            f"Found {len(cols)} columns: {cols}"
+        )
+
+
 def _dataframe_to_value_rows(
     df: pd.DataFrame,
     series_id: int,
@@ -786,28 +807,7 @@ def _dataframe_to_value_rows(
         - Point-in-time: (valid_time, series_id, value)
         - Interval: (valid_time, valid_time_end, series_id, value)
     """
-    cols = list(df.columns)
-    
-    # Validate column structure
-    if len(cols) == 2:
-        if cols != ['valid_time', 'value']:
-            raise ValueError(
-                f"For point-in-time data, DataFrame must have columns ['valid_time', 'value']. "
-                f"Found: {cols}"
-            )
-        has_intervals = False
-    elif len(cols) == 3:
-        if cols != ['valid_time', 'valid_time_end', 'value']:
-            raise ValueError(
-                f"For interval data, DataFrame must have columns ['valid_time', 'valid_time_end', 'value']. "
-                f"Found: {cols}"
-            )
-        has_intervals = True
-    else:
-        raise ValueError(
-            f"DataFrame must have 2 columns ['valid_time', 'value'] or 3 columns ['valid_time', 'valid_time_end', 'value']. "
-            f"Found {len(cols)} columns: {cols}"
-        )
+    has_intervals = _validate_df_columns(df)
 
     # Validate timezone on the column dtype or first value (once, not per-row)
     vt_series = df['valid_time']
@@ -1019,6 +1019,9 @@ def _insert(
 
     if routing is None:
         raise ValueError("routing must be provided")
+
+    # Validate columns before accessing df['value'] to give a clear error message
+    _validate_df_columns(df)
 
     # Resolve pint units before row conversion (only copy if pint conversion happened)
     resolved = _resolve_pint_values(df['value'], series_unit)

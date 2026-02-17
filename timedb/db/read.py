@@ -1,12 +1,9 @@
 import os
 from contextlib import contextmanager
-from dotenv import load_dotenv
 import pandas as pd
 import psycopg
 from datetime import datetime
 from typing import Optional, Union
-
-load_dotenv()
 
 
 @contextmanager

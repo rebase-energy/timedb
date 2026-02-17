@@ -2,9 +2,6 @@ import os
 import sys
 import time
 import psycopg
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # -----------------------------------------------------------------------------
 # This DDL deletes all timedb tables and views (TimescaleDB version):
