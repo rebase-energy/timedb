@@ -61,6 +61,15 @@ jobs:
       - name: Run tests with coverage
         run: pytest --cov=timedb --cov-report=xml
 
+      - name: Install notebook dependencies
+        run: pip install -e ".[test,notebooks]"
+
+      - name: Run notebook tests
+        run: pytest --nbmake examples/ --nbmake-timeout=120
+        env:
+          TIMEDB_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
+          MPLBACKEND: Agg
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
