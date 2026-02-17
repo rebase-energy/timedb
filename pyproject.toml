@@ -35,7 +35,7 @@ test = [
   "pytest-cov>=5.0.0",
   "pint>=0.23",
   "pint-pandas>=0.6",
-  "nbmake>=1.5.6",
+  "nbmake>=1.5",
 ]
 notebooks = [
   "ipykernel>=6.31.0",
