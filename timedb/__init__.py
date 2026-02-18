@@ -2,14 +2,14 @@
 TimeDB - A time series database for PostgreSQL with TimescaleDB.
 
 Quick usage:
-    import timedb as tb
+    import timedb as td
 
-    tb.create()
-    tb.create_series(name='wind_power', unit='MW',
+    td.create()
+    td.create_series(name='wind_power', unit='MW',
                      labels={'site': 'offshore_1'}, overlapping=True)
 
-    tb.series('wind_power').where(site='offshore_1').insert(df=df, known_time=known_time)
-    df = tb.series('wind_power').where(site='offshore_1').read()
+    td.series('wind_power').where(site='offshore_1').insert(df=df, known_time=known_time)
+    df = td.series('wind_power').where(site='offshore_1').read()
 
 Explicit client usage (for custom connection settings):
     from timedb import TimeDataClient

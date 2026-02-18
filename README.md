@@ -28,31 +28,33 @@ pip install timedb
 ```
 
 ```python
-from timedb import TimeDataClient
+import timedb as td
 import pandas as pd
 from datetime import datetime, timezone
 
-td = TimeDataClient()
 td.create()
 
 # Create a forecast series
-td.create_series(name="wind_power", unit="MW", 
+td.create_series(name="wind_power", unit="MW",
                  labels={"site": "offshore_1"}, overlapping=True)
 
 # Insert forecast with known_time
 known_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
 df = pd.DataFrame({
-    'valid_time': pd.date_range('2025-01-01', periods=24, freq='h'),
+    'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
     'value': [100 + i*2 for i in range(24)]
 })
-td.series("wind_power").insert(df=df, known_time=known_time)
+td.series("wind_power").where(site="offshore_1").insert(df=df, known_time=known_time)
 
-# Read latest forecast (with optional known_time filtering)
-df_latest = td.series("wind_power").read(start_known=known_time)
+# Read latest forecast
+df_latest = td.series("wind_power").where(site="offshore_1").read()
 
-# Read all forecast revisions (with optional known_time filtering)
-df_all = td.series("wind_power").read(versions=True, start_known=known_time)
+# Read all forecast revisions
+df_all = td.series("wind_power").where(site="offshore_1").read(versions=True)
 ```
+
+> For custom connection settings (host, pool size, etc.), use `TimeDataClient` directly:
+> `from timedb import TimeDataClient; td = TimeDataClient(conninfo="postgresql://...")`
 
 ## Try in Google Colab
 

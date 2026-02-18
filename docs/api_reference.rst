@@ -12,8 +12,21 @@ SDK Reference
 
 The SDK provides a fluent, Pythonic interface for working with time series data.
 
+Module-Level Functions
+~~~~~~~~~~~~~~~~~~~~~~
+
+These convenience functions use a lazy default client and are the recommended
+entry point for most use cases (``import timedb as td``):
+
+.. autofunction:: timedb.create
+.. autofunction:: timedb.delete
+.. autofunction:: timedb.create_series
+.. autofunction:: timedb.series
+
 Main Client
 ~~~~~~~~~~~
+
+For custom connection settings, use ``TimeDataClient`` directly:
 
 .. autoclass:: timedb.TimeDataClient
    :members:
