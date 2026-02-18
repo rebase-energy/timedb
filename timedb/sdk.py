@@ -14,6 +14,7 @@ Data model:
 - Overlapping: Versioned estimates (forecasts). Stored in 'overlapping' table
   (list-partitioned by retention) with known_time versioning.
 """
+import atexit
 import os
 from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
@@ -503,10 +504,12 @@ class TimeDataClient:
     def __init__(self, conninfo: Optional[str] = None, min_size: int = 2, max_size: int = 10):
         self._conninfo = conninfo or _get_conninfo()
         self._pool = ConnectionPool(self._conninfo, min_size=min_size, max_size=max_size, open=True)
+        atexit.register(self.close)
 
     def close(self):
         """Close the connection pool."""
-        self._pool.close()
+        if not self._pool.closed:
+            self._pool.close()
 
     def __enter__(self):
         return self

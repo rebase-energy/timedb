@@ -73,3 +73,4 @@ docs/notebooks
 testing_scripts/
 loc_graph.py
 architecture/
+benchmarks/
