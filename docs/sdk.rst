@@ -19,16 +19,31 @@ Time series in TimeDB fall into two categories:
 Getting Started
 ---------------
 
-Import and initialize the SDK:
+Import the package and start using it directly:
+
+.. code-block:: python
+
+   import timedb as td
+   import pandas as pd
+   from datetime import datetime, timezone, timedelta
+
+Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
+
+Explicit Client (Advanced)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For custom connection settings (pool size, direct connection string, etc.), instantiate the client directly:
 
 .. code-block:: python
 
    from timedb import TimeDataClient
-   import pandas as pd
-   from datetime import datetime, timezone, timedelta
 
-   # Create client
-   td = TimeDataClient()
+   td = TimeDataClient(conninfo="postgresql://user:pass@host/db", min_size=4, max_size=20)
+   td.series("wind_power").read()
+
+   # Or as a context manager:
+   with TimeDataClient() as td:
+       td.create()
 
 Database Connection
 -------------------
@@ -300,6 +315,10 @@ Example: Analyzing forecast revisions:
 
 .. code-block:: python
 
+   import timedb as td
+   import pandas as pd
+   from datetime import datetime, timezone, timedelta
+
    # Insert multiple forecast revisions
    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
@@ -491,12 +510,11 @@ A complete workflow from setup to analysis:
 
 .. code-block:: python
 
-   from timedb import TimeDataClient
+   import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
 
-   # 1. Create client and schema
-   td = TimeDataClient()
+   # 1. Create schema
    td.delete()  # Clean slate
    td.create()
 
@@ -544,4 +562,3 @@ A complete workflow from setup to analysis:
    # 6. Read all forecast revisions for analysis
    df_versions = td.series("wind_power").where(site="Gotland").read(versions=True)
    print(f"Total revisions: {df_versions.index.get_level_values(0).nunique()}")
-
