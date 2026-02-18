@@ -2,7 +2,22 @@
 
 This directory contains interactive Jupyter notebooks demonstrating how to use timedb.
 
-## Prerequisites
+## Try in Google Colab
+
+Click a badge to open the notebook in Colab — no local setup required. The first cell installs PostgreSQL + TimescaleDB automatically inside the Colab VM (~2–3 min).
+
+| Notebook | Colab |
+|----------|-------|
+| Quickstart | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/quickstart.ipynb) |
+| Writing and Reading with Pandas | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_01_write_read_pandas.ipynb) |
+| Units Validation | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_02_units_validation.ipynb) |
+| Forecast Revisions | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_03_forecast_revisions.ipynb) |
+| Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_04_timeseries_changes.ipynb) |
+| REST API Usage | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_05_api_usage.ipynb) |
+
+> **Note**: The Colab setup cell installs PostgreSQL 14 + TimescaleDB. Data persists only within the active Colab session.
+
+## Prerequisites (local)
 
 1. **PostgreSQL Database**: You need a PostgreSQL database (version 12+) to run these examples.
 
