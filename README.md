@@ -54,6 +54,16 @@ df_latest = td.series("wind_power").read(start_known=known_time)
 df_all = td.series("wind_power").read(versions=True, start_known=known_time)
 ```
 
+## Try in Google Colab
+
+Try the quickstart in Colab — no local setup required. The first cell installs PostgreSQL + TimescaleDB automatically inside the Colab VM (~2 min).
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/quickstart.ipynb)
+
+Additional notebooks and Google Colab links are available in the [examples directory](examples/).
+
+> **Note**: The Colab setup cell installs PostgreSQL 14 + TimescaleDB. Data persists only within the active Colab session.
+
 ## Documentation
 
 - [Installation Guide](docs/installation.rst)
