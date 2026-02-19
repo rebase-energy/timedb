@@ -12,7 +12,7 @@ The SDK exposes two main classes:
 Data model:
 - Flat: Immutable fact data (meter readings, measurements). Stored in 'flat' table.
 - Overlapping: Versioned estimates (forecasts). Stored in 'overlapping' table
-  (list-partitioned by retention) with known_time versioning.
+  (list-partitioned by retention) with knowledge_time versioning.
 """
 import atexit
 import os
@@ -69,16 +69,16 @@ class SeriesCollection:
         >>> client = TimeDataClient()
 
         >>> # Single series with label filter
-        >>> client.series('wind_power').where(site='offshore_1').read()
+        >>> client.get_series('wind_power').where(site='offshore_1').read()
 
         >>> # Multiple filters (chained)
-        >>> client.series(unit='MW').where(site='offshore_1', turbine='T01').read()
+        >>> client.get_series(unit='MW').where(site='offshore_1', turbine='T01').read()
 
         >>> # Direct lookup by series_id
-        >>> client.series(series_id=123).read()
+        >>> client.get_series(series_id=123).read()
 
         >>> # Count matching series
-        >>> count = client.series('wind_power').count()
+        >>> count = client.get_series('wind_power').count()
     """
 
     def __init__(
@@ -115,7 +115,7 @@ class SeriesCollection:
             SeriesCollection: New collection with combined filters applied
 
         Example:
-            >>> coll = client.series('wind_power')
+            >>> coll = client.get_series('wind_power')
             >>> # Add filters progressively
             >>> coll = coll.where(site='offshore_1')
             >>> coll = coll.where(turbine='T01')
@@ -189,7 +189,7 @@ class SeriesCollection:
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
-        known_time: Optional[datetime] = None,
+        knowledge_time: Optional[datetime] = None,
         batch_params: Optional[dict] = None,
     ) -> InsertResult:
         """
@@ -201,14 +201,14 @@ class SeriesCollection:
 
         Automatically routes data to the correct table based on the series' overlapping flag:
         - flat (overlapping=False): inserts into 'flat' table (immutable facts, upsert on conflict)
-        - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and known_time
+        - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and knowledge_time
 
         Args:
             df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
-            known_time: Time of knowledge (optional, used for overlapping)
+            knowledge_time: Time of knowledge (optional, used for overlapping)
             batch_params: Batch parameters (optional)
 
         Returns:
@@ -227,7 +227,7 @@ class SeriesCollection:
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
-            known_time=known_time,
+            knowledge_time=knowledge_time,
             batch_params=batch_params,
             series_id=series_id,
             routing=routing,
@@ -244,8 +244,8 @@ class SeriesCollection:
         
         Supports both flat and overlapping series:
         - **Flat**: In-place update (no versioning) by (series_id, valid_time)
-        - **Overlapping**: Creates new version with known_time=now(). Three lookup methods:
-          1. known_time + valid_time: Exact version lookup
+        - **Overlapping**: Creates new version with knowledge_time=now(). Three lookup methods:
+          1. knowledge_time + valid_time: Exact version lookup
           2. batch_id + valid_time: Latest version in that batch
           3. Just valid_time: Latest version overall
         
@@ -258,7 +258,7 @@ class SeriesCollection:
                 - changed_by (str, optional): User identifier
                 For overlapping only:
                 - batch_id (int, optional): Target specific batch
-                - known_time (datetime, optional): Target specific version
+                - knowledge_time (datetime, optional): Target specific version
         
         Returns:
             List of dicts with update info for each updated record
@@ -267,7 +267,7 @@ class SeriesCollection:
             ValueError: If collection matches multiple series or no series
         
         Example:
-            >>> td.series("temperature").where(site="A").update_records([
+            >>> td.get_series("temperature").where(site="A").update_records([
             ...     {"valid_time": dt, "value": 25.0, "annotation": "Corrected"}
             ... ])
         """
@@ -307,14 +307,14 @@ class SeriesCollection:
         Args:
             start_valid: Start of valid time range (optional)
             end_valid: End of valid time range (optional)
-            start_known: Start of known_time range (optional, overlapping only)
-            end_known: End of known_time range (optional, overlapping only)
+            start_known: Start of knowledge_time range (optional, overlapping only)
+            end_known: End of knowledge_time range (optional, overlapping only)
             versions: If True, return all overlapping revisions (default: False)
             as_pint: If True, return value column as pint dtype with series unit (default: False).
                 Requires pint and pint-pandas: pip install pint pint-pandas
 
         Returns:
-            DataFrame with index (valid_time,) or (known_time, valid_time) for versions,
+            DataFrame with index (valid_time,) or (knowledge_time, valid_time) for versions,
             and column (value). If as_pint=True, value column has pint dtype.
 
         Raises:
@@ -323,10 +323,10 @@ class SeriesCollection:
 
         Example:
             >>> # Single series read
-            >>> df = td.series("wind_power").where(site="Gotland", turbine="T01").read()
+            >>> df = td.get_series("wind_power").where(site="Gotland", turbine="T01").read()
             >>>
             >>> # Read with pint units
-            >>> df = td.series("wind_power").where(turbine="T01").read(as_pint=True)
+            >>> df = td.get_series("wind_power").where(turbine="T01").read(as_pint=True)
             >>> print(df["value"].dtype)  # pint[MW]
         """
         series_ids = self._resolve_ids()
@@ -429,7 +429,7 @@ class SeriesCollection:
             - retention: str
 
         Example:
-            >>> client.series('wind_power').where(site='Gotland').list_series()
+            >>> client.get_series('wind_power').where(site='Gotland').list_series()
             [
                 {'series_id': 1, 'name': 'wind_power', 'unit': 'MW',
                  'labels': {'turbine': 'T01', 'site': 'Gotland', 'type': 'onshore'},
@@ -493,8 +493,8 @@ class TimeDataClient:
         ...     'valid_time': [datetime.now(timezone.utc)],
         ...     'wind_power': [100.0]
         ... })
-        >>> td.series('wind_power').where(site='offshore_1').insert(df)
-        >>> result = td.series('wind_power').where(site='offshore_1').read()
+        >>> td.get_series('wind_power').where(site='offshore_1').insert(df)
+        >>> result = td.get_series('wind_power').where(site='offshore_1').read()
 
     Environment:
         Requires TIMEDB_DSN or DATABASE_URL environment variable
@@ -517,7 +517,7 @@ class TimeDataClient:
     def __exit__(self, *args):
         self.close()
 
-    def series(
+    def get_series(
         self,
         name: Optional[str] = None,
         unit: Optional[str] = None,
@@ -542,11 +542,11 @@ class TimeDataClient:
         Example:
             >>> client = TimeDataClient()
             >>> # Get a specific series by name and labels
-            >>> client.series('wind_power').where(site='offshore_1').read()
+            >>> client.get_series('wind_power').where(site='offshore_1').read()
             >>> # Get all series with unit 'MW'
-            >>> client.series(unit='MW').read()
+            >>> client.get_series(unit='MW').read()
             >>> # Get series by ID (if you know it)
-            >>> client.series(series_id=123).read()
+            >>> client.get_series(series_id=123).read()
         """
         return SeriesCollection(
             conninfo=self._conninfo,
@@ -631,7 +631,7 @@ class TimeDataClient:
 
                 - False: Flat/immutable facts (e.g., meter readings, historical data)
                 - True: Versioned/revised data (e.g., forecasts, estimates)
-                  with known_time tracking for changes over time
+                  with knowledge_time tracking for changes over time
 
             retention (str, default="medium"):
                 Data retention policy (overlapping series only):
@@ -992,7 +992,7 @@ def _insert(
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
-    known_time: Optional[datetime] = None,
+    knowledge_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
     series_id: int = None,
     routing: Optional[Dict[str, Any]] = None,
@@ -1045,7 +1045,7 @@ def _insert(
                 batch_start_time=batch_start_time,
                 batch_finish_time=batch_finish_time,
                 value_rows=value_rows,
-                known_time=known_time,
+                knowledge_time=knowledge_time,
                 batch_params=batch_params,
                 series_id=series_id,
                 routing=routing,

@@ -4,7 +4,7 @@ Concurrency-safe tri-state update API for time-series data.
 Key conventions:
  - Both flat and overlapping series can be updated.
  - Flat: in-place update (no versioning)
- - Overlapping: creates new row with known_time=now() (versioned)
+ - Overlapping: creates new row with knowledge_time=now() (versioned)
  - Single-series only: all updates must be for the same series_id
  - At the Python API level, every updatable field is tri-state:
      Omit field => leave unchanged (field not provided)
@@ -13,7 +13,7 @@ Key conventions:
  - Updates are always executed (no no-op detection)
  - Values must be in the canonical unit for the series.
 
-For overlapping updates, the latest value is determined by ORDER BY known_time DESC.
+For overlapping updates, the latest value is determined by ORDER BY knowledge_time DESC.
 """
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def update_records(
     **Single-series only**: All updates must be for the same series_id.
 
     - Flat series: in-place update (no versioning)
-    - Overlapping series: inserts new row with known_time=now() (versioned)
+    - Overlapping series: inserts new row with knowledge_time=now() (versioned)
 
     Args:
         conn: Database connection
@@ -112,7 +112,7 @@ def update_records(
             - changed_by (str): Who made the change
             
             For overlapping series (version identification):
-            - known_time (datetime): Exact version by known_time
+            - knowledge_time (datetime): Exact version by knowledge_time
             - batch_id (int): Latest version in that batch
             - (none): Latest version overall
 
@@ -263,17 +263,17 @@ def _process_overlapping_update(
     u: Dict[str, Any],
     updated: List[Dict[str, Any]],
 ) -> None:
-    """Process an update for an overlapping series (versioned with known_time).
+    """Process an update for an overlapping series (versioned with knowledge_time).
 
     Flexible lookup priority:
     1. batch_id + valid_time: Latest version in that batch
-    2. known_time + valid_time: Exact version lookup
-    3. Just valid_time: Latest version overall (latest known_time, most recent batch)
+    2. knowledge_time + valid_time: Exact version lookup
+    3. Just valid_time: Latest version overall (latest knowledge_time, most recent batch)
     """
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
     batch_id = u.get("batch_id")
-    known_time = u.get("known_time")
+    knowledge_time = u.get("knowledge_time")
 
     if valid_time is None or series_id is None:
         raise ValueError("Overlapping updates require 'valid_time' and 'series_id'")
@@ -286,11 +286,11 @@ def _process_overlapping_update(
 
     if batch_id is not None and isinstance(batch_id, str):
         batch_id = int(batch_id)
-    if known_time is not None:
-        if isinstance(known_time, str):
-            known_time = dt.datetime.fromisoformat(known_time.replace('Z', '+00:00'))
-        if known_time.tzinfo is None:
-            raise ValueError(f"known_time must be timezone-aware (timestamptz). Bad update: {u}")
+    if knowledge_time is not None:
+        if isinstance(knowledge_time, str):
+            knowledge_time = dt.datetime.fromisoformat(knowledge_time.replace('Z', '+00:00'))
+        if knowledge_time.tzinfo is None:
+            raise ValueError(f"knowledge_time must be timezone-aware (timestamptz). Bad update: {u}")
 
     has_any_update = "value" in u or "annotation" in u or "tags" in u or "changed_by" in u
     if not has_any_update:
@@ -308,7 +308,7 @@ def _process_overlapping_update(
             WHERE series_id = %(series_id)s
               AND valid_time = %(valid_time)s
               AND batch_id = %(batch_id)s
-            ORDER BY known_time DESC
+            ORDER BY knowledge_time DESC
             LIMIT 1
             """,
             {
@@ -317,31 +317,31 @@ def _process_overlapping_update(
                 "batch_id": batch_id,
             },
         )
-    elif known_time is not None:
-        # Exact version lookup by known_time
+    elif knowledge_time is not None:
+        # Exact version lookup by knowledge_time
         cur.execute(
             f"""
             SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
             FROM {table}
             WHERE series_id = %(series_id)s
               AND valid_time = %(valid_time)s
-              AND known_time = %(known_time)s
+              AND knowledge_time = %(knowledge_time)s
             """,
             {
                 "series_id": series_id,
                 "valid_time": valid_time,
-                "known_time": known_time,
+                "knowledge_time": knowledge_time,
             },
         )
     else:
-        # Latest version overall (latest known_time, most recent batch)
+        # Latest version overall (latest knowledge_time, most recent batch)
         cur.execute(
             f"""
             SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by
             FROM {table}
             WHERE series_id = %(series_id)s
               AND valid_time = %(valid_time)s
-            ORDER BY known_time DESC
+            ORDER BY knowledge_time DESC
             LIMIT 1
             """,
             {
@@ -393,7 +393,7 @@ def _process_overlapping_update(
         f"""
         INSERT INTO {table} (
             batch_id, series_id, valid_time, valid_time_end,
-            value, known_time, annotation, metadata, tags, changed_by
+            value, knowledge_time, annotation, metadata, tags, changed_by
         )
         VALUES (
             %(batch_id)s, %(series_id)s, %(valid_time)s, %(valid_time_end)s,

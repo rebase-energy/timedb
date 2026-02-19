@@ -24,16 +24,16 @@ def test_read_flat_via_sdk(clean_db, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [20.5, 21.0],
     })
-    td.series("temperature").insert(df=df_temp)
+    td.get_series("temperature").insert(df=df_temp)
 
     df_hum = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [65.0],
     })
-    td.series("humidity").insert(df=df_hum)
+    td.get_series("humidity").insert(df=df_hum)
 
     # Read all flat via SDK
-    df = td.series("temperature").read(
+    df = td.get_series("temperature").read(
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
     )
@@ -54,7 +54,7 @@ def test_read_flat_db_layer(clean_db, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [100.0, 101.0],
     })
-    td.series("power").insert(df=df)
+    td.get_series("power").insert(df=df)
 
     # Read via db layer
     result = read.read_flat(
@@ -85,7 +85,7 @@ def test_read_flat_filter_by_valid_time(clean_db, sample_datetime):
         ],
         "value": [100.0, 101.0, 102.0, 103.0],
     })
-    td.series("power").insert(df=df)
+    td.get_series("power").insert(df=df)
 
     # Read only a subset
     result = read.read_flat(
@@ -121,10 +121,10 @@ def test_read_overlapping_latest_via_sdk(clean_db, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [50.0, 55.0],
     })
-    td.series("wind_forecast").insert(df=df, known_time=sample_datetime)
+    td.get_series("wind_forecast").insert(df=df, knowledge_time=sample_datetime)
 
     # Read latest (default, versions=False)
-    result = td.series("wind_forecast").read(
+    result = td.get_series("wind_forecast").read(
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
     )
@@ -144,32 +144,32 @@ def test_read_overlapping_all_versions_via_sdk(clean_db, sample_datetime):
     )
 
     # Insert first batch
-    known_time_1 = sample_datetime
+    knowledge_time_1 = sample_datetime
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [50.0, 55.0],
     })
-    td.series("wind_forecast").insert(df=df1, known_time=known_time_1)
+    td.get_series("wind_forecast").insert(df=df1, knowledge_time=knowledge_time_1)
 
     # Insert second batch (revision) for the same valid times
-    known_time_2 = sample_datetime + timedelta(hours=1)
+    knowledge_time_2 = sample_datetime + timedelta(hours=1)
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [52.0, 57.0],
     })
-    td.series("wind_forecast").insert(df=df2, known_time=known_time_2)
+    td.get_series("wind_forecast").insert(df=df2, knowledge_time=knowledge_time_2)
 
     # Read all versions
-    result = td.series("wind_forecast").read(
+    result = td.get_series("wind_forecast").read(
         versions=True,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
     assert isinstance(result, pd.DataFrame)
-    # Should have 4 rows (2 valid_times x 2 known_times)
+    # Should have 4 rows (2 valid_times x 2 knowledge_times)
     assert len(result) == 4
-    assert "known_time" in result.index.names
+    assert "knowledge_time" in result.index.names
 
 
 def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
@@ -182,19 +182,19 @@ def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
         overlapping=True, retention="medium",
     )
 
-    known_time_1 = sample_datetime
+    knowledge_time_1 = sample_datetime
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.series("forecast").insert(df=df1, known_time=known_time_1)
+    td.get_series("forecast").insert(df=df1, knowledge_time=knowledge_time_1)
 
-    known_time_2 = sample_datetime + timedelta(hours=1)
+    knowledge_time_2 = sample_datetime + timedelta(hours=1)
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [105.0],
     })
-    td.series("forecast").insert(df=df2, known_time=known_time_2)
+    td.get_series("forecast").insert(df=df2, knowledge_time=knowledge_time_2)
 
     result = read.read_overlapping_all(
         clean_db,
@@ -205,11 +205,11 @@ def test_read_overlapping_all_versions_db_layer(clean_db, sample_datetime):
 
     assert isinstance(result, pd.DataFrame)
     assert len(result) == 2
-    assert list(result.index.names) == ["known_time", "valid_time"]
+    assert list(result.index.names) == ["knowledge_time", "valid_time"]
 
 
 def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
-    """Test that latest overlapping read picks the most recent known_time."""
+    """Test that latest overlapping read picks the most recent knowledge_time."""
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
 
@@ -223,20 +223,20 @@ def test_read_overlapping_latest_picks_newest(clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.series("price").insert(df=df1, known_time=sample_datetime)
+    td.get_series("price").insert(df=df1, knowledge_time=sample_datetime)
 
-    # Insert revised forecast with newer known_time
+    # Insert revised forecast with newer knowledge_time
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [110.0],
     })
-    td.series("price").insert(
+    td.get_series("price").insert(
         df=df2,
-        known_time=sample_datetime + timedelta(hours=1),
+        knowledge_time=sample_datetime + timedelta(hours=1),
     )
 
     # Read latest via SDK
-    result = td.series("price").read(
+    result = td.get_series("price").read(
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=1),
     )

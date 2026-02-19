@@ -94,7 +94,7 @@ Key Endpoints
    The series must already exist (use POST /series first).
 
    Routing is automatic: flat series are inserted directly (no batch),
-   overlapping series create a batch with known_time tracking.
+   overlapping series create a batch with knowledge_time tracking.
 
    **Request Body:**
 
@@ -102,7 +102,7 @@ Key Endpoints
    - ``labels`` (dict, optional): Labels for resolution
    - ``series_id`` (int, optional): Direct series_id (alternative to name+labels)
    - ``workflow_id`` (str, default="api-workflow"): Workflow identifier
-   - ``known_time`` (datetime, optional): Time of knowledge (defaults to now)
+   - ``knowledge_time`` (datetime, optional): Time of knowledge (defaults to now)
    - ``batch_params`` (dict, optional): Custom batch parameters
    - ``data`` (list): Array of data points ``[{valid_time, value, valid_time_end?}]``
 
@@ -119,8 +119,8 @@ Key Endpoints
    - ``series_id`` (int, optional): Filter by series_id
    - ``start_valid`` (datetime, optional): Start of valid time range (ISO format)
    - ``end_valid`` (datetime, optional): End of valid time range (ISO format)
-   - ``start_known`` (datetime, optional): Start of known_time range (ISO format)
-   - ``end_known`` (datetime, optional): End of known_time range (ISO format)
+   - ``start_known`` (datetime, optional): Start of knowledge_time range (ISO format)
+   - ``end_known`` (datetime, optional): End of knowledge_time range (ISO format)
    - ``versions`` (bool, default=false): Return all forecast revisions
 
    **Returns:** JSON object with count and data array
@@ -134,7 +134,7 @@ Key Endpoints
    For overlapping series, three lookup methods (all optional):
 
    - ``batch_id`` + ``valid_time``: target specific batch
-   - ``known_time`` + ``valid_time``: target specific version
+   - ``knowledge_time`` + ``valid_time``: target specific version
    - Just ``valid_time``: target latest version overall
 
    **Request Body** (``updates`` is a list of objects with these fields):
@@ -144,7 +144,7 @@ Key Endpoints
    - ``name`` (str, optional): Series name (alternative to series_id)
    - ``labels`` (dict, default={}): Labels for series resolution
    - ``batch_id`` (int, optional): Target specific batch (overlapping only)
-   - ``known_time`` (datetime, optional): Target specific version (overlapping only)
+   - ``knowledge_time`` (datetime, optional): Target specific version (overlapping only)
    - ``value`` (float, optional): New value (omit to leave unchanged, null to clear)
    - ``annotation`` (str, optional): Annotation text (omit/null/value tri-state)
    - ``tags`` (list[str], optional): Tags (omit/null/value tri-state)

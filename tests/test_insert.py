@@ -23,7 +23,7 @@ def test_insert_flat_no_batch(clean_db, sample_datetime):
         "value": [20.5, 21.0],
     })
 
-    result = td.series("temperature").insert(df=df)
+    result = td.get_series("temperature").insert(df=df)
 
     assert result.batch_id is None
     assert result.series_id > 0
@@ -43,9 +43,9 @@ def test_insert_flat_no_batch(clean_db, sample_datetime):
             assert cur.fetchone()[0] == 0
 
 
-def test_insert_flat_with_known_time(clean_db, sample_datetime):
-    """Test inserting flat with explicit known_time still skips batch."""
-    known_time = sample_datetime - timedelta(hours=1)
+def test_insert_flat_with_knowledge_time(clean_db, sample_datetime):
+    """Test inserting flat with explicit knowledge_time still skips batch."""
+    knowledge_time = sample_datetime - timedelta(hours=1)
 
     os.environ["TIMEDB_DSN"] = clean_db
     td = TimeDataClient()
@@ -57,13 +57,13 @@ def test_insert_flat_with_known_time(clean_db, sample_datetime):
         "value": [20.5],
     })
 
-    result = td.series("temperature").insert(
+    result = td.get_series("temperature").insert(
         df=df,
         batch_start_time=sample_datetime,
-        known_time=known_time,
+        knowledge_time=knowledge_time,
     )
 
-    # Flat inserts should not create a batch even with known_time
+    # Flat inserts should not create a batch even with knowledge_time
     assert result.batch_id is None
 
     # Verify data was inserted
@@ -92,7 +92,7 @@ def test_insert_flat_point_in_time(clean_db, sample_datetime):
         "value": [100.5, 101.0, 102.5],
     })
 
-    result = td.series("power").insert(df=df)
+    result = td.get_series("power").insert(df=df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -113,7 +113,7 @@ def test_insert_flat_interval(clean_db, sample_datetime):
         "value": [500.0],
     })
 
-    result = td.series("energy").insert(df=df)
+    result = td.get_series("energy").insert(df=df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -135,14 +135,14 @@ def test_insert_flat_upsert(clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.series("meter").insert(df=df1)
+    td.get_series("meter").insert(df=df1)
 
     # Second insert with different value for same valid_time
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [150.0],
     })
-    td.series("meter").insert(df=df2)
+    td.get_series("meter").insert(df=df2)
 
     # Should still have only 1 row (upsert), with updated value
     with psycopg.connect(clean_db) as conn:
@@ -173,7 +173,7 @@ def test_insert_overlapping_creates_batch(clean_db, sample_datetime):
         "value": [50.0, 55.0],
     })
 
-    result = td.series("wind_forecast").insert(df=df, known_time=sample_datetime)
+    result = td.get_series("wind_forecast").insert(df=df, knowledge_time=sample_datetime)
 
     assert result.batch_id is not None
     assert result.series_id > 0
@@ -210,7 +210,7 @@ def test_insert_overlapping_short_tier(clean_db):
         "value": [42.0],
     })
 
-    td.series("price_forecast").insert(df=df, known_time=recent_time)
+    td.get_series("price_forecast").insert(df=df, knowledge_time=recent_time)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -239,7 +239,7 @@ def test_insert_overlapping_long_tier(clean_db, sample_datetime):
         "value": [15.0],
     })
 
-    td.series("climate_forecast").insert(df=df, known_time=sample_datetime)
+    td.get_series("climate_forecast").insert(df=df, knowledge_time=sample_datetime)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -263,8 +263,8 @@ def test_insert_overlapping_interval(clean_db, sample_datetime):
         "value": [500.0],
     })
 
-    td.series("energy_forecast").insert(
-        df=df, known_time=sample_datetime,
+    td.get_series("energy_forecast").insert(
+        df=df, knowledge_time=sample_datetime,
     )
 
     with psycopg.connect(clean_db) as conn:
@@ -292,4 +292,4 @@ def test_insert_timezone_aware_required(clean_db):
     })
 
     with pytest.raises(ValueError, match="timezone-aware"):
-        td.series("temp").insert(df=df)
+        td.get_series("temp").insert(df=df)

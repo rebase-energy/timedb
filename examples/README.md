@@ -8,12 +8,12 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 
 | Notebook | Colab |
 |----------|-------|
-| Quickstart | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/quickstart.ipynb) |
-| Writing and Reading with Pandas | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_01_write_read_pandas.ipynb) |
-| Units Validation | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_02_units_validation.ipynb) |
-| Forecast Revisions | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_03_forecast_revisions.ipynb) |
-| Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_04_timeseries_changes.ipynb) |
-| REST API Usage | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/nb_05_api_usage.ipynb) |
+| Quickstart | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb) |
+| Writing and Reading with Pandas | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_01_write_read_pandas.ipynb) |
+| Units Validation | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_02_units_validation.ipynb) |
+| Forecast Revisions | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_03_forecast_revisions.ipynb) |
+| Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_04_timeseries_changes.ipynb) |
+| REST API Usage | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_05_api_usage.ipynb) |
 
 > **Note**: The Colab setup cell installs PostgreSQL 14 + TimescaleDB. Data persists only within the active Colab session.
 

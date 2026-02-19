@@ -14,7 +14,7 @@ The SDK centers around two main concepts:
 Time series in TimeDB fall into two categories:
 
 - **Flat series**: Immutable fact data (meter readings, measurements)
-- **Overlapping series**: Versioned estimates (forecasts, predictions) with ``known_time`` tracking
+- **Overlapping series**: Versioned estimates (forecasts, predictions) with ``knowledge_time`` tracking
 
 Getting Started
 ---------------
@@ -27,7 +27,7 @@ Import the package and start using it directly:
    import pandas as pd
    from datetime import datetime, timezone, timedelta
 
-Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
+Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.get_series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
 
 Explicit Client (Advanced)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -39,7 +39,7 @@ For custom connection settings (pool size, direct connection string, etc.), inst
    from timedb import TimeDataClient
 
    td = TimeDataClient(conninfo="postgresql://user:pass@host/db", min_size=4, max_size=20)
-   td.series("wind_power").read()
+   td.get_series("wind_power").read()
 
    # Or as a context manager:
    with TimeDataClient() as td:
@@ -129,13 +129,13 @@ Use the fluent ``SeriesCollection`` API to insert data. First, select a series b
 .. code-block:: python
 
    # Select by name
-   td.series("wind_power")
+   td.get_series("wind_power")
 
    # Optionally filter by unit
-   td.series("power", unit="MW")
+   td.get_series("power", unit="MW")
 
    # Optionally filter by labels
-   td.series("wind_power").where(site="offshore_1", type="forecast")
+   td.get_series("wind_power").where(site="offshore_1", type="forecast")
 
 Then insert data:
 
@@ -146,28 +146,28 @@ Then insert data:
        "value": [100.0 + i * 2 for i in range(24)]
    })
 
-   result = td.series("wind_power").where(site="offshore_1").insert(df)
+   result = td.get_series("wind_power").where(site="offshore_1").insert(df)
    # result.series_id, result.batch_id
 
-For overlapping (versioned) series, use ``known_time`` to indicate when the data was created:
+For overlapping (versioned) series, use ``knowledge_time`` to indicate when the data was created:
 
 .. code-block:: python
 
-   result = td.series("wind_power").where(site="offshore_1").insert(
+   result = td.get_series("wind_power").where(site="offshore_1").insert(
        df=df,
-       known_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+       knowledge_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
    )
 
 Full insert signature:
 
 .. code-block:: python
 
-   result = td.series("name").where(...).insert(
+   result = td.get_series("name").where(...).insert(
        df=pd.DataFrame(...),  # Columns: [valid_time, value] or [valid_time, valid_time_end, value]
        workflow_id=None,  # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
        batch_finish_time=None,  # Optional
-       known_time=None,  # Time of knowledge (overlapping only)
+       knowledge_time=None,  # Time of knowledge (overlapping only)
        batch_params=None,  # Optional dict of metadata
    )
 
@@ -187,7 +187,7 @@ Install the optional pint dependencies first: ``pip install timedb[pint]``
    })
 
    # kW is automatically converted to MW (the series' canonical unit)
-   td.series("power").insert(df=df)
+   td.get_series("power").insert(df=df)
 
 Rules:
 
@@ -217,7 +217,7 @@ For interval-based data (e.g., energy over a time period):
        "value": [100.0, 105.0, 110.0] * 8
    })
 
-   td.series("energy").where(...).insert(df=df_intervals)
+   td.get_series("energy").where(...).insert(df=df_intervals)
 
 Reading Data
 ------------
@@ -227,16 +227,16 @@ Use the fluent API to read data. Start by selecting a series:
 .. code-block:: python
 
    # Select series by name
-   df = td.series("temperature").read()
+   df = td.get_series("temperature").read()
 
    # Select by name and filter by labels
-   df = td.series("temperature").where(location="room_1").read()
+   df = td.get_series("temperature").where(location="room_1").read()
 
    # Multiple filters
-   df = td.series("wind_power").where(site="Gotland", turbine="T01").read()
+   df = td.get_series("wind_power").where(site="Gotland", turbine="T01").read()
 
    # Time range filtering
-   df = td.series("power").read(
+   df = td.get_series("power").read(
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
@@ -250,11 +250,11 @@ Full read signature:
 
 .. code-block:: python
 
-   df = td.series("name").read(
+   df = td.get_series("name").read(
        start_valid=None,  # Optional, start of valid time range
        end_valid=None,  # Optional, end of valid time range
-       start_known=None,  # Optional, start of known_time (overlapping only)
-       end_known=None,  # Optional, end of known_time (overlapping only)
+       start_known=None,  # Optional, start of knowledge_time (overlapping only)
+       end_known=None,  # Optional, end of knowledge_time (overlapping only)
        versions=False,  # If True, return all versions (overlapping only)
        as_pint=False,  # If True, return value column with pint dtype
    )
@@ -266,7 +266,7 @@ Use ``as_pint=True`` to get the value column as a pint-pandas dtype with the ser
 
 .. code-block:: python
 
-   df = td.series("power").read(as_pint=True)
+   df = td.get_series("power").read(as_pint=True)
    print(df["value"].dtype)  # pint[MW]
 
    # Unit-aware arithmetic works naturally
@@ -283,7 +283,7 @@ By default, ``read()`` returns the latest version for overlapping series:
 .. code-block:: python
 
    # Read latest forecast values
-   df_latest = td.series("wind_forecast").read(
+   df_latest = td.get_series("wind_forecast").read(
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
@@ -295,21 +295,21 @@ For overlapping series, use ``versions=True`` to see the complete revision histo
 
 .. code-block:: python
 
-   # Read all versions with known_time
-   df_versions = td.series("wind_forecast").read(
+   # Read all versions with knowledge_time
+   df_versions = td.get_series("wind_forecast").read(
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
        versions=True
    )
 
-   # Filter by known_time range (when forecasts were made)
-   df_versions = td.series("wind_forecast").read(
+   # Filter by knowledge_time range (when forecasts were made)
+   df_versions = td.get_series("wind_forecast").read(
        versions=True,
        start_known=datetime(2024, 12, 1, tzinfo=timezone.utc),
        end_known=datetime(2025, 1, 15, tzinfo=timezone.utc),
    )
 
-The result has a MultiIndex with ``(known_time, valid_time)`` to show both when the forecast was made and what it applies to.
+The result has a MultiIndex with ``(knowledge_time, valid_time)`` to show both when the forecast was made and what it applies to.
 
 Example: Analyzing forecast revisions:
 
@@ -323,18 +323,18 @@ Example: Analyzing forecast revisions:
    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
    for i in range(4):
-       known_time = base_time + timedelta(days=i)
-       times = [known_time + timedelta(hours=j) for j in range(72)]
+       knowledge_time = base_time + timedelta(days=i)
+       times = [knowledge_time + timedelta(hours=j) for j in range(72)]
 
        df = pd.DataFrame({
            "valid_time": times,
            "value": [100.0 + i*10 for _ in range(72)]
        })
 
-       td.series("power").insert(df, known_time=known_time)
+       td.get_series("power").insert(df, knowledge_time=knowledge_time)
 
    # Read all revisions
-   df_all = td.series("power").read(
+   df_all = td.get_series("power").read(
        start_valid=base_time,
        end_valid=base_time + timedelta(days=5),
        versions=True
@@ -347,7 +347,7 @@ List unique label values and count series in a collection:
 
 .. code-block:: python
 
-   collection = td.series("wind_power").where(site="Gotland")
+   collection = td.get_series("wind_power").where(site="Gotland")
 
    # Count matching series
    num_series = collection.count()  # Returns: 3
@@ -361,7 +361,7 @@ List unique label values and count series in a collection:
 Updating Records
 ----------------
 
-Update records for both flat and overlapping series. Flat series are updated in-place, while overlapping series create new versions with ``known_time=now()``:
+Update records for both flat and overlapping series. Flat series are updated in-place, while overlapping series create new versions with ``knowledge_time=now()``:
 
 .. code-block:: python
 
@@ -374,7 +374,7 @@ Update records for both flat and overlapping series. Flat series are updated in-
        }
    ]
 
-   result = td.series("wind_forecast").where(site="offshore_1").update_records(updates)
+   result = td.get_series("wind_forecast").where(site="offshore_1").update_records(updates)
 
 For collections matching a single series, ``series_id`` is optional. For multiple series, include it:
 
@@ -389,7 +389,7 @@ For collections matching a single series, ``series_id`` is optional. For multipl
        }
    ]
 
-   result = td.series("wind_power").where(site="Gotland").update_records(updates)
+   result = td.get_series("wind_power").where(site="Gotland").update_records(updates)
 
 The function returns a list of updated records:
 
@@ -405,9 +405,9 @@ The function returns a list of updated records:
        ...
    ]
 
-For overlapping series, the system creates a new version with the current ``known_time``. You can target specific versions by including:
+For overlapping series, the system creates a new version with the current ``knowledge_time``. You can target specific versions by including:
 
-- ``known_time``: Target a specific version
+- ``knowledge_time``: Target a specific version
 - ``batch_id``: Target records from a specific batch
 
 Tri-state field semantics:
@@ -421,7 +421,7 @@ Example:
 .. code-block:: python
 
    # Clear annotation, update value, leave tags unchanged
-   result = td.series("power").update_records([
+   result = td.get_series("power").update_records([
        {
            "valid_time": datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
            "value": 200.0,
@@ -444,7 +444,7 @@ Common errors and how to handle them:
        print(f"Schema creation failed: {e}")
 
    try:
-       result = td.series("power").insert(df)
+       result = td.get_series("power").insert(df)
    except ValueError as e:
        if "No series found" in str(e):
            print("Series doesn't exist. Create it first with td.create_series()")
@@ -473,7 +473,7 @@ Best Practices
 
 2. **Create schema first**: Always run ``td.create()`` before inserting data
 
-3. **Create series before inserting**: Use ``td.create_series()`` before ``td.series().insert()``
+3. **Create series before inserting**: Use ``td.create_series()`` before ``td.get_series().insert()``
 
 4. **Use labels for filtering**: Organize data with meaningful labels for easy retrieval
 
@@ -485,20 +485,20 @@ Best Practices
           labels={"site": "Gotland", "turbine": "T01"}
       )
 
-5. **Use known_time for versioning**: For overlapping series, always set ``known_time`` to indicate when data was created
+5. **Use knowledge_time for versioning**: For overlapping series, always set ``knowledge_time`` to indicate when data was created
 
    .. code-block:: python
 
-      td.series("forecast").insert(
+      td.get_series("forecast").insert(
           df=df,
-          known_time=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+          knowledge_time=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
       )
 
 6. **Use workflow_id for tracking**: Tag data with meaningful workflow IDs to track data sources
 
    .. code-block:: python
 
-      td.series("power").insert(
+      td.get_series("power").insert(
           df=df,
           workflow_id="forecast-v2"
       )
@@ -536,9 +536,9 @@ A complete workflow from setup to analysis:
        "value": [100.0 + i * 2 for i in range(24)]
    })
 
-   result = td.series("wind_power").where(site="Gotland").insert(
+   result = td.get_series("wind_power").where(site="Gotland").insert(
        df=df,
-       known_time=base_time,
+       knowledge_time=base_time,
        workflow_id="forecast-run-1"
    )
 
@@ -549,16 +549,16 @@ A complete workflow from setup to analysis:
        "value": [105.0 + i * 2 for i in range(24)]
    })
 
-   td.series("wind_power").where(site="Gotland").insert(
+   td.get_series("wind_power").where(site="Gotland").insert(
        df=df_revised,
-       known_time=revised_time,
+       knowledge_time=revised_time,
        workflow_id="forecast-run-1"
    )
 
    # 5. Read latest forecast
-   df_latest = td.series("wind_power").where(site="Gotland").read()
+   df_latest = td.get_series("wind_power").where(site="Gotland").read()
    print(df_latest.head())
 
    # 6. Read all forecast revisions for analysis
-   df_versions = td.series("wind_power").where(site="Gotland").read(versions=True)
+   df_versions = td.get_series("wind_power").where(site="Gotland").read(versions=True)
    print(f"Total revisions: {df_versions.index.get_level_values(0).nunique()}")
