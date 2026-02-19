@@ -38,19 +38,19 @@ td.create()
 td.create_series(name="wind_power", unit="MW",
                  labels={"site": "offshore_1"}, overlapping=True)
 
-# Insert forecast with known_time
-known_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
+# Insert forecast with knowledge_time
+knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
 df = pd.DataFrame({
     'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
     'value': [100 + i*2 for i in range(24)]
 })
-td.series("wind_power").where(site="offshore_1").insert(df=df, known_time=known_time)
+td.get_series("wind_power").where(site="offshore_1").insert(df=df, knowledge_time=knowledge_time)
 
 # Read latest forecast
-df_latest = td.series("wind_power").where(site="offshore_1").read()
+df_latest = td.get_series("wind_power").where(site="offshore_1").read()
 
 # Read all forecast revisions
-df_all = td.series("wind_power").where(site="offshore_1").read(versions=True)
+df_all = td.get_series("wind_power").where(site="offshore_1").read(versions=True)
 ```
 
 > For custom connection settings (host, pool size, etc.), use `TimeDataClient` directly:
@@ -60,7 +60,7 @@ df_all = td.series("wind_power").where(site="offshore_1").read(versions=True)
 
 Try the quickstart in Colab — no local setup required. The first cell installs PostgreSQL + TimescaleDB automatically inside the Colab VM (~2 min).
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FreaxMATE/timedb/blob/colab/examples/quickstart.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb)
 
 Additional notebooks and Google Colab links are available in the [examples directory](examples/).
 
@@ -81,7 +81,7 @@ Three time dimensions:
 | Dimension | Description | Example |
 |-----------|-------------|---------|
 | **valid_time** | The time the value represents a fact for | "Wind speed forecast for Wednesday 12:00" |
-| **known_time** | The time when the value was known | "Wind speed forecast for Wednesday 12:00 was generated on Monday 18:00" |
+| **knowledge_time** | The time when the value was known | "Wind speed forecast for Wednesday 12:00 was generated on Monday 18:00" |
 | **change_time** | The time when the value was changed | "Wind speed forecast for Wednesday 12:00 was manually changed on Tuesday 9:00" |
 
 Plus metadata: `tags`, `annotation`, `changed_by`, `change_time` for audit trails.

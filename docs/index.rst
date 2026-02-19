@@ -46,16 +46,16 @@ Quick Start
        'value': [100.0 + i * 2 for i in range(24)]
    })
 
-   result = td.series('wind_power').where(site='offshore_1').insert(
+   result = td.get_series('wind_power').where(site='offshore_1').insert(
        df=df,
-       known_time=base_time
+       knowledge_time=base_time
    )
 
    # Read latest values
-   df_latest = td.series('wind_power').where(site='offshore_1').read()
+   df_latest = td.get_series('wind_power').where(site='offshore_1').read()
 
    # Read all forecast revisions
-   df_versions = td.series('wind_power').where(site='offshore_1').read(versions=True)
+   df_versions = td.get_series('wind_power').where(site='offshore_1').read(versions=True)
 
 Documentation
 -------------

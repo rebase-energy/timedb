@@ -8,14 +8,14 @@ Quick usage:
     td.create_series(name='wind_power', unit='MW',
                      labels={'site': 'offshore_1'}, overlapping=True)
 
-    td.series('wind_power').where(site='offshore_1').insert(df=df, known_time=known_time)
-    df = td.series('wind_power').where(site='offshore_1').read()
+    td.get_series('wind_power').where(site='offshore_1').insert(df=df, knowledge_time=knowledge_time)
+    df = td.get_series('wind_power').where(site='offshore_1').read()
 
 Explicit client usage (for custom connection settings):
     from timedb import TimeDataClient
 
     td = TimeDataClient(conninfo='postgresql://...', min_size=4, max_size=20)
-    td.series('wind_power').read()
+    td.get_series('wind_power').read()
 """
 
 from dotenv import load_dotenv, find_dotenv
@@ -67,9 +67,9 @@ def create_series(name, unit="dimensionless", labels=None, description=None,
     )
 
 
-def series(name=None, unit=None, series_id=None):
-    """Start building a series collection. See :meth:`TimeDataClient.series`."""
-    return _get_default_client().series(name, unit=unit, series_id=series_id)
+def get_series(name=None, unit=None, series_id=None):
+    """Start building a series collection. See :meth:`TimeDataClient.get_series`."""
+    return _get_default_client().get_series(name, unit=unit, series_id=series_id)
 
 
 __all__ = [
@@ -80,5 +80,5 @@ __all__ = [
     'create',
     'delete',
     'create_series',
-    'series',
+    'get_series',
 ]

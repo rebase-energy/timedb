@@ -29,7 +29,7 @@ def insert_values(
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
     value_rows: Iterable[Tuple],
-    known_time: Optional[datetime] = None,
+    knowledge_time: Optional[datetime] = None,
     batch_params: Optional[Dict] = None,
     series_id: int,
     routing: Dict[str, Any],
@@ -50,7 +50,7 @@ def insert_values(
         batch_start_time: Batch start time
         batch_finish_time: Batch finish time
         value_rows: Iterable of value tuples
-        known_time: Time of knowledge
+        knowledge_time: Time of knowledge
         batch_params: Batch parameters
         series_id: Series identifier
         routing: Routing info dict with keys: overlapping (bool), retention (str), table (str)
@@ -68,21 +68,21 @@ def insert_values(
             
             # Route to appropriate insert function
             if not is_overlapping:
-                _insert_flat(conn, value_rows=rows_list, known_time=known_time)
+                _insert_flat(conn, value_rows=rows_list, knowledge_time=knowledge_time)
                 return None
             else:
-                batch_id, batch_known_time = _create_batch(
+                batch_id, batch_knowledge_time = _create_batch(
                     conn,
                     workflow_id=workflow_id,
                     batch_start_time=batch_start_time,
                     batch_finish_time=batch_finish_time,
-                    known_time=known_time,
+                    knowledge_time=knowledge_time,
                     batch_params=batch_params,
                 )
                 _insert_overlapping(
                     conn,
                     batch_id=batch_id,
-                    known_time=batch_known_time,
+                    knowledge_time=batch_knowledge_time,
                     value_rows=rows_list,
                     series_id=series_id,
                     routing=routing,
@@ -98,14 +98,14 @@ def _create_batch(
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
-    known_time: Optional[datetime] = None,
+    knowledge_time: Optional[datetime] = None,
     batch_params: Optional[Dict] = None,
 ) -> Tuple[int, datetime]:
     """
     Insert one batch into batches_table.
 
     Returns:
-        Tuple of (batch_id, known_time)
+        Tuple of (batch_id, knowledge_time)
     """
     batch_params_json = json.dumps(batch_params) if batch_params is not None else None
 
@@ -114,21 +114,21 @@ def _create_batch(
         raise ValueError("batch_start_time must be timezone-aware")
     if batch_finish_time is not None and batch_finish_time.tzinfo is None:
         raise ValueError("batch_finish_time must be timezone-aware")
-    if known_time is not None and known_time.tzinfo is None:
-        raise ValueError("known_time must be timezone-aware")
+    if knowledge_time is not None and knowledge_time.tzinfo is None:
+        raise ValueError("knowledge_time must be timezone-aware")
 
     with conn.cursor() as cur:
-        if known_time is not None:
+        if knowledge_time is not None:
             cur.execute(
                 """
                 INSERT INTO batches_table (
                     workflow_id, batch_start_time, batch_finish_time,
-                    known_time, batch_params
+                    knowledge_time, batch_params
                 )
                 VALUES (%s, %s, %s, %s, %s::jsonb)
-                RETURNING batch_id, known_time;
+                RETURNING batch_id, knowledge_time;
                 """,
-                (workflow_id, batch_start_time, batch_finish_time, known_time, batch_params_json),
+                (workflow_id, batch_start_time, batch_finish_time, knowledge_time, batch_params_json),
             )
         else:
             cur.execute(
@@ -138,7 +138,7 @@ def _create_batch(
                     batch_params
                 )
                 VALUES (%s, %s, %s, %s::jsonb)
-                RETURNING batch_id, known_time;
+                RETURNING batch_id, knowledge_time;
                 """,
                 (workflow_id, batch_start_time, batch_finish_time, batch_params_json),
             )
@@ -151,7 +151,7 @@ def _insert_flat(
     conn: psycopg.Connection,
     *,
     value_rows: List[Tuple],
-    known_time: Optional[datetime] = None,
+    knowledge_time: Optional[datetime] = None,
 ) -> None:
     """
     Insert flat (fact) values into the flat table.
@@ -167,15 +167,15 @@ def _insert_flat(
     if not value_rows:
         return
     
-    # Normalize to (series_id, valid_time, valid_time_end, value, known_time) format
+    # Normalize to (series_id, valid_time, valid_time_end, value, knowledge_time) format
     first_row = value_rows[0]
     
     if len(first_row) == 3:
         # Point-in-time: (valid_time, series_id, value)
-        rows_with_kt = [(row[1], row[0], None, row[2], known_time) for row in value_rows]
+        rows_with_kt = [(row[1], row[0], None, row[2], knowledge_time) for row in value_rows]
     elif len(first_row) == 4:
         # Interval: (valid_time, valid_time_end, series_id, value)
-        rows_with_kt = [(row[2], row[0], row[1], row[3], known_time) for row in value_rows]
+        rows_with_kt = [(row[2], row[0], row[1], row[3], knowledge_time) for row in value_rows]
     else:
         raise ValueError(
             "Flat rows must be (valid_time, series_id, value) "
@@ -191,25 +191,25 @@ def _insert_flat(
                     valid_time timestamptz,
                     valid_time_end timestamptz,
                     value double precision,
-                    known_time timestamptz
+                    knowledge_time timestamptz
                 ) ON COMMIT DROP
             """)
-            with cur.copy("COPY _flat_staging (series_id, valid_time, valid_time_end, value, known_time) FROM STDIN") as copy:
+            with cur.copy("COPY _flat_staging (series_id, valid_time, valid_time_end, value, knowledge_time) FROM STDIN") as copy:
                 for row in rows_with_kt:
                     copy.write_row(row)
             cur.execute("""
-                INSERT INTO flat (series_id, valid_time, valid_time_end, value, known_time)
-                SELECT series_id, valid_time, valid_time_end, value, COALESCE(known_time, now()) FROM _flat_staging
+                INSERT INTO flat (series_id, valid_time, valid_time_end, value, knowledge_time)
+                SELECT series_id, valid_time, valid_time_end, value, COALESCE(knowledge_time, now()) FROM _flat_staging
                 ON CONFLICT (series_id, valid_time)
-                DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end, known_time = EXCLUDED.known_time
+                DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end, knowledge_time = EXCLUDED.knowledge_time
             """)
         else:
             cur.executemany(
                 """
-                INSERT INTO flat (series_id, valid_time, valid_time_end, value, known_time)
+                INSERT INTO flat (series_id, valid_time, valid_time_end, value, knowledge_time)
                 VALUES (%s, %s, %s, %s, COALESCE(%s, now()))
                 ON CONFLICT (series_id, valid_time)
-                DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end, known_time = EXCLUDED.known_time
+                DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end, knowledge_time = EXCLUDED.knowledge_time
                 """,
                 rows_with_kt,
             )
@@ -219,7 +219,7 @@ def _insert_overlapping(
     conn: psycopg.Connection,
     *,
     batch_id: int,
-    known_time: datetime,
+    knowledge_time: datetime,
     value_rows: List[Tuple],
     series_id: int,
     routing: Dict[str, Any],
@@ -245,13 +245,13 @@ def _insert_overlapping(
     if len(first_row) == 3:
         # Point-in-time: (valid_time, series_id, value)
         rows_prepared = [
-            (batch_id, series_id, row[0], None, row[2], known_time)
+            (batch_id, series_id, row[0], None, row[2], knowledge_time)
             for row in value_rows
         ]
     elif len(first_row) == 4:
         # Interval: (valid_time, valid_time_end, series_id, value)
         rows_prepared = [
-            (batch_id, series_id, row[0], row[1], row[3], known_time)
+            (batch_id, series_id, row[0], row[1], row[3], knowledge_time)
             for row in value_rows
         ]
     else:
@@ -268,7 +268,7 @@ def _insert_overlapping(
         if len(rows_prepared) >= _COPY_THRESHOLD:
             # COPY path for large batches
             copy_sql = sql.SQL(
-                "COPY {} (batch_id, series_id, valid_time, valid_time_end, value, known_time) FROM STDIN"
+                "COPY {} (batch_id, series_id, valid_time, valid_time_end, value, knowledge_time) FROM STDIN"
             ).format(sql.Identifier(table))
             with cur.copy(copy_sql) as copy:
                 for row in rows_prepared:
@@ -276,7 +276,7 @@ def _insert_overlapping(
         else:
             cur.executemany(
                 sql.SQL("""
-                INSERT INTO {} (batch_id, series_id, valid_time, valid_time_end, value, known_time)
+                INSERT INTO {} (batch_id, series_id, valid_time, valid_time_end, value, knowledge_time)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """).format(sql.Identifier(table)),
                 rows_prepared,

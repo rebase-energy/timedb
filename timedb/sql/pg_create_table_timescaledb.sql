@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS batches_table (
   workflow_id       text,
   batch_start_time  timestamptz,
   batch_finish_time timestamptz,
-  known_time        timestamptz NOT NULL DEFAULT now(),
+  knowledge_time        timestamptz NOT NULL DEFAULT now(),
   batch_params      jsonb,
   inserted_at       timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT batch_params_is_object
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS flat (
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
-  known_time      timestamptz NOT NULL DEFAULT now(),
+  knowledge_time      timestamptz NOT NULL DEFAULT now(),
   annotation      text,
   metadata        jsonb,
   tags            text[],
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS overlapping_short (
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
-  known_time      timestamptz NOT NULL,
+  knowledge_time      timestamptz NOT NULL,
   annotation      text,
   metadata        jsonb,
   tags            text[],
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS overlapping_short (
 
   CONSTRAINT valid_time_interval_check_short
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (series_id, valid_time, known_time)
+  UNIQUE (series_id, valid_time, knowledge_time)
 );
 
 -- TIER 2: MEDIUM (3 Years retention)
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS overlapping_medium (
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
-  known_time      timestamptz NOT NULL,
+  knowledge_time      timestamptz NOT NULL,
   annotation      text,
   metadata        jsonb,
   tags            text[],
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS overlapping_medium (
 
   CONSTRAINT valid_time_interval_check_medium
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (series_id, valid_time, known_time)
+  UNIQUE (series_id, valid_time, knowledge_time)
 );
 
 -- TIER 3: LONG (5 Years retention)
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
   value           double precision,
-  known_time      timestamptz NOT NULL,
+  knowledge_time      timestamptz NOT NULL,
   annotation      text,
   metadata        jsonb,
   tags            text[],
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
 
   CONSTRAINT valid_time_interval_check_long
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (series_id, valid_time, known_time)
+  UNIQUE (series_id, valid_time, knowledge_time)
 );
 
 
@@ -141,9 +141,9 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
 -- 4) INDEXES ON OVERLAPPING TABLES
 -- ============================================================================
 
-CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (series_id, valid_time, known_time DESC);
-CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (series_id, valid_time, known_time DESC);
-CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (series_id, valid_time, known_time DESC);
+CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (series_id, valid_time, knowledge_time DESC);
+CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (series_id, valid_time, knowledge_time DESC);
+CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (series_id, valid_time, knowledge_time DESC);
 
 
 -- ============================================================================

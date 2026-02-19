@@ -73,9 +73,9 @@ def test_insert_pint_same_unit(clean_db, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": pd.array([1.5, 2.5], dtype="pint[MW]"),
     })
-    td.series("power").insert(df)
+    td.get_series("power").insert(df)
 
-    df_read = td.series("power").read()
+    df_read = td.get_series("power").read()
     assert df_read["value"].iloc[0] == pytest.approx(1.5)
     assert df_read["value"].iloc[1] == pytest.approx(2.5)
 
@@ -90,9 +90,9 @@ def test_insert_pint_converts_kw_to_mw(clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": pd.array([500.0], dtype="pint[kW]"),
     })
-    td.series("power").insert(df)
+    td.get_series("power").insert(df)
 
-    df_read = td.series("power").read()
+    df_read = td.get_series("power").read()
     assert df_read["value"].iloc[0] == pytest.approx(0.5)
 
 
@@ -108,7 +108,7 @@ def test_insert_pint_incompatible_raises(clean_db, sample_datetime):
     })
 
     with pytest.raises(IncompatibleUnitError):
-        td.series("power").insert(df)
+        td.get_series("power").insert(df)
 
 
 def test_insert_plain_float_no_unit_check(clean_db, sample_datetime):
@@ -121,9 +121,9 @@ def test_insert_plain_float_no_unit_check(clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [999.0],
     })
-    td.series("power").insert(df)
+    td.get_series("power").insert(df)
 
-    df_read = td.series("power").read()
+    df_read = td.get_series("power").read()
     assert df_read["value"].iloc[0] == pytest.approx(999.0)
 
 
@@ -137,9 +137,9 @@ def test_read_as_pint(clean_db, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [1.5, 2.5],
     })
-    td.series("power").insert(df)
+    td.get_series("power").insert(df)
 
-    df_pint = td.series("power").read(as_pint=True)
+    df_pint = td.get_series("power").read(as_pint=True)
     assert hasattr(df_pint["value"].dtype, 'units')
     assert str(df_pint["value"].dtype.units) == "megawatt"
     assert df_pint["value"].values.quantity.magnitude[0] == pytest.approx(1.5)
@@ -155,8 +155,8 @@ def test_read_as_pint_false_default(clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [1.5],
     })
-    td.series("power").insert(df)
+    td.get_series("power").insert(df)
 
-    df_read = td.series("power").read()
+    df_read = td.get_series("power").read()
     assert not hasattr(df_read["value"].dtype, 'units')
     assert df_read["value"].dtype == "float64"

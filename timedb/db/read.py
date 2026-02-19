@@ -43,10 +43,10 @@ def _build_where_clause(
         params["end_valid"] = end_valid
 
     if start_known is not None:
-        filters.append("v.known_time >= %(start_known)s")
+        filters.append("v.knowledge_time >= %(start_known)s")
         params["start_known"] = start_known
     if end_known is not None:
-        filters.append("v.known_time < %(end_known)s")
+        filters.append("v.knowledge_time < %(end_known)s")
         params["end_known"] = end_known
 
     where_clause = ""
@@ -73,8 +73,8 @@ def read_flat(
         series_id: Series ID (required)
         start_valid: Start of time range (optional)
         end_valid: End of time range (optional)
-        start_known: Start of known_time range (optional)
-        end_known: End of known_time range (optional)
+        start_known: Start of knowledge_time range (optional)
+        end_known: End of knowledge_time range (optional)
 
     Returns:
         DataFrame with index (valid_time) and columns (value)
@@ -126,15 +126,15 @@ def read_overlapping_latest(
     Read latest overlapping values from the overlapping table.
 
     Returns the latest value for each valid_time,
-    determined by the most recent known_time via DISTINCT ON.
+    determined by the most recent knowledge_time via DISTINCT ON.
 
     Args:
         conninfo: Database connection or connection string
         series_id: Series ID (required)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
-        start_known: Start of known_time range (optional)
-        end_known: End of known_time range (optional)
+        start_known: Start of knowledge_time range (optional)
+        end_known: End of knowledge_time range (optional)
 
     Returns:
         DataFrame with index (valid_time) and columns (value)
@@ -152,7 +152,7 @@ def read_overlapping_latest(
         v.valid_time, v.value
     FROM all_overlapping_raw v
     {where_clause}
-    ORDER BY v.valid_time, v.known_time DESC;
+    ORDER BY v.valid_time, v.knowledge_time DESC;
     """
 
     import warnings
@@ -193,11 +193,11 @@ def read_overlapping_all(
         series_id: Series ID (required)
         start_valid: Start of valid time range (optional)
         end_valid: End of valid time range (optional)
-        start_known: Start of known_time range (optional)
-        end_known: End of known_time range (optional)
+        start_known: Start of knowledge_time range (optional)
+        end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (known_time, valid_time) and columns (value)
+        DataFrame with index (knowledge_time, valid_time) and columns (value)
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -208,10 +208,10 @@ def read_overlapping_all(
     )
 
     sql = f"""
-    SELECT v.known_time, v.valid_time, v.value
+    SELECT v.knowledge_time, v.valid_time, v.value
     FROM all_overlapping_raw v
     {where_clause}
-    ORDER BY v.known_time, v.valid_time;
+    ORDER BY v.knowledge_time, v.valid_time;
     """
 
     import warnings
@@ -223,13 +223,13 @@ def read_overlapping_all(
                 conn,
                 params=params,
                 dtype={"value": "float64"},
-                parse_dates={"known_time": {"utc": True}, "valid_time": {"utc": True}},
+                parse_dates={"knowledge_time": {"utc": True}, "valid_time": {"utc": True}},
             )
 
     if len(df) == 0:
         return df
 
-    df = df.set_index(["known_time", "valid_time"])
+    df = df.set_index(["knowledge_time", "valid_time"])
     return df
 
 

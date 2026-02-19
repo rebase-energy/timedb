@@ -105,7 +105,7 @@ class InsertRequest(BaseModel):
         labels: Labels for series resolution (e.g., {"site": "Gotland"})
         series_id: Direct series_id (alternative to name+labels)
         workflow_id: Workflow identifier (defaults to 'api-workflow')
-        known_time: Time of knowledge (defaults to now(), important for overlapping series)
+        knowledge_time: Time of knowledge (defaults to now(), important for overlapping series)
         batch_params: Custom parameters to store with the batch
         data: Array of data points to insert
     """
@@ -113,7 +113,7 @@ class InsertRequest(BaseModel):
     labels: Dict[str, str] = Field(default_factory=dict, description="Labels for series resolution")
     series_id: Optional[int] = Field(None, description="Direct series_id (alternative to name+labels)")
     workflow_id: str = Field(default="api-workflow", description="Workflow identifier")
-    known_time: Optional[datetime] = Field(None, description="Time of knowledge (defaults to now())")
+    knowledge_time: Optional[datetime] = Field(None, description="Time of knowledge (defaults to now())")
     batch_params: Optional[Dict[str, Any]] = Field(None, description="Custom batch parameters")
     data: List[DataPoint] = Field(default_factory=list, description="Data points to insert")
 
@@ -131,13 +131,13 @@ class RecordUpdateRequest(BaseModel):
     Supports both flat and overlapping series with different update semantics:
 
     **Flat series**: In-place update by (series_id, valid_time).
-    **Overlapping series**: Creates new version with known_time=now().
+    **Overlapping series**: Creates new version with knowledge_time=now().
 
     Identify the series by series_id OR by name(+labels).
 
     For overlapping series, three lookup methods (all optional):
     - batch_id + valid_time: latest version in that batch
-    - known_time + valid_time: exact version lookup
+    - knowledge_time + valid_time: exact version lookup
     - just valid_time: latest version overall
 
     For value, annotation, tags, and changed_by:
@@ -152,7 +152,7 @@ class RecordUpdateRequest(BaseModel):
     labels: Dict[str, str] = Field(default_factory=dict, description="Labels for series resolution")
     # Overlapping version lookup (all optional)
     batch_id: Optional[int] = Field(default=None, description="For overlapping: target specific batch")
-    known_time: Optional[datetime] = Field(default=None, description="For overlapping: target specific version")
+    knowledge_time: Optional[datetime] = Field(default=None, description="For overlapping: target specific version")
     # Tri-state update fields
     value: Optional[float] = Field(default=None, description="Omit to leave unchanged, null to clear")
     annotation: Optional[str] = Field(default=None, description="Omit to leave unchanged, null to clear")
@@ -249,7 +249,7 @@ async def insert_values(request_body: InsertRequest, request: Request):
 
     Routing is automatic:
     - Flat series: inserted directly (no batch created, batch_id=null in response)
-    - Overlapping series: a batch is created with known_time tracking
+    - Overlapping series: a batch is created with knowledge_time tracking
     """
     try:
         if request_body.series_id is None and request_body.name is None:
@@ -261,14 +261,14 @@ async def insert_values(request_body: InsertRequest, request: Request):
         if not request_body.data:
             raise HTTPException(status_code=400, detail="'data' must contain at least one data point.")
 
-        known_time = _ensure_tz(request_body.known_time)
+        knowledge_time = _ensure_tz(request_body.knowledge_time)
 
         # Build SeriesCollection via SDK
         td = _get_client(request)
         if request_body.series_id is not None:
-            collection = td.series(series_id=request_body.series_id)
+            collection = td.get_series(series_id=request_body.series_id)
         else:
-            collection = td.series(name=request_body.name)
+            collection = td.get_series(name=request_body.name)
             if request_body.labels:
                 collection = collection.where(**request_body.labels)
 
@@ -289,7 +289,7 @@ async def insert_values(request_body: InsertRequest, request: Request):
         # Insert via SDK
         result = collection.insert(
             df,
-            known_time=known_time,
+            knowledge_time=knowledge_time,
             workflow_id=request_body.workflow_id,
             batch_params=request_body.batch_params,
         )
@@ -315,8 +315,8 @@ async def read_values(
     series_id: Optional[int] = Query(None, description="Filter by series_id"),
     start_valid: Optional[datetime] = Query(None, description="Start of valid time range (ISO format)"),
     end_valid: Optional[datetime] = Query(None, description="End of valid time range (ISO format)"),
-    start_known: Optional[datetime] = Query(None, description="Start of known_time range (ISO format)"),
-    end_known: Optional[datetime] = Query(None, description="End of known_time range (ISO format)"),
+    start_known: Optional[datetime] = Query(None, description="Start of knowledge_time range (ISO format)"),
+    end_known: Optional[datetime] = Query(None, description="End of knowledge_time range (ISO format)"),
     versions: bool = Query(False, description="If true, return all overlapping revisions (for backtesting)"),
 ):
     """
@@ -326,7 +326,7 @@ async def read_values(
     Time range filtering via start_valid/end_valid and start_known/end_known.
 
     By default returns the latest value per (valid_time, series_id).
-    Set versions=true to return all forecast revisions with their known_time.
+    Set versions=true to return all forecast revisions with their knowledge_time.
     """
     try:
         label_filters = _parse_labels(labels)
@@ -337,7 +337,7 @@ async def read_values(
 
         # Build SeriesCollection via SDK
         td = _get_client(request)
-        collection = td.series(name=name, series_id=series_id)
+        collection = td.get_series(name=name, series_id=series_id)
         if label_filters:
             collection = collection.where(**label_filters)
 
@@ -383,7 +383,7 @@ async def update_records(request_body: UpdateRecordsRequest, request: Request):
     **Flat series**: In-place update by (series_id, valid_time).
     **Overlapping series**: Creates new version. Three lookup methods:
     - batch_id + valid_time: latest version in that batch
-    - known_time + valid_time: exact version lookup
+    - knowledge_time + valid_time: exact version lookup
     - just valid_time: latest version overall
 
     Tri-state updates:
@@ -400,9 +400,9 @@ async def update_records(request_body: UpdateRecordsRequest, request: Request):
         # Extract series identification from first update
         first_update = request_body.updates[0]
         if first_update.series_id is not None:
-            collection = td.series(series_id=first_update.series_id)
+            collection = td.get_series(series_id=first_update.series_id)
         elif first_update.name is not None:
-            collection = td.series(name=first_update.name)
+            collection = td.get_series(name=first_update.name)
             if first_update.labels:
                 collection = collection.where(**first_update.labels)
         else:
@@ -415,15 +415,15 @@ async def update_records(request_body: UpdateRecordsRequest, request: Request):
         sdk_updates: List[Dict[str, Any]] = []
         for req_update in request_body.updates:
             valid_time = _ensure_tz(req_update.valid_time)
-            known_time = _ensure_tz(req_update.known_time)
+            knowledge_time = _ensure_tz(req_update.knowledge_time)
             provided_fields = req_update.model_dump(exclude_unset=True)
 
             update_dict: Dict[str, Any] = {"valid_time": valid_time}
 
             if req_update.batch_id is not None:
                 update_dict["batch_id"] = req_update.batch_id
-            if known_time is not None:
-                update_dict["known_time"] = known_time
+            if knowledge_time is not None:
+                update_dict["knowledge_time"] = knowledge_time
 
             # Tri-state field handling
             if "value" in provided_fields:
@@ -500,7 +500,7 @@ async def list_series(
         label_filters = _parse_labels(labels)
 
         td = _get_client(request)
-        collection = td.series(name=name, unit=unit, series_id=series_id)
+        collection = td.get_series(name=name, unit=unit, series_id=series_id)
         if label_filters:
             collection = collection.where(**label_filters)
 
@@ -543,7 +543,7 @@ async def list_labels(
         label_filters = _parse_labels(labels)
 
         td = _get_client(request)
-        collection = td.series(name=name)
+        collection = td.get_series(name=name)
         if label_filters:
             collection = collection.where(**label_filters)
 
@@ -574,7 +574,7 @@ async def count_series(
         label_filters = _parse_labels(labels)
 
         td = _get_client(request)
-        collection = td.series(name=name, unit=unit)
+        collection = td.get_series(name=name, unit=unit)
         if label_filters:
             collection = collection.where(**label_filters)
 
