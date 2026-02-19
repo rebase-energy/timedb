@@ -96,9 +96,20 @@ Plus metadata: `tags`, `annotation`, `changed_by`, `change_time` for audit trail
 
 Contributions welcome! See [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
 
+## Contributors
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
 ## License
 
-MIT
+Apache-2.0 
 
 ## See Also
 
