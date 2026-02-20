@@ -10,7 +10,7 @@ timedb = ["sql/*.sql"]
 
 [project]
 name = "timedb"
-version = "0.1.1"
+version = "0.1.2"
 description = "timedb — opinionated schema & API for time series"
 readme = "README.md"
 requires-python = ">=3.9"
