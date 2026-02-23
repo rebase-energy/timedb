@@ -14,8 +14,7 @@ def _run(cmd):
 
 
 print("1/4  Installing timedb …")
-_run(f'"{sys.executable}" -m pip install -q git+https://github.com/rebase-energy/timedb.git')
-_run(f'"{sys.executable}" -m pip install -q pint pint-pandas')
+_run(f'"{sys.executable}" -m pip install -q timedb[pint]')
 
 print("2/4  Installing PostgreSQL + TimescaleDB …")
 _run(
