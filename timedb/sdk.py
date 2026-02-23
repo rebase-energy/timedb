@@ -18,7 +18,7 @@ import atexit
 import os
 from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, time
 from itertools import repeat
 import pandas as pd
 
@@ -402,6 +402,125 @@ class SeriesCollection:
             df["value"] = pa
 
         return df
+
+    def read_relative(
+        self,
+        window_length: Optional[timedelta] = None,
+        issue_offset: Optional[timedelta] = None,
+        start_window: Optional[datetime] = None,
+        start_valid: Optional[datetime] = None,
+        end_valid: Optional[datetime] = None,
+        *,
+        days_ahead: Optional[int] = None,
+        time_of_day: Optional[time] = None,
+    ) -> pd.DataFrame:
+        """
+        Read overlapping series using a per-window knowledge_time cutoff.
+
+        For each valid_time, determines which window it belongs to (aligned to
+        start_window with period window_length), then returns the latest forecast
+        with knowledge_time <= window_start + issue_offset.
+
+        Only valid for overlapping (versioned) series.
+
+        **Low-level mode** — full control over window shape and offset:
+
+        Args:
+            window_length: Length of each window (e.g., timedelta(hours=24))
+            issue_offset: Offset from window_start for the knowledge_time cutoff.
+                          Negative means before the window starts
+                          (e.g., timedelta(hours=-12) = 12h before window start).
+            start_window: Origin for window alignment. Defaults to start_valid.
+                          Required if start_valid is not provided.
+            start_valid: Start of valid time range (optional)
+            end_valid: End of valid time range (optional)
+
+        **Daily shorthand mode** — fixed 1-day windows, human-friendly cutoff:
+
+        Args:
+            days_ahead: Calendar days before the window the forecast must be issued.
+                        0 = same-day cutoff, 1 = day-ahead, 2 = two-days-ahead, etc.
+            time_of_day: Latest time of day on the issue day (datetime.time, UTC).
+                         E.g., time(6, 0) means "by 06:00 on the issue day".
+            start_valid: Start of valid time range. Also sets window alignment
+                         (midnight of this date). Required in daily mode.
+            end_valid: End of valid time range (optional)
+
+        Returns:
+            DataFrame with index (valid_time,) and column (value).
+
+        Raises:
+            ValueError: If collection matches no series, multiple series,
+                        series is not overlapping, or required parameters are missing/mixed.
+
+        Examples:
+            >>> from datetime import datetime, timedelta, time, timezone
+            >>> # Low-level: arbitrary window length
+            >>> df = td.get_series("wind_forecast").read_relative(
+            ...     window_length=timedelta(hours=24),
+            ...     issue_offset=timedelta(hours=-12),
+            ...     start_window=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            ... )
+            >>> # Daily shorthand: day-ahead, issued by 06:00
+            >>> df = td.get_series("wind_forecast").read_relative(
+            ...     days_ahead=1,
+            ...     time_of_day=time(6, 0),
+            ...     start_valid=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            ...     end_valid=datetime(2026, 2, 28, tzinfo=timezone.utc),
+            ... )
+        """
+        using_daily    = days_ahead is not None or time_of_day is not None
+        using_explicit = window_length is not None or issue_offset is not None
+
+        if using_daily and using_explicit:
+            raise ValueError(
+                "Cannot mix (days_ahead, time_of_day) with (window_length, issue_offset). Use one set."
+            )
+
+        if using_daily:
+            if days_ahead is None or time_of_day is None:
+                raise ValueError("Both days_ahead and time_of_day must be provided together.")
+            if start_valid is None:
+                raise ValueError("start_valid is required when using days_ahead/time_of_day.")
+            window_length = timedelta(days=1)
+            issue_offset = (
+                timedelta(
+                    hours=time_of_day.hour,
+                    minutes=time_of_day.minute,
+                    seconds=time_of_day.second,
+                    microseconds=time_of_day.microsecond,
+                )
+                - timedelta(days=days_ahead)
+            )
+            start_window = start_valid.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            if window_length is None or issue_offset is None:
+                raise ValueError("Both window_length and issue_offset are required.")
+            start_window = start_window if start_window is not None else start_valid
+            if start_window is None:
+                raise ValueError(
+                    "start_window is required when start_valid is not provided. "
+                    "Pass start_window to set the window alignment origin."
+                )
+
+        series_id = self._get_single_id()
+        meta = self._registry.get_cached(series_id)
+
+        if not meta["overlapping"]:
+            raise ValueError(
+                f"read_relative() is only supported for overlapping (versioned) series. "
+                f"Series '{meta['name']}' is a flat series. Use read() instead."
+            )
+
+        return _read_overlapping_relative(
+            series_id=series_id,
+            window_length=window_length,
+            issue_offset=issue_offset,
+            start_window=start_window,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            _pool=self._pool,
+        )
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
@@ -982,6 +1101,32 @@ def _read_overlapping_all(
             end_valid=end_valid,
             start_known=start_known,
             end_known=end_known,
+        )
+
+    return df
+
+
+def _read_overlapping_relative(
+    series_id: int,
+    window_length: timedelta,
+    issue_offset: timedelta,
+    start_window: datetime,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    _pool: Optional[ConnectionPool] = None,
+) -> pd.DataFrame:
+    """Read overlapping values with per-window knowledge_time cutoff."""
+    conninfo = _get_conninfo()
+
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_overlapping_relative(
+            conn,
+            series_id=series_id,
+            window_length=window_length,
+            issue_offset=issue_offset,
+            start_window=start_window,
+            start_valid=start_valid,
+            end_valid=end_valid,
         )
 
     return df

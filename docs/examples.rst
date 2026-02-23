@@ -29,8 +29,9 @@ Available Notebooks
    notebooks/nb_01_write_read_pandas
    notebooks/nb_02_units_validation
    notebooks/nb_03_forecast_revisions
-   notebooks/nb_04_timeseries_changes
-   notebooks/nb_05_api_usage
+   notebooks/nb_04_relative_forecasts
+   notebooks/nb_05_timeseries_changes
+   notebooks/nb_06_api_usage
 
 Notebook Descriptions
 ---------------------
@@ -43,6 +44,8 @@ Notebook Descriptions
 
 **nb_03_forecast_revisions**: Deep dive into overlapping series (versioned forecasts) with multiple revisions and historical tracking.
 
-**nb_04_timeseries_changes**: Demonstrates updating records in-place for flat series and tracking changes over time.
+**nb_04_relative_forecasts**: Per-window knowledge_time cutoffs using ``read_relative()`` — day-ahead and shifted forecast retrieval.
 
-**nb_05_api_usage**: Examples of using the REST API for reading and writing time series data.
+**nb_05_timeseries_changes**: Demonstrates updating records and tracking changes over time for flat and overlapping series.
+
+**nb_06_api_usage**: Examples of using the REST API for reading and writing time series data.

@@ -5,6 +5,7 @@ import psycopg
 from datetime import datetime, timezone
 
 from timedb.db import create, delete
+from timedb import TimeDataClient
 
 
 @pytest.fixture(scope="function")
@@ -32,6 +33,15 @@ def clean_db(test_db_conninfo):
     create.create_schema(test_db_conninfo)
 
     yield test_db_conninfo
+
+
+@pytest.fixture
+def td(clean_db):
+    """TimeDataClient with connection pool properly closed after each test."""
+    os.environ["TIMEDB_DSN"] = clean_db
+    client = TimeDataClient()
+    yield client
+    client.close()
 
 
 @pytest.fixture

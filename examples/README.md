@@ -12,8 +12,9 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 | Writing and Reading with Pandas | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_01_write_read_pandas.ipynb) |
 | Units Validation | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_02_units_validation.ipynb) |
 | Forecast Revisions | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_03_forecast_revisions.ipynb) |
-| Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_04_timeseries_changes.ipynb) |
-| REST API Usage | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_05_api_usage.ipynb) |
+| Relative Forecasts | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_04_relative_forecasts.ipynb) |
+| Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_05_timeseries_changes.ipynb) |
+| REST API Usage | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_06_api_usage.ipynb) |
 
 > **Note**: The Colab setup cell installs PostgreSQL 14 + TimescaleDB. Data persists only within the active Colab session.
 
@@ -58,27 +59,22 @@ Shows how timedb handles multiple forecast runs:
 - Understanding flat vs overlapping query modes
 - How timedb tracks "time of knowledge"
 
-### Notebook 4: Time Series Changes (`nb_04_timeseries_changes.ipynb`)
-Demonstrates human-in-the-loop corrections:
-- Updating existing values with annotations
-- Adding quality flags using tags
-- Tracking who made changes and when
+### Notebook 4: Relative Forecasts (`nb_04_relative_forecasts.ipynb`)
+Per-window knowledge_time cutoffs for day-ahead and shifted forecasts:
+- Using `read_relative()` with `window_length` and `issue_offset`
+- Daily shorthand mode (`days_ahead`, `time_of_day`)
+- Comparing globally-latest vs window-cutoff views
 
-### Notebook 5: Multiple Series (`nb_05_multiple_series.ipynb`)
-Working with multiple time series:
-- Managing multiple series in a single database
-- Querying and filtering by series
+### Notebook 5: Time Series Changes (`nb_05_timeseries_changes.ipynb`)
+Demonstrates updating records and tracking changes over time:
+- Updating existing values for flat and overlapping series
+- Versioning and audit trail for overlapping series
+- Three lookup methods: latest, all versions, relative
 
-### Notebook 6: Advanced Querying (`nb_06_advanced_querying.ipynb`)
-Advanced data retrieval patterns:
-- Complex filters and queries
-- Time range queries
-- Aggregations
-
-### Notebook 7: API Usage (`nb_07_api_usage.ipynb`)
+### Notebook 6: REST API Usage (`nb_06_api_usage.ipynb`)
 Using the REST API:
 - Starting the API server
-- Making HTTP requests
+- Making HTTP requests for reading and writing data
 
 ## Running Notebooks
 

@@ -1,12 +1,10 @@
 """Tests for pint unit support: insert conversion and read as_pint."""
-import os
 import pytest
 import pandas as pd
 import pint
 import pint_pandas
 from datetime import datetime, timezone, timedelta
 
-from timedb import TimeDataClient
 from timedb.sdk import IncompatibleUnitError, _resolve_pint_values
 
 
@@ -63,10 +61,8 @@ class TestResolvePintValues:
 # Integration tests (require DB)
 # =============================================================================
 
-def test_insert_pint_same_unit(clean_db, sample_datetime):
+def test_insert_pint_same_unit(td, sample_datetime):
     """Insert pint array with same unit as series — stored as plain float."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -80,10 +76,8 @@ def test_insert_pint_same_unit(clean_db, sample_datetime):
     assert df_read["value"].iloc[1] == pytest.approx(2.5)
 
 
-def test_insert_pint_converts_kw_to_mw(clean_db, sample_datetime):
+def test_insert_pint_converts_kw_to_mw(td, sample_datetime):
     """Insert kW into MW series — auto-converted."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -96,10 +90,8 @@ def test_insert_pint_converts_kw_to_mw(clean_db, sample_datetime):
     assert df_read["value"].iloc[0] == pytest.approx(0.5)
 
 
-def test_insert_pint_incompatible_raises(clean_db, sample_datetime):
+def test_insert_pint_incompatible_raises(td, sample_datetime):
     """Insert incompatible unit raises IncompatibleUnitError."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -111,10 +103,8 @@ def test_insert_pint_incompatible_raises(clean_db, sample_datetime):
         td.get_series("power").insert(df)
 
 
-def test_insert_plain_float_no_unit_check(clean_db, sample_datetime):
+def test_insert_plain_float_no_unit_check(td, sample_datetime):
     """Insert plain float64 — no unit check, backward compatible."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -127,10 +117,8 @@ def test_insert_plain_float_no_unit_check(clean_db, sample_datetime):
     assert df_read["value"].iloc[0] == pytest.approx(999.0)
 
 
-def test_read_as_pint(clean_db, sample_datetime):
+def test_read_as_pint(td, sample_datetime):
     """Read with as_pint=True returns pint dtype column."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -145,10 +133,8 @@ def test_read_as_pint(clean_db, sample_datetime):
     assert df_pint["value"].values.quantity.magnitude[0] == pytest.approx(1.5)
 
 
-def test_read_as_pint_false_default(clean_db, sample_datetime):
+def test_read_as_pint_false_default(td, sample_datetime):
     """Read without as_pint returns plain float64 (default)."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    td = TimeDataClient()
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({

@@ -1,8 +1,9 @@
 import os
+import warnings
 from contextlib import contextmanager
 import pandas as pd
 import psycopg
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Union
 
 
@@ -94,7 +95,6 @@ def read_flat(
     ORDER BY v.valid_time;
     """
 
-    import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
         with _ensure_conn(conninfo) as conn:
@@ -155,7 +155,91 @@ def read_overlapping_latest(
     ORDER BY v.valid_time, v.knowledge_time DESC;
     """
 
-    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(
+                sql,
+                conn,
+                params=params,
+                dtype={"value": "float64"},
+                parse_dates={"valid_time": {"utc": True}},
+            )
+
+    if len(df) == 0:
+        return df
+
+    df = df.set_index("valid_time")
+    return df
+
+
+def read_overlapping_relative(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_id: int,
+    window_length: timedelta,
+    issue_offset: timedelta,
+    start_window: datetime,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read overlapping values using a per-window knowledge_time cutoff.
+
+    For each valid_time, computes the window it belongs to (aligned to
+    start_window with period window_length), then returns the latest forecast
+    with knowledge_time <= window_start + issue_offset.
+
+    Args:
+        conninfo: Database connection or connection string
+        series_id: Series ID (required)
+        window_length: Length of each window (e.g., timedelta(hours=24))
+        issue_offset: Offset from window_start for the knowledge_time cutoff.
+                      Negative means before the window starts
+                      (e.g., timedelta(hours=-12) = 12h before window start).
+        start_window: Origin for window alignment (required).
+        start_valid: Start of valid time range (optional)
+        end_valid: End of valid time range (optional)
+
+    Returns:
+        DataFrame with index (valid_time) and columns (value)
+    """
+    where_clause, params = _build_where_clause(
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+    )
+    params.update({
+        "start_window": start_window,
+        "window_secs": window_length.total_seconds(),
+        "issue_offset_secs": issue_offset.total_seconds(),
+    })
+
+    sql = f"""
+    WITH windowed AS (
+        SELECT
+            v.valid_time,
+            v.value,
+            v.knowledge_time,
+            -- Cutoff: latest allowed knowledge_time for the window containing this valid_time
+            %(start_window)s
+            + make_interval(secs => floor(
+                extract(epoch from (v.valid_time - %(start_window)s))
+                / %(window_secs)s
+              ) * %(window_secs)s
+            )
+            + make_interval(secs => %(issue_offset_secs)s)
+            AS cutoff_time
+        FROM all_overlapping_raw v
+        {where_clause}
+    )
+    SELECT DISTINCT ON (valid_time)
+        valid_time, value
+    FROM windowed
+    WHERE knowledge_time <= cutoff_time
+    ORDER BY valid_time, knowledge_time DESC;
+    """
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
         with _ensure_conn(conninfo) as conn:
@@ -214,7 +298,6 @@ def read_overlapping_all(
     ORDER BY v.knowledge_time, v.valid_time;
     """
 
-    import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
         with _ensure_conn(conninfo) as conn:

@@ -340,6 +340,75 @@ Example: Analyzing forecast revisions:
        versions=True
    )
 
+Reading with Per-Window Cutoffs (Overlapping Only)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For backtesting or day-ahead simulation, ``read_relative()`` returns — for each time
+window — the latest forecast whose ``knowledge_time`` is at or before a per-window
+cutoff. This simulates "what forecast was actually available at decision time" rather
+than using the globally latest version.
+
+**Low-level mode** — full control over window length and offset:
+
+.. code-block:: python
+
+   from datetime import datetime, timedelta, timezone
+
+   df = td.get_series("wind_forecast").where(model="nwp").read_relative(
+       window_length=timedelta(hours=24),
+       issue_offset=timedelta(hours=-12),  # 12h before each window start
+       start_window=datetime(2026, 2, 1, tzinfo=timezone.utc),
+   )
+
+Parameters:
+
+- **window_length** (timedelta): Length of each window (e.g., ``timedelta(hours=24)``)
+- **issue_offset** (timedelta): Offset from window start for the ``knowledge_time`` cutoff.
+  Negative = before the window (e.g., ``timedelta(hours=-12)`` = 12h before the window starts).
+- **start_window** (datetime): Window alignment origin. Defaults to ``start_valid`` if not provided.
+- **start_valid** (datetime, optional): Start of valid time range
+- **end_valid** (datetime, optional): End of valid time range
+
+**Daily shorthand mode** — fixed 1-day windows with a human-friendly cutoff
+(mirrors `Energy Quantified's instances.relative() <https://energyquantified-python.readthedocs.io/en/latest/reference/reference.html#energyquantified.api.InstancesAPI.relative>`_):
+
+.. code-block:: python
+
+   from datetime import datetime, time, timezone
+
+   # Day-ahead: latest forecast issued by 06:00 on the day before each calendar day
+   df = td.get_series("wind_forecast").where(model="nwp").read_relative(
+       days_ahead=1,
+       time_of_day=time(6, 0),
+       start_valid=datetime(2026, 2, 1, tzinfo=timezone.utc),
+       end_valid=datetime(2026, 2, 28, tzinfo=timezone.utc),
+   )
+
+Parameters:
+
+- **days_ahead** (int): Calendar days before the window the forecast must be issued.
+  ``0`` = same-day cutoff, ``1`` = day-ahead, ``2`` = two-days-ahead, etc.
+- **time_of_day** (datetime.time): Latest time of day on the issue day (UTC).
+  E.g., ``time(6, 0)`` means "by 06:00 on the issue day".
+- **start_valid** (datetime): Start of valid time range. Also sets window alignment
+  (midnight of this date). Required in daily mode.
+- **end_valid** (datetime, optional): End of valid time range.
+
+The two parameter sets are mutually exclusive — mixing them raises ``ValueError``.
+
+**How the daily shorthand maps internally:**
+
+.. code-block:: python
+
+   window_length = timedelta(days=1)
+   issue_offset  = timedelta(hours=time_of_day.hour, minutes=time_of_day.minute) - timedelta(days=days_ahead)
+   start_window  = start_valid.replace(hour=0, minute=0, second=0, microsecond=0)
+
+Example with ``days_ahead=1, time_of_day=time(6, 0)``:
+Window Jan 2 00:00 + (6h − 24h) = **Jan 1 06:00** — only forecasts issued by then qualify.
+
+The returned DataFrame has index ``valid_time`` and column ``value``, identical to ``read()``.
+
 Getting Series Metadata
 ~~~~~~~~~~~~~~~~~~~~~~~
 
