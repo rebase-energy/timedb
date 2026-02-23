@@ -1,118 +1,121 @@
-# TimeDB
+<div align="center">
+  <h1>⏱️ TimeDB</h1>
+  <p><b>An open-source, opinionated time-series database built on PostgreSQL & TimescaleDB.</b></p>
 
-**TimeDB** is an **open source, opinionated time series database** built on **PostgreSQL** and **TimescaleDB** designed to natively handle **overlapping forecast revisions**, **auditable human-in-the-loop updates**, and **"time-of-knowledge" history** through a three-dimensional temporal data model. TimeDB provides a seamless workflow through its **Python SDK** and **FastAPI** backend.
+  <a href="https://pypi.org/project/timedb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/timedb?color=blue&style=flat-square"></a>
+  <a href="https://pypi.org/project/timedb/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/timedb?style=flat-square"></a>
+  <a href="https://github.com/rebase-energy/timedb/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-green.svg?style=flat-square"></a>
 
-## Features
+  <br/><br/>
+  <img src="example.gif" alt="TimeDB demo" width="700"/>
+</div>
 
-- **Time-of-Knowledge History**: Track not just when data is valid, but when it became known
-- **Forecast Revisions**: Store overlapping forecasts with full provenance
-- **Auditable Updates**: Every change records who, what, when, and why
-- **Backtesting Ready**: Query historical data as of any point in time
-- **Label-Based Organization**: Filter series by meaningful dimensions
+<br/>
 
+**TimeDB** is designed to natively handle **overlapping forecast revisions**, **auditable human-in-the-loop updates**, and **"time-of-knowledge" history**. Using a three-dimensional temporal data model, it provides a seamless workflow through its Python SDK and FastAPI backend.
 
-## Why timedb?
+Traditional time-series databases assume one immutable value per timestamp. TimeDB is built for complex, real-world domains where forecasts evolve, data gets corrected, and historical backtesting requires strict audits.
 
-Traditional time series databases assume one immutable value per timestamp. **TimeDB** is built for domains where:
+---
 
-- 📊 **Forecasts evolve**: Multiple predictions for the same timestamp from different times
-- 🔄 **Data gets corrected**: Manual adjustments need audit trails, not overwrites
-- ⏪ **Backtesting requires history**: "What did we know on Monday?" vs "what do we know now?"
-- ✏️ **Humans review data**: Track who changed what, when, and why
+## 🧊 The 3D Temporal Data Model
 
+At the heart of TimeDB is its three-dimensional approach to time. We track not just *when* data is valid, but *when it became known* and *when it was altered*.
 
-## Quick Start
+| Dimension | Description | Real-World Example |
+| :--- | :--- | :--- |
+| 📅 **`valid_time`** | The time the value represents a fact for. | *"Wind speed forecast for Wednesday 12:00"* |
+| 🧠 **`knowledge_time`** | The time when the value was predicted/known. | *"Generated on Monday 18:00"* |
+| ✏️ **`change_time`** | The time when the value was written or changed. | *"Manually overridden on Tuesday 09:00"* |
+
+> **Audit & Metadata:** Every data point also supports `tags`, `annotations`, and `changed_by` to maintain a perfect audit trail of who changed what, when, and why.
+
+---
+
+## ✨ Why Choose TimeDB?
+
+- 📊 **Forecast Revisions:** Store overlapping forecasts with full provenance.
+- 🔄 **Auditable Updates:** Manual adjustments generate audit trails, not silent overwrites.
+- ⏪ **True Backtesting:** Query historical data as of any point in time (*"What did our model know last Monday?"*).
+- 🏷️ **Label-Based Organization:** Easily filter and slice series by meaningful dimensions.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Installation
 
 ```bash
 pip install timedb
 ```
+
+Requires Python 3.9+ and PostgreSQL 12+ with TimescaleDB.
+
+### 2. Usage Example
 
 ```python
 import timedb as td
 import pandas as pd
 from datetime import datetime, timezone
 
+# Create Schema
 td.create()
 
-# Create a forecast series
-td.create_series(name="wind_power", unit="MW",
-                 labels={"site": "offshore_1"}, overlapping=True)
+# 1. Create a forecast series
+td.create_series(
+    name="wind_power", 
+    unit="MW",
+    labels={"site": "offshore_1"}, 
+    overlapping=True
+)
 
-# Insert forecast with knowledge_time
+# 2. Insert forecast with knowledge_time
 knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
 df = pd.DataFrame({
     'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
     'value': [100 + i*2 for i in range(24)]
 })
-td.get_series("wind_power").where(site="offshore_1").insert(df=df, knowledge_time=knowledge_time)
 
-# Read latest forecast
+td.get_series("wind_power")
+   .where(site="offshore_1")
+   .insert(df=df, knowledge_time=knowledge_time)
+
+# 3. Read latest forecast
 df_latest = td.get_series("wind_power").where(site="offshore_1").read()
 
-# Read all forecast revisions
+# 4. Read all historical forecast revisions
 df_all = td.get_series("wind_power").where(site="offshore_1").read(versions=True)
 ```
 
-> For custom connection settings (host, pool size, etc.), use `TimeDataClient` directly:
-> `from timedb import TimeDataClient; td = TimeDataClient(conninfo="postgresql://...")`
+---
 
-## Try in Google Colab
+## 🧪 Try it in Google Colab
 
-Try the quickstart in Colab — no local setup required. The first cell installs PostgreSQL + TimescaleDB automatically inside the Colab VM (~2 min).
+Want to test TimeDB without setting up PostgreSQL locally? Try our Quickstart in Colab. The first cell automatically installs PostgreSQL + TimescaleDB inside the VM (~2 min).
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb)
 
-Additional notebooks and Google Colab links are available in the [examples directory](examples/).
+> **Note:** Data persists only within the active Colab session. Additional notebooks are available in the `examples/` directory.
 
-> **Note**: The Colab setup cell installs PostgreSQL 14 + TimescaleDB. Data persists only within the active Colab session.
+---
 
-## Documentation
+## 📚 Documentation & Resources
 
-- [Installation Guide](docs/installation.rst)
-- [SDK Documentation](docs/sdk.rst)
-- [REST API Reference](docs/api_reference.rst)
-- [Examples & Notebooks](examples/)
-- [Development Guide](DEVELOPMENT.md)
+- [📖 Official Documentation](https://timedb.readthedocs.io)
+- [⚙️ Installation Guide](https://timedb.readthedocs.io/en/latest/installation.html)
+- [🐍 Python SDK Documentation](https://timedb.readthedocs.io/en/latest/sdk.html)
+- [🌐 REST API Reference](https://timedb.readthedocs.io/en/latest/api_reference.html)
+- [💡 Examples & Notebooks](examples/)
 
-## Data Model
+---
 
-Three time dimensions:
+## 🤝 Contributing
 
-| Dimension | Description | Example |
-|-----------|-------------|---------|
-| **valid_time** | The time the value represents a fact for | "Wind speed forecast for Wednesday 12:00" |
-| **knowledge_time** | The time when the value was known | "Wind speed forecast for Wednesday 12:00 was generated on Monday 18:00" |
-| **change_time** | The time when the value was changed | "Wind speed forecast for Wednesday 12:00 was manually changed on Tuesday 9:00" |
+Contributions are welcome! If you're interested in improving TimeDB, please see our [Development Guide](DEVELOPMENT.md) for local setup instructions.
 
-Plus metadata: `tags`, `annotation`, `changed_by`, `change_time` for audit trails.
+---
 
-## Requirements
-
-- Python 3.9+
-- PostgreSQL 12+ with TimescaleDB
-- (Optional) Jupyter for notebooks
-
-## Contributing
-
-Contributions welcome! See [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
-
-## Contributors
-
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
-
-<!-- ALL-CONTRIBUTORS-LIST:END -->
-
-## License
-
-Apache-2.0 
-
-## See Also
-
-- [Official Documentation](https://timedb.readthedocs.io/)
-- [Examples Repository](examples/)
-- [Issue Tracker](https://github.com/rebase-energy/timedb/issues)
+<div align="center">
+<p>Licensed under the <a href="LICENSE">Apache-2.0 License</a>.</p>
+<p>Find a bug or have a feature request? <a href="https://github.com/rebase-energy/timedb/issues">Open an Issue</a>.</p>
+</div>
