@@ -22,9 +22,9 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 
 | Dimension | Description | Real-World Example |
 | :---- | :--- | :--- |
-| 📅 **`valid_time`** | The time the value represents a fact for. | *"Wind speed forecast for Wednesday 12:00"* |
-| ⏰ **`knowledge_time`** | The time when the value was predicted/known. | *"Generated on Monday 18:00"* |
-| ✏️ **`change_time`** | The time when the value was written or changed. | *"Manually overridden on Tuesday 09:00"* |
+| 📅&nbsp;**`valid_time`** | The time the value represents a fact for. | *"Wind speed forecast for Wednesday 12:00"* |
+| ⏰&nbsp;**`knowledge_time`** | The time when the value was predicted/known. | *"Generated on Monday 18:00"* |
+| ✏️&nbsp;**`change_time`** | The time when the value was written or changed. | *"Manually overridden on Tuesday 09:00"* |
 
 > **Audit & Metadata:** Every data point also supports `tags`, `annotations`, and `changed_by` to maintain a perfect audit trail of who changed what, when, and why.
 
