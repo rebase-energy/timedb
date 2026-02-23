@@ -40,6 +40,7 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 <div align="center">
   <p></p>  <img src="example.gif" alt="TimeDB demo" width="700"/>
 </div>
+
 ---
 
 ## 🚀 Quick Start
