@@ -5,6 +5,7 @@
   <a href="https://pypi.org/project/timedb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/timedb?color=blue&style=flat-square"></a>
   <a href="https://pypi.org/project/timedb/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/timedb?style=flat-square"></a>
   <a href="https://github.com/rebase-energy/timedb/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-green.svg?style=flat-square"></a>
+  <a href="https://join.slack.com/t/rebase-community/shared_invite/zt-3qmkmj4k7-0G~fLSDXPvGUvhBx8FremQ"><img alt="Slack" src="https://img.shields.io/badge/Slack-Join%20Community-4A154B?logo=slack&style=flat-square"></a>
 
 <p></p>  <img src="example.gif" alt="TimeDB demo" width="700"/>
 </div>
