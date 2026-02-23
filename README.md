@@ -6,8 +6,6 @@
   <a href="https://pypi.org/project/timedb/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/timedb?style=flat-square"></a>
   <a href="https://github.com/rebase-energy/timedb/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-green.svg?style=flat-square"></a>
   <a href="https://www.rebase.energy/join-slack"><img alt="Slack" src="https://img.shields.io/badge/Slack-Join%20Community-4A154B?logo=slack&style=flat-square"></a>
-
-<p></p>  <img src="example.gif" alt="TimeDB demo" width="700"/>
 </div>
 
 <br/>
@@ -23,9 +21,9 @@ Traditional time-series databases assume one immutable value per timestamp. Time
 At the heart of TimeDB is its three-dimensional approach to time. We track not just *when* data is valid, but *when it became known* and *when it was altered*.
 
 | Dimension | Description | Real-World Example |
-| :--- | :--- | :--- |
+| :---- | :--- | :--- |
 | 📅 **`valid_time`** | The time the value represents a fact for. | *"Wind speed forecast for Wednesday 12:00"* |
-| 🧠 **`knowledge_time`** | The time when the value was predicted/known. | *"Generated on Monday 18:00"* |
+| ⏰ **`knowledge_time`** | The time when the value was predicted/known. | *"Generated on Monday 18:00"* |
 | ✏️ **`change_time`** | The time when the value was written or changed. | *"Manually overridden on Tuesday 09:00"* |
 
 > **Audit & Metadata:** Every data point also supports `tags`, `annotations`, and `changed_by` to maintain a perfect audit trail of who changed what, when, and why.
@@ -39,6 +37,9 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 - ⏪ **True Backtesting:** Query historical data as of any point in time (*"What did our model know last Monday?"*).
 - 🏷️ **Label-Based Organization:** Easily filter and slice series by meaningful dimensions.
 
+<div align="center">
+  <p></p>  <img src="example.gif" alt="TimeDB demo" width="700"/>
+</div>
 ---
 
 ## 🚀 Quick Start
