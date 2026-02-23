@@ -6,8 +6,7 @@
   <a href="https://pypi.org/project/timedb/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/timedb?style=flat-square"></a>
   <a href="https://github.com/rebase-energy/timedb/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-green.svg?style=flat-square"></a>
 
-  <br/><br/>
-  <img src="example.gif" alt="TimeDB demo" width="700"/>
+<p></p>  <img src="example.gif" alt="TimeDB demo" width="700"/>
 </div>
 
 <br/>
