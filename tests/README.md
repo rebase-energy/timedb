@@ -8,9 +8,17 @@ This directory contains the test suite for timedb.
 
 1. **Test Database**: You need a PostgreSQL database for testing. Set one of these environment variables:
    ```bash
-   export TEST_TIMEDB_DSN="postgresql://user:password@host:port/test_database"
+   # Bash/Zsh
+   export TEST_TIMEDB_DSN='postgresql://user:password@host:port/test_database'
    # OR
-   export TEST_DATABASE_URL="postgresql://user:password@host:port/test_database"
+   export TEST_DATABASE_URL='postgresql://user:password@host:port/test_database'
+   ```
+
+   ```fish
+   # Fish
+   set -x TEST_TIMEDB_DSN postgresql://user:password@host:port/test_database
+   # OR
+   set -x TEST_DATABASE_URL postgresql://user:password@host:port/test_database
    ```
 
 2. **Install Test Dependencies**:

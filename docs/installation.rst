@@ -111,10 +111,18 @@ Example connection strings:
 .. code-block:: bash
 
    # Using TIMEDB_DSN (for local Docker setup)
-   export TIMEDB_DSN="postgresql://postgres:devpassword@localhost:5433/devdb"
+   export TIMEDB_DSN='postgresql://postgres:devpassword@localhost:5433/devdb'
 
    # Or using DATABASE_URL
-   export DATABASE_URL="postgresql://postgres:devpassword@localhost:5433/devdb"
+   export DATABASE_URL='postgresql://postgres:devpassword@localhost:5433/devdb'
+
+.. code-block:: fish
+
+   # Using TIMEDB_DSN (for local Docker setup)
+   set -x TIMEDB_DSN postgresql://postgres:devpassword@localhost:5433/devdb
+
+   # Or using DATABASE_URL
+   set -x DATABASE_URL postgresql://postgres:devpassword@localhost:5433/devdb
 
 You can also use a ``.env`` file in your project root:
 

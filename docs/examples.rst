@@ -11,7 +11,13 @@ Before running the examples locally, ensure you have:
 
    .. code-block:: bash
 
-      export TIMEDB_DSN="postgresql://user:password@host:port/database"
+      # Bash/Zsh
+      export TIMEDB_DSN='postgresql://user:password@host:port/database'
+
+   .. code-block:: fish
+
+      # Fish
+      set -x TIMEDB_DSN postgresql://user:password@host:port/database
 
 3. **Jupyter**: Install Jupyter to run the notebooks interactively:
 

@@ -21,9 +21,17 @@ This installs timedb in editable mode along with pytest and pytest-cov.
 Set one of these environment variables with your test database connection string:
 
 ```bash
-export TEST_TIMEDB_DSN="postgresql://user:password@host:port/test_database"
+# Bash/Zsh
+export TEST_TIMEDB_DSN='postgresql://user:password@host:port/test_database'
 # OR
-export TEST_DATABASE_URL="postgresql://user:password@host:port/test_database"
+export TEST_DATABASE_URL='postgresql://user:password@host:port/test_database'
+```
+
+```fish
+# Fish
+set -x TEST_TIMEDB_DSN postgresql://user:password@host:port/test_database
+# OR
+set -x TEST_DATABASE_URL postgresql://user:password@host:port/test_database
 ```
 
 **Important**: Use a separate test database, not your development database. Tests will create and drop schema objects.

@@ -38,7 +38,14 @@ Or:
 
 .. code-block:: bash
 
-   export TIMEDB_DSN="postgresql://user:password@localhost:5432/timedb"
+   # Bash/Zsh
+   export TIMEDB_DSN='postgresql://user:password@localhost:5432/timedb'
+   timedb create tables
+
+.. code-block:: fish
+
+   # Fish
+   set -x TIMEDB_DSN postgresql://user:password@localhost:5432/timedb
    timedb create tables
 
 Creating Tables
