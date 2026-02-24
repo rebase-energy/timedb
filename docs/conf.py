@@ -34,8 +34,8 @@ for nb_file in glob.glob(os.path.join(_examples_src, '*.ipynb')):
 project = 'timedb'
 copyright = '2024, timedb contributors'
 author = 'timedb contributors'
-release = '0.1.1'
-version = '0.1.1'
+release = '0.1.4'
+version = '0.1.4'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
