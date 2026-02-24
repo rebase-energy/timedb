@@ -11,7 +11,27 @@ cd timedb
 
 ## 2) Installation
 
-Set up your preferred Python virtual environment, then install the package in editable mode with development dependencies.
+Set up your preferred Python virtual environment first, then install the package in editable mode with development dependencies.
+
+Create a virtual environment (choose one):
+
+```bash
+uv venv
+```
+
+```bash
+python -m venv .venv
+```
+
+Activate it:
+
+```bash
+# Bash/Zsh
+source .venv/bin/activate
+
+# Fish
+source .venv/bin/activate.fish
+```
 
 Using standard `pip`:
 
@@ -24,6 +44,8 @@ Using `uv` (optional, faster dependency management):
 ```bash
 uv pip install -e ".[notebooks,docs,test]"
 ```
+
+If you skip virtual environment activation, `uv` will fail with `No virtual environment found`.
 
 To run scripts inside your environment:
 
@@ -42,13 +64,19 @@ cd timescaledb-test/
 docker compose up -d
 ```
 
+Verify the container is running:
+
+```bash
+docker ps
+```
+
 This starts a local TimescaleDB Community Edition instance on port `5433`.
 
 ## 4) Configuration
 
 The application requires a `TIMEDB_DSN` environment variable to connect to the database.
 
-Fastest option (recommended): copy the example environment file in the project root.
+Fastest option (recommended): from the repository root (base directory), copy the example environment file.
 
 ```bash
 cp .env.example .env
@@ -66,7 +94,11 @@ Alternatively, export the variable directly in your shell:
 - Bash/Zsh: `export TIMEDB_DSN='...'`
 - Fish: `set -x TIMEDB_DSN '...'`
 
-## 5) Database Management & Tools
+## 5) Next Steps
+
+Now you can try the examples in `examples/`, or build your own script using the SDK/API.
+
+## 6) Database Management & Tools
 
 ### Helper scripts (Bash and Fish)
 
@@ -83,7 +115,7 @@ Connect directly with `psql`:
 psql postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 ```
 
-## 6) Building Documentation
+## 7) Building Documentation
 
 Generate HTML documentation with Sphinx:
 
