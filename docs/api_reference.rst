@@ -21,7 +21,7 @@ entry point for most use cases (``import timedb as td``):
 .. autofunction:: timedb.create
 .. autofunction:: timedb.delete
 .. autofunction:: timedb.create_series
-.. autofunction:: timedb.series
+.. autofunction:: timedb.get_series
 
 Main Client
 ~~~~~~~~~~~

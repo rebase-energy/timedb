@@ -424,6 +424,15 @@ List unique label values and count series in a collection:
    # List all unique values for a label
    turbines = collection.list_labels("turbine")  # Returns: ["T01", "T02", "T03"]
 
+   # List all matching series with full metadata
+   series_list = collection.list_series()
+   # Returns: [
+   #   {'series_id': 1, 'name': 'wind_power', 'unit': 'MW',
+   #    'labels': {'site': 'Gotland', 'turbine': 'T01'},
+   #    'description': None, 'overlapping': True, 'retention': 'medium'},
+   #   ...
+   # ]
+
    # Filter progressively
    t01_collection = collection.where(turbine="T01")
 
@@ -445,20 +454,8 @@ Update records for both flat and overlapping series. Flat series are updated in-
 
    result = td.get_series("wind_forecast").where(site="offshore_1").update_records(updates)
 
-For collections matching a single series, ``series_id`` is optional. For multiple series, include it:
-
-.. code-block:: python
-
-   # For multi-series collection
-   updates = [
-       {
-           "series_id": 123,
-           "valid_time": datetime(...),
-           "value": 150.0,
-       }
-   ]
-
-   result = td.get_series("wind_power").where(site="Gotland").update_records(updates)
+``update_records()`` is single-series only — the same constraint as ``read()`` and ``insert()``.
+The collection must resolve to exactly one series; use ``.where()`` filters to narrow it down if needed.
 
 The function returns a list of updated records:
 
@@ -631,3 +628,9 @@ A complete workflow from setup to analysis:
    # 6. Read all forecast revisions for analysis
    df_versions = td.get_series("wind_power").where(site="Gotland").read(versions=True)
    print(f"Total revisions: {df_versions.index.get_level_values(0).nunique()}")
+
+
+.. toctree::
+    :hidden:
+
+    api_reference
