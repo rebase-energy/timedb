@@ -11,7 +11,7 @@ timedb = ["sql/*.sql"]
 [project]
 name = "timedb"
 version = "0.1.4"
-description = "timedb — opinionated schema & API for time series"
+description = "An open-source, opinionated time-series database built on PostgreSQL & TimescaleDB."
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
