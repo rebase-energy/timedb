@@ -24,9 +24,17 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 
 2. **Environment Variables**: Set one of these environment variables with your database connection string:
    ```bash
-   export TIMEDB_DSN="postgresql://user:password@host:port/database"
+   # Bash/Zsh
+   export TIMEDB_DSN='postgresql://user:password@host:port/database'
    # OR
-   export DATABASE_URL="postgresql://user:password@host:port/database"
+   export DATABASE_URL='postgresql://user:password@host:port/database'
+   ```
+
+   ```fish
+   # Fish
+   set -x TIMEDB_DSN postgresql://user:password@host:port/database
+   # OR
+   set -x DATABASE_URL postgresql://user:password@host:port/database
    ```
 
 3. **Install Dependencies**: Make sure you have timedb installed:
@@ -85,15 +93,6 @@ jupyter notebook examples/nb_01_write_read_pandas.ipynb
 # OR
 jupyter lab examples/nb_01_write_read_pandas.ipynb
 ```
-
-## Workflow Examples
-
-The `workflows/` subdirectory contains real-world workflow examples:
-
-- `workflow_fingrid_wind_forecast.py` - Fetching and storing Fingrid wind forecast data
-- `workflow_nordpool_id.py` - Fetching and storing Nord Pool intraday market data
-
-These workflows demonstrate how to use timedb with external data sources and scheduled jobs using Modal.
 
 ## Notes
 
