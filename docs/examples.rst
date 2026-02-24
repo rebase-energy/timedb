@@ -29,7 +29,7 @@ Available Notebooks
 -------------------
 
 .. toctree::
-   :maxdepth: 1
+   :hidden:
 
    notebooks/quickstart
    notebooks/nb_01_write_read_pandas
@@ -38,6 +38,14 @@ Available Notebooks
    notebooks/nb_04_relative_forecasts
    notebooks/nb_05_timeseries_changes
    notebooks/nb_06_api_usage
+
+- :doc:`Quickstart <notebooks/quickstart>`
+- :doc:`Writing and Reading with Pandas <notebooks/nb_01_write_read_pandas>`
+- :doc:`Units Validation <notebooks/nb_02_units_validation>`
+- :doc:`Forecast Revisions <notebooks/nb_03_forecast_revisions>`
+- :doc:`Relative Forecasts <notebooks/nb_04_relative_forecasts>`
+- :doc:`Time Series Changes <notebooks/nb_05_timeseries_changes>`
+- :doc:`REST API Usage <notebooks/nb_06_api_usage>`
 
 Notebook Descriptions
 ---------------------
