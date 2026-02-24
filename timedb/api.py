@@ -208,7 +208,7 @@ class SeriesInfo(BaseModel):
 app = FastAPI(
     title="TimeDB API",
     description="REST API for time series database operations",
-    version="0.2.0",
+    version="0.1.4",
     lifespan=lifespan,
 )
 
@@ -222,7 +222,7 @@ async def root():
     """Root endpoint with API information."""
     data = {
         "name": "TimeDB API",
-        "version": "0.2.0",
+        "version": "0.1.4",
         "description": "REST API for reading and writing time series data",
         "endpoints": {
             "insert_values": "POST /values - Insert time series data",

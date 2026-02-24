@@ -91,8 +91,15 @@ TIMEDB_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 
 Alternatively, export the variable directly in your shell:
 
-- Bash/Zsh: `export TIMEDB_DSN='...'`
-- Fish: `set -x TIMEDB_DSN '...'`
+```bash
+# Bash/Zsh
+export TIMEDB_DSN='postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
+```
+
+```fish
+# Fish
+set -x TIMEDB_DSN postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+```
 
 ## 5) Next Steps
 

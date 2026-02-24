@@ -1,4 +1,4 @@
-# Testing Guide for timedb
+# Testing Guide for TimeDB
 
 This document provides information about testing timedb.
 
@@ -123,27 +123,24 @@ def test_feature_name(clean_db, sample_batch_id, sample_workflow_id, sample_date
 ### Example Test
 
 ```python
-def test_insert_point_in_time_value(clean_db, sample_batch_id, sample_workflow_id, sample_datetime):
-    """Test inserting a point-in-time value."""
-    from timedb.db import insert
-    
+def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
+    """Test inserting point-in-time values into the flat table."""
+    import psycopg
+    import pandas as pd
+
+    td.create_series(name="power", unit="dimensionless", overlapping=False)
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime],
+        "value": [100.5],
+    })
+
+    result = td.get_series("power").insert(df=df)
+    assert result.batch_id is None
+
     with psycopg.connect(clean_db) as conn:
-        insert.insert_batch(
-            conn,
-            batch_id=sample_batch_id,
-            workflow_id=sample_workflow_id,
-            run_start_time=sample_datetime,
-        )
-        
-        value_rows = [(sample_datetime, "mean", 100.5)]
-        insert.insert_values(conn, batch_id=sample_batch_id, value_rows=value_rows)
-        
-        # Verify insertion
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM values_table WHERE batch_id = %s",
-                (sample_batch_id,)
-            )
+            cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 1
 ```
 
