@@ -239,33 +239,31 @@ class SeriesCollection:
     def update_records(self, updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Update records for this collection.
-        
+
         **Single-series only.** Collection must resolve to exactly one series.
-        
+
         Supports both flat and overlapping series:
         - **Flat**: In-place update (no versioning) by (series_id, valid_time)
-        - **Overlapping**: Creates new version with knowledge_time=now(). Three lookup methods:
-          1. knowledge_time + valid_time: Exact version lookup
-          2. batch_id + valid_time: Latest version in that batch
-          3. Just valid_time: Latest version overall
-        
+        - **Overlapping**: Creates a new version with knowledge_time=now().
+          Lookup priority:
+          - knowledge_time + valid_time: Exact version lookup
+          - batch_id + valid_time: Latest version in that batch
+          - valid_time only: Latest version overall
+
         Args:
-            updates: List of update dicts. Each must include:
-                - valid_time (datetime): Required
-                - value (float, optional): New value (omit to keep current)
-                - annotation (str, optional): Text annotation (None to clear)
-                - tags (list[str], optional): Tags ([] to clear)
-                - changed_by (str, optional): User identifier
-                For overlapping only:
-                - batch_id (int, optional): Target specific batch
-                - knowledge_time (datetime, optional): Target specific version
-        
+            updates: List of update dicts. Each item must include ``valid_time``.
+                Optional fields are ``value`` (new value), ``annotation``
+                (text annotation; set to ``None`` to clear), ``tags``
+                (set to ``[]`` to clear), ``changed_by`` (user identifier),
+                ``batch_id`` (target specific batch, overlapping only), and
+                ``knowledge_time`` (target specific version, overlapping only).
+
         Returns:
             List of dicts with update info for each updated record
-        
+
         Raises:
             ValueError: If collection matches multiple series or no series
-        
+
         Example:
             >>> td.get_series("temperature").where(site="A").update_records([
             ...     {"valid_time": dt, "value": 25.0, "annotation": "Corrected"}
@@ -610,7 +608,7 @@ class TimeDataClient:
         >>> # Insert and read data using fluent API
         >>> df = pd.DataFrame({
         ...     'valid_time': [datetime.now(timezone.utc)],
-        ...     'wind_power': [100.0]
+        ...     'value': [100.0]
         ... })
         >>> td.get_series('wind_power').where(site='offshore_1').insert(df)
         >>> result = td.get_series('wind_power').where(site='offshore_1').read()
@@ -760,10 +758,11 @@ class TimeDataClient:
                 - 'long': 5 years (historical archival)
 
         Returns:
-            int: The unique series_id for this series, used in read/write operations
+            int: The series_id for this series. If a series with the same name+labels
+                already exists, the existing series_id is returned (get-or-create semantics).
 
         Raises:
-            ValueError: If series with same name+labels already exists
+            ValueError: If the timedb schema has not been created yet (run td.create() first)
 
         Example:
             >>> client = TimeDataClient()

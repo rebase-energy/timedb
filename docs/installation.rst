@@ -167,3 +167,9 @@ Once installed, you can:
 3. Use the :doc:`SDK <sdk>` to interact with your database from Python
 4. :doc:`Set up the API server <api_setup>` to serve data via REST API
 
+
+.. toctree::
+   :hidden:
+
+   sdk
+

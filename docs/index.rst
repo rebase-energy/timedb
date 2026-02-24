@@ -1,18 +1,22 @@
 .. timedb documentation master file
 
-Welcome to timedb's documentation!
-===================================
+Welcome to TimeDB
+=================
 
-**timedb** is an opinionated schema and API built on top of PostgreSQL designed to handle overlapping time series revisions and auditable human-in-the-loop updates.
+**TimeDB** is an open-source, opinionated time-series database built on top of PostgreSQL and TimescaleDB. 
 
-Most time series systems assume a single immutable value per timestamp. **timedb** is built for domains where data is revised, forecasted, reviewed, and corrected over time.
+It is designed to natively handle **overlapping forecast revisions**, **auditable human-in-the-loop updates**, and **"time-of-knowledge" history**. Using a three-dimensional temporal data model, it provides a seamless workflow through its Python SDK and FastAPI backend.
 
-**timedb** lets you:
 
-- ⏱️ Retain "time-of-knowledge" history through a three-dimensional time series data model
-- ✍️ Make versioned ad-hoc updates to the time series data with annotations and tags
-- 🔀 Represent both timestamp and time-interval time series simultaneously
-- 🏷️ Organize data with labels for flexible filtering and discovery
+Why TimeDB?
+-----------
+
+Most time-series systems assume one immutable value per timestamp. TimeDB supports real-world workflows where data changes and those changes must be preserved.
+
+- 📊 **Forecast Revisions**: store multiple versions for the same valid time
+- 🔄 **Auditable Updates**: in-place updates for flat data, versioned updates for overlapping data
+- ⏪ **True Backtesting**: query what was known at a specific point in time
+- 🏷️ **Label-Based Organization**: filter series by semantic labels
 
 Quick Start
 -----------
@@ -23,39 +27,45 @@ Quick Start
 
 .. code-block:: python
 
-   from timedb import TimeDataClient
+   import timedb as td
    import pandas as pd
-   from datetime import datetime, timezone, timedelta
+   from datetime import datetime, timezone
 
-   # Create client and schema
-   td = TimeDataClient()
+   # Create schema
    td.create()
 
-   # Create a series with labels
+   # Create an overlapping forecast series
    td.create_series(
-       name='wind_power',
-       unit='MW',
-       labels={'site': 'offshore_1'},
-       overlapping=True  # Versioned forecasts
+       name="wind_power",
+       unit="MW",
+       labels={"site": "offshore_1"},
+       overlapping=True,
    )
 
-   # Insert data using fluent API
-   base_time = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+   # Insert one forecast run
+   knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
    df = pd.DataFrame({
-       'valid_time': [base_time + timedelta(hours=i) for i in range(24)],
-       'value': [100.0 + i * 2 for i in range(24)]
+       "valid_time": pd.date_range("2025-01-01", periods=24, freq="h", tz="UTC"),
+       "value": [100 + i * 2 for i in range(24)],
    })
 
-   result = td.get_series('wind_power').where(site='offshore_1').insert(
+   td.get_series("wind_power").where(site="offshore_1").insert(
        df=df,
-       knowledge_time=base_time
+       knowledge_time=knowledge_time,
    )
 
    # Read latest values
-   df_latest = td.get_series('wind_power').where(site='offshore_1').read()
+   df_latest = td.get_series("wind_power").where(site="offshore_1").read()
 
-   # Read all forecast revisions
-   df_versions = td.get_series('wind_power').where(site='offshore_1').read(versions=True)
+   # Read full revision history
+   df_versions = td.get_series("wind_power").where(site="offshore_1").read(versions=True)
+
+Release Notes
+-------------
+
+For version-by-version changes, migration notes, and feature updates, see:
+
+- `Changelog <https://github.com/rebase-energy/timedb/blob/main/CHANGELOG.md>`_
 
 Documentation
 -------------
@@ -65,11 +75,12 @@ Documentation
    :caption: Contents:
 
    installation
-   api_reference
-   examples
-   cli
    sdk
+   api_reference
+   cli
    api_setup
+   examples
+
 
 Indices and tables
 ==================

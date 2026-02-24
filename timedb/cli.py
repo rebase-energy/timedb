@@ -15,13 +15,13 @@ Examples:
     $ timedb api
 
     # Create database schema
-    $ timedb create schema --dsn postgresql://...
+    $ timedb create tables --dsn postgresql://...
 
-    # Create a series
-    $ timedb create series --dsn postgresql://... --name wind_power --unit MW
+    # Create tables with custom retention
+    $ timedb create tables --retention "5 years"
 
-    # Delete schema
-    $ timedb delete schema --dsn postgresql://...
+    # Delete all tables
+    $ timedb delete tables --dsn postgresql://...
 """
 import os
 from typing import Optional
