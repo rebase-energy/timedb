@@ -85,8 +85,8 @@ td.get_series("wind_power")
 # 3. Read latest forecast
 df_latest = td.get_series("wind_power").where(site="offshore_1").read()
 
-# 4. Read all historical forecast revisions
-df_all = td.get_series("wind_power").where(site="offshore_1").read(versions=True)
+# 4. Read forecast history (one row per knowledge_time × valid_time)
+df_all = td.get_series("wind_power").where(site="offshore_1").read(overlapping=True)
 ```
 
 ---

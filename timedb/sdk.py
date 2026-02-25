@@ -244,7 +244,8 @@ class SeriesCollection:
 
         Supports both flat and overlapping series:
         - **Flat**: In-place update (no versioning) by (series_id, valid_time)
-        - **Overlapping**: Creates a new version with knowledge_time=now().
+        - **Overlapping**: Appends a correction row, preserving the original knowledge_time
+          and stamping change_time=now().
           Lookup priority:
           - knowledge_time + valid_time: Exact version lookup
           - batch_id + valid_time: Latest version in that batch
@@ -290,7 +291,8 @@ class SeriesCollection:
         end_valid: Optional[datetime] = None,
         start_known: Optional[datetime] = None,
         end_known: Optional[datetime] = None,
-        versions: bool = False,
+        overlapping: bool = False,
+        include_updates: bool = False,
         as_pint: bool = False,
     ) -> pd.DataFrame:
         """
@@ -298,34 +300,67 @@ class SeriesCollection:
 
         **Single-series reads only.** Collection must resolve to exactly one series.
 
-        Automatically reads from the correct table based on the series' overlapping flag:
-        - flat (overlapping=False): reads from 'flat' table (no versioning)
-        - overlapping (overlapping=True): reads latest values or all versions (if versions=True)
-
         Args:
             start_valid: Start of valid time range (optional)
             end_valid: End of valid time range (optional)
-            start_known: Start of knowledge_time range (optional, overlapping only)
-            end_known: End of knowledge_time range (optional, overlapping only)
-            versions: If True, return all overlapping revisions (default: False)
+            start_known: Start of knowledge_time range (optional)
+            end_known: End of knowledge_time range (optional)
+            overlapping: Controls whether forecast history is exposed (default: False).
+
+                - False: one row per valid_time with the **latest** value — the most
+                  recent forecast run wins; corrections within that run are resolved to
+                  the latest change_time. Index: ``[valid_time]``
+                - True: one row per (knowledge_time, valid_time) showing how all forecast
+                  runs compare against each other; corrections within each run are
+                  resolved (only the latest change_time is shown). Raises ValueError for
+                  flat series. Index: ``[knowledge_time, valid_time]``
+            include_updates: If True, expose the correction chain:
+
+                - Combined with ``overlapping=False`` (default): returns all corrections
+                  for the currently winning forecast run, hiding knowledge_time.
+                  Works for both flat and overlapping series.
+                  Index: ``[valid_time, change_time]``, columns: ``[value, changed_by, annotation]``
+
+                - Combined with ``overlapping=True``: returns the full bi-temporal matrix —
+                  every model run and every correction ever made. Raises ValueError for flat.
+                  Index: ``[knowledge_time, change_time, valid_time]``
+
             as_pint: If True, return value column as pint dtype with series unit (default: False).
                 Requires pint and pint-pandas: pip install pint pint-pandas
 
         Returns:
-            DataFrame with index (valid_time,) or (knowledge_time, valid_time) for versions,
-            and column (value). If as_pint=True, value column has pint dtype.
+            DataFrame with an index and columns that depend on the flag combination:
+
+            +--------------+-----------------+-------------------------------------+
+            | overlapping  | include_updates | Index                               |
+            +==============+=================+=====================================+
+            | False        | False (default) | [valid_time]                        |
+            +--------------+-----------------+-------------------------------------+
+            | False        | True            | [valid_time, change_time]           |
+            +--------------+-----------------+-------------------------------------+
+            | True         | False           | [knowledge_time, valid_time]        |
+            +--------------+-----------------+-------------------------------------+
+            | True         | True            | [knowledge_time, change_time,       |
+            |              |                 |  valid_time]                        |
+            +--------------+-----------------+-------------------------------------+
 
         Raises:
-            ValueError: If collection matches multiple series or no series
+            ValueError: If collection matches multiple series, no series, or
+                ``overlapping=True`` is used with a flat series
             ImportError: If as_pint=True but pint/pint-pandas not installed
 
         Example:
-            >>> # Single series read
-            >>> df = td.get_series("wind_power").where(site="Gotland", turbine="T01").read()
+            >>> # Latest forecast — the single best value per timestamp
+            >>> df = td.get_series("wind_power").where(site="Gotland").read()
             >>>
-            >>> # Read with pint units
-            >>> df = td.get_series("wind_power").where(turbine="T01").read(as_pint=True)
-            >>> print(df["value"].dtype)  # pint[MW]
+            >>> # Who edited the numbers we're currently using, and when?
+            >>> df = td.get_series("wind_power").read(include_updates=True)
+            >>>
+            >>> # Compare all forecast model runs against each other
+            >>> df = td.get_series("wind_power").read(overlapping=True)
+            >>>
+            >>> # Full bi-temporal dump: every run and every correction
+            >>> df = td.get_series("wind_power").read(overlapping=True, include_updates=True)
         """
         series_ids = self._resolve_ids()
 
@@ -358,31 +393,68 @@ class SeriesCollection:
         meta = self._registry.get_cached(series_id)
         is_overlapping = meta["overlapping"]
 
-        if not is_overlapping:
-            df = _read_flat(
-                series_id=series_id,
-                start_valid=start_valid,
-                end_valid=end_valid,
-                _pool=self._pool,
-            )
-        elif versions:
-            df = _read_overlapping_all(
-                series_id=series_id,
-                start_valid=start_valid,
-                end_valid=end_valid,
-                start_known=start_known,
-                end_known=end_known,
-                _pool=self._pool,
-            )
+        if overlapping:
+            if not is_overlapping:
+                raise ValueError(
+                    "overlapping=True is not supported for flat series. "
+                    "Flat series have a single value per timestamp with no forecast runs."
+                )
+            if include_updates:
+                df = _read_overlapping_with_updates(
+                    series_id=series_id,
+                    start_valid=start_valid,
+                    end_valid=end_valid,
+                    start_known=start_known,
+                    end_known=end_known,
+                    _pool=self._pool,
+                )
+            else:
+                df = _read_overlapping(
+                    series_id=series_id,
+                    start_valid=start_valid,
+                    end_valid=end_valid,
+                    start_known=start_known,
+                    end_known=end_known,
+                    _pool=self._pool,
+                )
+        elif include_updates:
+            if is_overlapping:
+                df = _read_overlapping_latest_with_updates(
+                    series_id=series_id,
+                    start_valid=start_valid,
+                    end_valid=end_valid,
+                    start_known=start_known,
+                    end_known=end_known,
+                    _pool=self._pool,
+                )
+            else:
+                df = _read_flat_with_updates(
+                    series_id=series_id,
+                    start_valid=start_valid,
+                    end_valid=end_valid,
+                    start_known=start_known,
+                    end_known=end_known,
+                    _pool=self._pool,
+                )
         else:
-            df = _read_overlapping_latest(
-                series_id=series_id,
-                start_valid=start_valid,
-                end_valid=end_valid,
-                start_known=start_known,
-                end_known=end_known,
-                _pool=self._pool,
-            )
+            if is_overlapping:
+                df = _read_overlapping_latest(
+                    series_id=series_id,
+                    start_valid=start_valid,
+                    end_valid=end_valid,
+                    start_known=start_known,
+                    end_known=end_known,
+                    _pool=self._pool,
+                )
+            else:
+                df = _read_flat(
+                    series_id=series_id,
+                    start_valid=start_valid,
+                    end_valid=end_valid,
+                    start_known=start_known,
+                    end_known=end_known,
+                    _pool=self._pool,
+                )
 
         if as_pint and len(df) > 0:
             try:
@@ -1041,6 +1113,8 @@ def _read_flat(
     series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
 ) -> pd.DataFrame:
     """Read flat values for a single series."""
@@ -1052,6 +1126,8 @@ def _read_flat(
             series_id=series_id,
             start_valid=start_valid,
             end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
         )
 
     return df
@@ -1081,7 +1157,7 @@ def _read_overlapping_latest(
     return df
 
 
-def _read_overlapping_all(
+def _read_overlapping_with_updates(
     series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
@@ -1093,7 +1169,79 @@ def _read_overlapping_all(
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_overlapping_all(
+        df = db.read.read_overlapping_with_updates(
+            conn,
+            series_id=series_id,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+        )
+
+    return df
+
+
+def _read_overlapping(
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+    _pool: Optional[ConnectionPool] = None,
+) -> pd.DataFrame:
+    """Read overlapping forecast history (latest correction per knowledge_time × valid_time)."""
+    conninfo = _get_conninfo()
+
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_overlapping(
+            conn,
+            series_id=series_id,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+        )
+
+    return df
+
+
+def _read_overlapping_latest_with_updates(
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+    _pool: Optional[ConnectionPool] = None,
+) -> pd.DataFrame:
+    """Read all corrections for the winning knowledge_time per valid_time."""
+    conninfo = _get_conninfo()
+
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_overlapping_latest_with_updates(
+            conn,
+            series_id=series_id,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+        )
+
+    return df
+
+
+def _read_flat_with_updates(
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+    _pool: Optional[ConnectionPool] = None,
+) -> pd.DataFrame:
+    """Read flat values with change_time, changed_by, annotation columns."""
+    conninfo = _get_conninfo()
+
+    with _get_connection(_pool, conninfo) as conn:
+        df = db.read.read_flat_with_updates(
             conn,
             series_id=series_id,
             start_valid=start_valid,

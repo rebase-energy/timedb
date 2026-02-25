@@ -255,7 +255,8 @@ Full read signature:
        end_valid=None,  # Optional, end of valid time range
        start_known=None,  # Optional, start of knowledge_time (overlapping only)
        end_known=None,  # Optional, end of knowledge_time (overlapping only)
-       versions=False,  # If True, return all versions (overlapping only)
+       overlapping=False,  # If True, return per-knowledge_time rows (overlapping only)
+       include_updates=False,  # If True, expose correction chain with change_time index
        as_pint=False,  # If True, return value column with pint dtype
    )
 
@@ -288,28 +289,75 @@ By default, ``read()`` returns the latest version for overlapping series:
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
 
-Reading All Versions (Overlapping Only)
+Reading Forecast History and Audit Log
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For overlapping series, use ``versions=True`` to see the complete revision history:
+Two boolean flags control what ``read()`` returns. They are orthogonal — each answers
+a distinct question:
+
+- **``overlapping``** (*False* by default): *"Which forecast run is each value from?"*
+  When ``True``, the index becomes ``(knowledge_time, valid_time)`` — one row per
+  forecast-run × valid_time. Only valid for overlapping series.
+- **``include_updates``** (*False* by default): *"Who edited these numbers, and when?"*
+  When ``True``, ``change_time`` is added to the index and ``changed_by`` / ``annotation``
+  columns are included. Works for both flat and overlapping series.
+
+The four combinations:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 18 42 22
+
+   * - ``overlapping``
+     - ``include_updates``
+     - Returned index
+     - Works for
+   * - ``False`` (default)
+     - ``False`` (default)
+     - ``valid_time``
+     - flat + overlapping
+   * - ``False``
+     - ``True``
+     - ``valid_time, change_time``
+     - flat + overlapping
+   * - ``True``
+     - ``False``
+     - ``knowledge_time, valid_time``
+     - overlapping only
+   * - ``True``
+     - ``True``
+     - ``knowledge_time, change_time, valid_time``
+     - overlapping only
 
 .. code-block:: python
 
-   # Read all versions with knowledge_time
-   df_versions = td.get_series("wind_forecast").read(
+   # Latest value per valid_time (default)
+   df_latest = td.get_series("wind_forecast").read()
+
+   # History: one row per forecast run × valid_time
+   df_history = td.get_series("wind_forecast").read(
+       overlapping=True,
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
-       versions=True
    )
+   # Index: (knowledge_time, valid_time)
 
    # Filter by knowledge_time range (when forecasts were made)
-   df_versions = td.get_series("wind_forecast").read(
-       versions=True,
+   df_history = td.get_series("wind_forecast").read(
+       overlapping=True,
        start_known=datetime(2024, 12, 1, tzinfo=timezone.utc),
        end_known=datetime(2025, 1, 15, tzinfo=timezone.utc),
    )
 
-The result has a MultiIndex with ``(knowledge_time, valid_time)`` to show both when the forecast was made and what it applies to.
+   # Corrections for the currently-winning forecast run only
+   df_latest_audit = td.get_series("wind_forecast").read(include_updates=True)
+   # Index: (valid_time, change_time) — knowledge_time NOT included
+
+   # Full audit log — every correction ever written
+   df_audit = td.get_series("wind_forecast").read(overlapping=True, include_updates=True)
+   # Index: (knowledge_time, change_time, valid_time)
+
+``overlapping=True`` on a flat series raises ``ValueError``.
 
 Example: Analyzing forecast revisions:
 
@@ -333,11 +381,11 @@ Example: Analyzing forecast revisions:
 
        td.get_series("power").insert(df, knowledge_time=knowledge_time)
 
-   # Read all revisions
-   df_all = td.get_series("power").read(
+   # Read forecast history (one row per forecast run × valid_time)
+   df_history = td.get_series("power").read(
        start_valid=base_time,
        end_valid=base_time + timedelta(days=5),
-       versions=True
+       overlapping=True,
    )
 
 Reading with Per-Window Cutoffs (Overlapping Only)
@@ -439,7 +487,10 @@ List unique label values and count series in a collection:
 Updating Records
 ----------------
 
-Update records for both flat and overlapping series. Flat series are updated in-place, while overlapping series create new versions with ``knowledge_time=now()``:
+Update records for both flat and overlapping series. Flat series are updated in-place.
+For overlapping series, each update inserts a correction row that **preserves the
+original** ``knowledge_time`` and stamps ``change_time = now()``, so the forecast
+run identity is unchanged while the full correction history remains queryable:
 
 .. code-block:: python
 
@@ -471,10 +522,11 @@ The function returns a list of updated records:
        ...
    ]
 
-For overlapping series, the system creates a new version with the current ``knowledge_time``. You can target specific versions by including:
+For overlapping series, you can target a specific forecast run by including:
 
-- ``knowledge_time``: Target a specific version
-- ``batch_id``: Target records from a specific batch
+- ``knowledge_time``: Target the exact forecast run by knowledge_time
+- ``batch_id``: Target the latest version in a specific batch
+- (neither): Target the globally latest version
 
 Tri-state field semantics:
 
@@ -625,9 +677,9 @@ A complete workflow from setup to analysis:
    df_latest = td.get_series("wind_power").where(site="Gotland").read()
    print(df_latest.head())
 
-   # 6. Read all forecast revisions for analysis
-   df_versions = td.get_series("wind_power").where(site="Gotland").read(versions=True)
-   print(f"Total revisions: {df_versions.index.get_level_values(0).nunique()}")
+   # 6. Read forecast history for analysis (one row per knowledge_time × valid_time)
+   df_history = td.get_series("wind_power").where(site="Gotland").read(overlapping=True)
+   print(f"Forecast runs: {df_history.index.get_level_values('knowledge_time').nunique()}")
 
 
 .. toctree::

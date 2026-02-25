@@ -121,13 +121,16 @@ Key Endpoints
    - ``end_valid`` (datetime, optional): End of valid time range (ISO format)
    - ``start_known`` (datetime, optional): Start of knowledge_time range (ISO format)
    - ``end_known`` (datetime, optional): End of knowledge_time range (ISO format)
-   - ``versions`` (bool, default=false): Return all forecast revisions
+   - ``overlapping`` (bool, default=false): If true, return one row per
+     ``(knowledge_time, valid_time)`` instead of per ``valid_time`` (overlapping series only)
+   - ``include_updates`` (bool, default=false): If true, add ``change_time`` to the index
+     and include ``changed_by`` / ``annotation`` columns. Works for flat and overlapping series.
 
    **Returns:** JSON object with count and data array
 
 .. py:function:: PUT /values
 
-   Update existing time series records. Creates new versions for overlapping series.
+   Update existing time series records. For overlapping series, inserts a correction row that preserves the original knowledge_time and stamps change_time=now().
 
    Identify the series by ``series_id`` OR by ``name`` (+``labels``).
 

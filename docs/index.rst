@@ -58,7 +58,7 @@ Quick Start
    df_latest = td.get_series("wind_power").where(site="offshore_1").read()
 
    # Read full revision history
-   df_versions = td.get_series("wind_power").where(site="offshore_1").read(versions=True)
+   df_versions = td.get_series("wind_power").where(site="offshore_1").read(overlapping=True)
 
 Release Notes
 -------------

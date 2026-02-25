@@ -152,7 +152,7 @@ def read_overlapping_latest(
         v.valid_time, v.value
     FROM all_overlapping_raw v
     {where_clause}
-    ORDER BY v.valid_time, v.knowledge_time DESC;
+    ORDER BY v.valid_time, v.knowledge_time DESC, v.change_time DESC;
     """
 
     with warnings.catch_warnings():
@@ -221,6 +221,7 @@ def read_overlapping_relative(
             v.valid_time,
             v.value,
             v.knowledge_time,
+            v.change_time,
             -- Cutoff: latest allowed knowledge_time for the window containing this valid_time
             %(start_window)s
             + make_interval(secs => floor(
@@ -237,7 +238,7 @@ def read_overlapping_relative(
         valid_time, value
     FROM windowed
     WHERE knowledge_time <= cutoff_time
-    ORDER BY valid_time, knowledge_time DESC;
+    ORDER BY valid_time, knowledge_time DESC, change_time DESC;
     """
 
     with warnings.catch_warnings():
@@ -258,7 +259,7 @@ def read_overlapping_relative(
     return df
 
 
-def read_overlapping_all(
+def read_overlapping(
     conninfo: Union[psycopg.Connection, str],
     *,
     series_id: int,
@@ -268,9 +269,11 @@ def read_overlapping_all(
     end_known: Optional[datetime] = None,
 ) -> pd.DataFrame:
     """
-    Read all overlapping versions from the overlapping table.
+    Read overlapping forecast history, one row per (knowledge_time, valid_time).
 
-    Returns all versions of forecasts, showing how predictions evolve over time.
+    Returns the latest correction for each forecast run × valid_time combination,
+    hiding the internal correction chain. Use this to see how the forecast evolved
+    across runs without seeing individual manual corrections.
 
     Args:
         conninfo: Database connection or connection string
@@ -292,10 +295,11 @@ def read_overlapping_all(
     )
 
     sql = f"""
-    SELECT v.knowledge_time, v.valid_time, v.value
+    SELECT DISTINCT ON (v.knowledge_time, v.valid_time)
+        v.knowledge_time, v.valid_time, v.value
     FROM all_overlapping_raw v
     {where_clause}
-    ORDER BY v.knowledge_time, v.valid_time;
+    ORDER BY v.knowledge_time, v.valid_time, v.change_time DESC;
     """
 
     with warnings.catch_warnings():
@@ -313,6 +317,194 @@ def read_overlapping_all(
         return df
 
     df = df.set_index(["knowledge_time", "valid_time"])
+    return df
+
+
+def read_overlapping_latest_with_updates(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read all corrections for the currently winning forecast run per valid_time.
+
+    For each valid_time, identifies the winning knowledge_time (the latest one),
+    then returns every correction row for that (valid_time, winning_knowledge_time)
+    pair. knowledge_time is intentionally not included in the result — use this to
+    see who edited the numbers you are currently using, and when.
+
+    Args:
+        conninfo: Database connection or connection string
+        series_id: Series ID (required)
+        start_valid: Start of valid time range (optional)
+        end_valid: End of valid time range (optional)
+        start_known: Start of knowledge_time range (optional)
+        end_known: End of knowledge_time range (optional)
+
+    Returns:
+        DataFrame with index (valid_time, change_time) and columns (value, changed_by, annotation)
+    """
+    where_clause, params = _build_where_clause(
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
+
+    sql = f"""
+    WITH winning AS (
+        SELECT DISTINCT ON (v.valid_time)
+            v.valid_time, v.knowledge_time
+        FROM all_overlapping_raw v
+        {where_clause}
+        ORDER BY v.valid_time, v.knowledge_time DESC
+    )
+    SELECT v.valid_time, v.change_time, v.value, v.changed_by, v.annotation
+    FROM all_overlapping_raw v
+    JOIN winning w ON w.valid_time = v.valid_time AND w.knowledge_time = v.knowledge_time
+    WHERE v.series_id = %(series_id)s
+    ORDER BY v.valid_time, v.change_time;
+    """
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(
+                sql,
+                conn,
+                params=params,
+                dtype={"value": "float64"},
+                parse_dates={"valid_time": {"utc": True}, "change_time": {"utc": True}},
+            )
+
+    if len(df) == 0:
+        return df
+
+    df = df.set_index(["valid_time", "change_time"])
+    return df
+
+
+def read_flat_with_updates(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read flat values with edit metadata (change_time, changed_by, annotation).
+
+    Since flat series use in-place updates, this returns exactly one row
+    per valid_time reflecting the latest state, with edit metadata exposed.
+
+    Args:
+        conninfo: Database connection or connection string
+        series_id: Series ID (required)
+        start_valid: Start of valid time range (optional)
+        end_valid: End of valid time range (optional)
+        start_known: Start of knowledge_time range (optional)
+        end_known: End of knowledge_time range (optional)
+
+    Returns:
+        DataFrame with index (valid_time, change_time) and columns (value, changed_by, annotation)
+    """
+    where_clause, params = _build_where_clause(
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
+
+    sql = f"""
+    SELECT v.valid_time, v.change_time, v.value, v.changed_by, v.annotation
+    FROM flat v
+    {where_clause}
+    ORDER BY v.valid_time, v.change_time;
+    """
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(
+                sql,
+                conn,
+                params=params,
+                dtype={"value": "float64"},
+                parse_dates={"valid_time": {"utc": True}, "change_time": {"utc": True}},
+            )
+
+    if len(df) == 0:
+        return df
+
+    df = df.set_index(["valid_time", "change_time"])
+    return df
+
+
+def read_overlapping_with_updates(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Read the full audit log from the overlapping table.
+
+    Returns every row ever written, including all manual corrections.
+    Each (knowledge_time, valid_time) pair may appear multiple times — once per
+    correction — ordered by change_time within each group.
+
+    Args:
+        conninfo: Database connection or connection string
+        series_id: Series ID (required)
+        start_valid: Start of valid time range (optional)
+        end_valid: End of valid time range (optional)
+        start_known: Start of knowledge_time range (optional)
+        end_known: End of knowledge_time range (optional)
+
+    Returns:
+        DataFrame with index (knowledge_time, change_time, valid_time) and columns (value, changed_by, annotation)
+    """
+    where_clause, params = _build_where_clause(
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
+
+    sql = f"""
+    SELECT v.knowledge_time, v.change_time, v.valid_time, v.value, v.changed_by, v.annotation
+    FROM all_overlapping_raw v
+    {where_clause}
+    ORDER BY v.knowledge_time, v.change_time, v.valid_time;
+    """
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
+        with _ensure_conn(conninfo) as conn:
+            df = pd.read_sql(
+                sql,
+                conn,
+                params=params,
+                dtype={"value": "float64"},
+                parse_dates={"knowledge_time": {"utc": True}, "change_time": {"utc": True}, "valid_time": {"utc": True}},
+            )
+
+    if len(df) == 0:
+        return df
+
+    df = df.set_index(["knowledge_time", "change_time", "valid_time"])
     return df
 
 

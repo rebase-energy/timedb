@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS overlapping_short (
 
   CONSTRAINT valid_time_interval_check_short
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (series_id, valid_time, knowledge_time)
+  CONSTRAINT overlapping_short_version_uniq UNIQUE (series_id, valid_time, knowledge_time, change_time)
 );
 
 -- TIER 2: MEDIUM (3 Years retention)
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS overlapping_medium (
 
   CONSTRAINT valid_time_interval_check_medium
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (series_id, valid_time, knowledge_time)
+  CONSTRAINT overlapping_medium_version_uniq UNIQUE (series_id, valid_time, knowledge_time, change_time)
 );
 
 -- TIER 3: LONG (5 Years retention)
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
 
   CONSTRAINT valid_time_interval_check_long
     CHECK (valid_time_end IS NULL OR valid_time_end > valid_time),
-  UNIQUE (series_id, valid_time, knowledge_time)
+  CONSTRAINT overlapping_long_version_uniq UNIQUE (series_id, valid_time, knowledge_time, change_time)
 );
 
 
@@ -141,9 +141,9 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
 -- 4) INDEXES ON OVERLAPPING TABLES
 -- ============================================================================
 
-CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (series_id, valid_time, knowledge_time DESC);
-CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (series_id, valid_time, knowledge_time DESC);
-CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (series_id, valid_time, knowledge_time DESC);
+CREATE INDEX IF NOT EXISTS short_lookup_idx  ON overlapping_short  (series_id, valid_time, knowledge_time DESC, change_time DESC);
+CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (series_id, valid_time, knowledge_time DESC, change_time DESC);
+CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (series_id, valid_time, knowledge_time DESC, change_time DESC);
 
 
 -- ============================================================================

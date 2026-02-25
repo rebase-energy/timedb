@@ -120,7 +120,7 @@ def test_read_overlapping_latest_via_sdk(td, sample_datetime):
 
 
 def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
-    """Test reading all overlapping versions via SDK (versions=True)."""
+    """Test reading forecast history via SDK (overlapping=True)."""
     td.create_series(
         name="wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
@@ -142,9 +142,9 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
     })
     td.get_series("wind_forecast").insert(df=df2, knowledge_time=knowledge_time_2)
 
-    # Read all versions
+    # Read forecast history (one row per knowledge_time × valid_time)
     result = td.get_series("wind_forecast").read(
-        versions=True,
+        overlapping=True,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
     )
@@ -156,7 +156,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
 
 
 def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
-    """Test reading all overlapping versions via the db.read layer."""
+    """Test reading overlapping forecast history via the db.read layer."""
     series_id = td.create_series(
         name="forecast", unit="dimensionless",
         overlapping=True, retention="medium",
@@ -176,7 +176,7 @@ def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
     })
     td.get_series("forecast").insert(df=df2, knowledge_time=knowledge_time_2)
 
-    result = read.read_overlapping_all(
+    result = read.read_overlapping(
         clean_db,
         series_id=series_id,
         start_valid=sample_datetime,
@@ -500,3 +500,171 @@ def test_read_relative_daily_raises_without_start_valid(td):
             days_ahead=1,
             time_of_day=time(6, 0),
         )
+
+
+# =============================================================================
+# Correction / change_time aware read tests
+# =============================================================================
+
+def test_read_mode_history_hides_corrections(td, sample_datetime):
+    """overlapping=True returns one row per (knowledge_time, valid_time) — the latest correction."""
+    td.create_series(name="forecast", unit="dimensionless",
+                     overlapping=True, retention="medium")
+
+    result = td.get_series("forecast").insert(
+        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
+        knowledge_time=sample_datetime,
+    )
+
+    # Apply a correction (same knowledge_time, new change_time)
+    td.get_series("forecast").update_records(updates=[{
+        "batch_id": result.batch_id,
+        "valid_time": sample_datetime,
+        "value": 110.0,
+    }])
+
+    history = td.get_series("forecast").read(overlapping=True)
+
+    # Only one row per (knowledge_time, valid_time) — correction is collapsed
+    assert len(history) == 1
+    assert list(history.index.names) == ["knowledge_time", "valid_time"]
+    assert history["value"].iloc[0] == 110.0  # latest correction wins
+
+
+def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
+    """overlapping=True, include_updates=True exposes every row including all corrections."""
+    td.create_series(name="forecast", unit="dimensionless",
+                     overlapping=True, retention="medium")
+
+    result = td.get_series("forecast").insert(
+        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
+        knowledge_time=sample_datetime,
+    )
+
+    # Two corrections
+    for val in [110.0, 120.0]:
+        td.get_series("forecast").update_records(updates=[{
+            "batch_id": result.batch_id,
+            "valid_time": sample_datetime,
+            "value": val,
+        }])
+
+    audit = td.get_series("forecast").read(overlapping=True, include_updates=True)
+
+    assert len(audit) == 3  # original + 2 corrections
+    assert list(audit.index.names) == ["knowledge_time", "change_time", "valid_time"]
+    # Values should be in chronological change_time order: 100, 110, 120
+    assert list(audit["value"]) == [100.0, 110.0, 120.0]
+
+
+def test_read_include_updates_overlapping(td, sample_datetime):
+    """include_updates=True for overlapping shows all corrections for the winning knowledge_time only."""
+    td.create_series(name="forecast", unit="dimensionless",
+                     overlapping=True, retention="medium")
+
+    # Insert two batches (two knowledge_times)
+    kt_old = sample_datetime
+    kt_new = sample_datetime + timedelta(hours=1)
+
+    result_old = td.get_series("forecast").insert(
+        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [10.0]}),
+        knowledge_time=kt_old,
+    )
+    result_new = td.get_series("forecast").insert(
+        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]}),
+        knowledge_time=kt_new,
+    )
+
+    # Apply a correction to the winning (newer) batch
+    td.get_series("forecast").update_records(updates=[{
+        "batch_id": result_new.batch_id,
+        "valid_time": sample_datetime,
+        "value": 25.0,
+        "changed_by": "tester",
+        "annotation": "corrected",
+    }])
+
+    df = td.get_series("forecast").read(include_updates=True)
+
+    # Index must be [valid_time, change_time]
+    assert list(df.index.names) == ["valid_time", "change_time"]
+    # Only corrections for the winning knowledge_time (kt_new) are visible
+    # kt_new has 2 rows: original (20.0) + correction (25.0)
+    assert len(df) == 2
+    assert list(df["value"]) == [20.0, 25.0]
+    assert df["changed_by"].iloc[1] == "tester"
+    assert df["annotation"].iloc[1] == "corrected"
+
+
+def test_read_include_updates_flat(td, sample_datetime):
+    """include_updates=True for flat series returns [valid_time, change_time] index with audit columns."""
+    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
+
+    td.get_series("temperature").insert(
+        df=pd.DataFrame({
+            "valid_time": [sample_datetime],
+            "value": [20.0],
+        })
+    )
+
+    td.get_series("temperature").update_records(updates=[{
+        "valid_time": sample_datetime,
+        "value": 21.0,
+        "changed_by": "tester",
+        "annotation": "fixed typo",
+    }])
+
+    df = td.get_series("temperature").read(include_updates=True)
+
+    # Flat series use in-place UPDATE — only one row per valid_time, reflecting the latest state
+    assert list(df.index.names) == ["valid_time", "change_time"]
+    assert len(df) == 1
+    assert df["value"].iloc[0] == 21.0
+    assert df["changed_by"].iloc[0] == "tester"
+    assert df["annotation"].iloc[0] == "fixed typo"
+    assert "value" in df.columns
+    assert "changed_by" in df.columns
+    assert "annotation" in df.columns
+
+
+def test_read_overlapping_true_raises_for_flat(td, sample_datetime):
+    """overlapping=True on a flat series raises ValueError."""
+    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
+
+    td.get_series("temperature").insert(
+        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
+    )
+
+    with pytest.raises(ValueError, match="overlapping"):
+        td.get_series("temperature").read(overlapping=True)
+
+
+def test_read_relative_picks_latest_correction(td, sample_datetime):
+    """read_relative returns the corrected value when the correction shares knowledge_time."""
+    td.create_series(name="forecast", unit="dimensionless",
+                     overlapping=True, retention="medium")
+
+    kt = sample_datetime - timedelta(hours=13)
+
+    result = td.get_series("forecast").insert(
+        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
+        knowledge_time=kt,
+    )
+
+    # Correct the value — same knowledge_time, new change_time
+    td.get_series("forecast").update_records(updates=[{
+        "batch_id": result.batch_id,
+        "valid_time": sample_datetime,
+        "value": 110.0,
+    }])
+
+    df = td.get_series("forecast").read_relative(
+        start_valid=sample_datetime,
+        end_valid=sample_datetime + timedelta(hours=1),
+        window_length=timedelta(hours=24),
+        issue_offset=timedelta(hours=-12),
+    )
+
+    assert len(df) == 1
+    # Correction (110.0) must win over original (100.0)
+    assert df["value"].iloc[0] == 110.0
