@@ -317,7 +317,8 @@ async def read_values(
     end_valid: Optional[datetime] = Query(None, description="End of valid time range (ISO format)"),
     start_known: Optional[datetime] = Query(None, description="Start of knowledge_time range (ISO format)"),
     end_known: Optional[datetime] = Query(None, description="End of knowledge_time range (ISO format)"),
-    versions: bool = Query(False, description="If true, return all overlapping revisions (for backtesting)"),
+    overlapping: bool = Query(False, description="Return one row per (knowledge_time, valid_time). Raises an error for flat series."),
+    include_updates: bool = Query(False, description="Expose the correction chain with change_time, changed_by, and annotation."),
 ):
     """
     Read time series values.
@@ -325,8 +326,10 @@ async def read_values(
     Filter by series name, labels, and/or series_id.
     Time range filtering via start_valid/end_valid and start_known/end_known.
 
-    By default returns the latest value per (valid_time, series_id).
-    Set versions=true to return all forecast revisions with their knowledge_time.
+    overlapping=false, include_updates=false (default): latest value per valid_time.
+    overlapping=false, include_updates=true: correction chain for the winning forecast run.
+    overlapping=true, include_updates=false: one row per (knowledge_time, valid_time).
+    overlapping=true, include_updates=true: full correction chain across all forecast runs.
     """
     try:
         label_filters = _parse_labels(labels)
@@ -347,7 +350,8 @@ async def read_values(
             end_valid=end_valid,
             start_known=start_known,
             end_known=end_known,
-            versions=versions,
+            overlapping=overlapping,
+            include_updates=include_updates,
         )
 
         if df.empty:
