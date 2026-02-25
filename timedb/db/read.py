@@ -1,10 +1,13 @@
 import os
-import warnings
+import time
 from contextlib import contextmanager
+from typing import Optional, Union, List
+
 import pandas as pd
 import psycopg
 from datetime import datetime, timedelta
-from typing import Optional, Union
+
+from .. import profiling
 
 
 @contextmanager
@@ -57,6 +60,50 @@ def _build_where_clause(
     return where_clause, params
 
 
+def _timed_query(
+    conn: psycopg.Connection,
+    sql: str,
+    params: dict,
+    timestamp_cols: List[str],
+) -> pd.DataFrame:
+    """
+    Execute a SQL query timing each phase via the profiling module.
+
+    Replaces pd.read_sql across all read functions. Produces equivalent
+    DataFrames — psycopg3 already returns timezone-aware datetimes for
+    timestamptz columns, so parse_dates is unnecessary.
+
+    Args:
+        conn: Open psycopg3 connection.
+        sql: SQL string with %(name)s placeholders.
+        params: Parameter dict for the query.
+        timestamp_cols: Columns to convert to UTC-aware pandas Timestamps.
+
+    Returns:
+        Flat DataFrame (no index set); callers set the index.
+    """
+    with conn.cursor() as cur:
+        _t0 = time.perf_counter()
+        cur.execute(sql, params)
+        profiling._record(profiling.PHASE_READ_SQL_EXEC, time.perf_counter() - _t0)
+
+        _t0 = time.perf_counter()
+        rows = cur.fetchall()
+        col_names = [desc.name for desc in cur.description] if cur.description else []
+        profiling._record(profiling.PHASE_READ_FETCH, time.perf_counter() - _t0)
+
+    _t0 = time.perf_counter()
+    df = pd.DataFrame(rows, columns=col_names)
+    for col in timestamp_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], utc=True)
+    if "value" in df.columns and len(df) > 0:
+        df["value"] = df["value"].astype("float64")
+    profiling._record(profiling.PHASE_READ_DATAFRAME, time.perf_counter() - _t0)
+
+    return df
+
+
 def read_flat(
     conninfo: Union[psycopg.Connection, str],
     *,
@@ -95,16 +142,10 @@ def read_flat(
     ORDER BY v.valid_time;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}},
-            )
+    _t0_total = time.perf_counter()
+    with _ensure_conn(conninfo) as conn:
+        df = _timed_query(conn, sql, params, timestamp_cols=["valid_time"])
+    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
@@ -155,16 +196,10 @@ def read_overlapping_latest(
     ORDER BY v.valid_time, v.knowledge_time DESC, v.change_time DESC;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}},
-            )
+    _t0_total = time.perf_counter()
+    with _ensure_conn(conninfo) as conn:
+        df = _timed_query(conn, sql, params, timestamp_cols=["valid_time"])
+    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
@@ -241,16 +276,10 @@ def read_overlapping_relative(
     ORDER BY valid_time, knowledge_time DESC, change_time DESC;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}},
-            )
+    _t0_total = time.perf_counter()
+    with _ensure_conn(conninfo) as conn:
+        df = _timed_query(conn, sql, params, timestamp_cols=["valid_time"])
+    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
@@ -302,16 +331,10 @@ def read_overlapping(
     ORDER BY v.knowledge_time, v.valid_time, v.change_time DESC;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"knowledge_time": {"utc": True}, "valid_time": {"utc": True}},
-            )
+    _t0_total = time.perf_counter()
+    with _ensure_conn(conninfo) as conn:
+        df = _timed_query(conn, sql, params, timestamp_cols=["knowledge_time", "valid_time"])
+    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
