@@ -204,7 +204,9 @@ class SeriesCollection:
         - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and knowledge_time
 
         Args:
-            df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
+            df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value].
+                The value column may also be a pint-typed array (e.g. ``pint[kW]``);
+                units are automatically converted to the series' registered unit.
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
@@ -217,6 +219,8 @@ class SeriesCollection:
         Raises:
             ValueError: If collection matches multiple series (use more specific filters)
             ValueError: If DataFrame doesn't have the required columns
+            IncompatibleUnitError: If the value column has a pint dtype whose unit is not
+                dimensionally compatible with the series' registered unit.
         """
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
@@ -456,20 +460,8 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
 
-        if as_pint and len(df) > 0:
-            try:
-                import pint
-                import pint_pandas  # noqa: F401
-            except ImportError:
-                raise ImportError(
-                    "as_pint=True requires pint and pint-pandas. "
-                    "Install with: pip install pint pint-pandas"
-                )
-            ureg = pint.application_registry.get()
-            pa = pint_pandas.PintArray.from_1darray_quantity(
-                pint.Quantity(df["value"].values, ureg(meta["unit"]))
-            )
-            df["value"] = pa
+        if as_pint:
+            df = _apply_pint_dtype(df, meta["unit"])
 
         return df
 
@@ -483,6 +475,7 @@ class SeriesCollection:
         *,
         days_ahead: Optional[int] = None,
         time_of_day: Optional[time] = None,
+        as_pint: bool = False,
     ) -> pd.DataFrame:
         """
         Read overlapping series using a per-window knowledge_time cutoff.
@@ -515,6 +508,8 @@ class SeriesCollection:
             start_valid: Start of valid time range. Also sets window alignment
                          (midnight of this date). Required in daily mode.
             end_valid: End of valid time range (optional)
+            as_pint: If True, return value column as pint dtype with the series'
+                registered unit. Requires pint and pint-pandas.
 
         Returns:
             DataFrame with index (valid_time,) and column (value).
@@ -522,6 +517,7 @@ class SeriesCollection:
         Raises:
             ValueError: If collection matches no series, multiple series,
                         series is not overlapping, or required parameters are missing/mixed.
+            ImportError: If as_pint=True but pint/pint-pandas not installed.
 
         Examples:
             >>> from datetime import datetime, timedelta, time, timezone
@@ -582,7 +578,7 @@ class SeriesCollection:
                 f"Series '{meta['name']}' is a flat series. Use read() instead."
             )
 
-        return _read_overlapping_relative(
+        df = _read_overlapping_relative(
             series_id=series_id,
             window_length=window_length,
             issue_offset=issue_offset,
@@ -591,6 +587,11 @@ class SeriesCollection:
             end_valid=end_valid,
             _pool=self._pool,
         )
+
+        if as_pint:
+            df = _apply_pint_dtype(df, meta["unit"])
+
+        return df
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
@@ -953,6 +954,26 @@ def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series
 
     converted = magnitudes * factor
     return pd.Series(converted, index=value_series.index, name=value_series.name)
+
+
+def _apply_pint_dtype(df: pd.DataFrame, unit: str) -> pd.DataFrame:
+    if len(df) == 0:
+        return df
+    try:
+        import pint
+        import pint_pandas  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "as_pint=True requires pint and pint-pandas. "
+            "Install with: pip install pint pint-pandas"
+        )
+    ureg = pint.application_registry.get()
+    pa = pint_pandas.PintArray.from_1darray_quantity(
+        pint.Quantity(df["value"].values, ureg(unit))
+    )
+    df = df.copy()
+    df["value"] = pa
+    return df
 
 
 def _validate_df_columns(df: pd.DataFrame) -> bool:

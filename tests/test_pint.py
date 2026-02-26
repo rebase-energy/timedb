@@ -5,7 +5,7 @@ import pint
 import pint_pandas
 from datetime import datetime, timezone, timedelta
 
-from timedb.sdk import IncompatibleUnitError, _resolve_pint_values
+from timedb.sdk import IncompatibleUnitError, _resolve_pint_values, _apply_pint_dtype
 
 
 # =============================================================================
@@ -55,6 +55,50 @@ class TestResolvePintValues:
         s = pd.Series(pd.array([500.0, 1000.0, 1500.0], dtype="pint[kW]"), index=idx, name="value")
         result = _resolve_pint_values(s, "MW")
         assert list(result.index) == list(idx)
+
+
+class TestApplyPintDtype:
+    """Test the _apply_pint_dtype helper function."""
+
+    def test_empty_df_returns_unchanged(self):
+        """Empty DataFrame passes through unchanged."""
+        df = pd.DataFrame({
+            "valid_time": pd.Series([], dtype="datetime64[ns, UTC]"),
+            "value": pd.Series([], dtype="float64"),
+        })
+        result = _apply_pint_dtype(df, "MW")
+        assert len(result) == 0
+        assert result["value"].dtype == "float64"
+
+    def test_applies_pint_dtype(self):
+        """Value column gets pint dtype with correct unit."""
+        df = pd.DataFrame({
+            "valid_time": pd.to_datetime(["2026-01-01"], utc=True),
+            "value": [1.5],
+        })
+        result = _apply_pint_dtype(df, "MW")
+        assert hasattr(result["value"].dtype, 'units')
+        assert str(result["value"].dtype.units) == "megawatt"
+
+    def test_does_not_mutate_input(self):
+        """Original DataFrame is not mutated."""
+        df = pd.DataFrame({
+            "valid_time": pd.to_datetime(["2026-01-01"], utc=True),
+            "value": [1.5],
+        })
+        _apply_pint_dtype(df, "MW")
+        assert df["value"].dtype == "float64"
+
+    def test_magnitude_preserved(self):
+        """Numeric magnitudes are preserved after conversion."""
+        df = pd.DataFrame({
+            "valid_time": pd.to_datetime(["2026-01-01", "2026-01-02"], utc=True),
+            "value": [1.5, 2.5],
+        })
+        result = _apply_pint_dtype(df, "MW")
+        magnitudes = result["value"].values.quantity.magnitude
+        assert magnitudes[0] == pytest.approx(1.5)
+        assert magnitudes[1] == pytest.approx(2.5)
 
 
 # =============================================================================
@@ -144,5 +188,50 @@ def test_read_as_pint_false_default(td, sample_datetime):
     td.get_series("power").insert(df)
 
     df_read = td.get_series("power").read()
+    assert not hasattr(df_read["value"].dtype, 'units')
+    assert df_read["value"].dtype == "float64"
+
+
+def test_read_relative_as_pint(td, sample_datetime):
+    """read_relative with as_pint=True returns pint dtype column."""
+    td.create_series(name="wind_forecast", unit="MW", overlapping=True)
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
+        "value": [10.0, 20.0],
+    })
+    td.get_series("wind_forecast").insert(
+        df, knowledge_time=sample_datetime - timedelta(hours=1)
+    )
+
+    df_pint = td.get_series("wind_forecast").read_relative(
+        window_length=timedelta(hours=24),
+        issue_offset=timedelta(hours=0),
+        start_window=sample_datetime,
+        as_pint=True,
+    )
+    assert hasattr(df_pint["value"].dtype, 'units')
+    assert str(df_pint["value"].dtype.units) == "megawatt"
+    assert df_pint["value"].values.quantity.magnitude[0] == pytest.approx(10.0)
+    assert df_pint["value"].values.quantity.magnitude[1] == pytest.approx(20.0)
+
+
+def test_read_relative_as_pint_false_default(td, sample_datetime):
+    """read_relative default returns plain float64."""
+    td.create_series(name="wind_forecast", unit="MW", overlapping=True)
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
+        "value": [10.0, 20.0],
+    })
+    td.get_series("wind_forecast").insert(
+        df, knowledge_time=sample_datetime - timedelta(hours=1)
+    )
+
+    df_read = td.get_series("wind_forecast").read_relative(
+        window_length=timedelta(hours=24),
+        issue_offset=timedelta(hours=0),
+        start_window=sample_datetime,
+    )
     assert not hasattr(df_read["value"].dtype, 'units')
     assert df_read["value"].dtype == "float64"
