@@ -27,7 +27,7 @@ from .db.series import SeriesRegistry
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
-from timedatamodel import TimeSeries, Metadata, StorageType, Resolution, Frequency
+from timedatamodel import TimeSeries, MultivariateTimeSeries, TimeSeriesType, Resolution, Frequency
 
 
 class InsertResult(NamedTuple):
@@ -186,19 +186,17 @@ class SeriesCollection:
 
     def insert(
         self,
-        df: Optional[pd.DataFrame] = None,
+        data: Union[pd.DataFrame, TimeSeries, MultivariateTimeSeries, None] = None,
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
         knowledge_time: Optional[datetime] = None,
         batch_params: Optional[dict] = None,
-        *,
-        ts: Optional[TimeSeries] = None,
-    ) -> InsertResult:
+    ) -> Union[InsertResult, List[InsertResult]]:
         """
         Insert time series data for this collection.
 
-        **Single-series inserts only.** Accepts either a DataFrame or a TimeSeries object.
+        Accepts a DataFrame, TimeSeries, or MultivariateTimeSeries.
 
         DataFrame must have fixed columns:
         - Point-in-time: [valid_time, value]
@@ -209,8 +207,10 @@ class SeriesCollection:
         - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and knowledge_time
 
         Args:
-            df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
-            ts: TimeSeries object (alternative to df). Converted to DataFrame internally.
+            data: One of:
+                - pd.DataFrame with columns [valid_time, value]
+                - TimeSeries object (converted to DataFrame internally)
+                - MultivariateTimeSeries (each column inserted as a separate series)
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
@@ -218,23 +218,66 @@ class SeriesCollection:
             batch_params: Batch parameters (optional)
 
         Returns:
-            InsertResult with batch_id, workflow_id, series_id
+            InsertResult for single-series, list[InsertResult] for MultivariateTimeSeries
 
         Raises:
-            ValueError: If both df and ts are provided
-            ValueError: If neither df nor ts is provided
-            ValueError: If collection matches multiple series (use more specific filters)
+            ValueError: If data is None or an unsupported type
+            ValueError: If collection matches multiple series for single-series insert
             ValueError: If DataFrame doesn't have the required columns
         """
-        if df is not None and ts is not None:
-            raise ValueError("Cannot provide both 'df' and 'ts'. Use one or the other.")
-        if df is None and ts is None:
-            raise ValueError("Must provide either 'df' (DataFrame) or 'ts' (TimeSeries).")
+        if data is None:
+            raise ValueError("Must provide 'data' (DataFrame, TimeSeries, or MultivariateTimeSeries).")
 
-        if ts is not None:
-            df = ts.to_pandas_dataframe()
-            df = df.reset_index()
+        # --- MultivariateTimeSeries: insert each column as a separate series ---
+        if isinstance(data, MultivariateTimeSeries):
+            results = []
+            for i in range(data.n_columns):
+                col_ts = data.select_column(i)
+                col_df = col_ts.to_pandas_dataframe().reset_index()
+                col_df.columns = ["valid_time", "value"]
+
+                col_name = col_ts.name
+                # Resolve each column with a fresh registry to avoid cache conflicts
+                col_registry = SeriesRegistry()
+                col_coll = SeriesCollection(
+                    conninfo=self._conninfo,
+                    name=col_name or self._name,
+                    unit=self._unit,
+                    label_filters=self._label_filters,
+                    _registry=col_registry,
+                    _pool=self._pool,
+                )
+                sid = col_coll._get_single_id()
+                routing = col_coll._get_series_routing(sid)
+                series_unit = col_registry.get_cached(sid)["unit"]
+
+                result = _insert(
+                    df=col_df,
+                    workflow_id=workflow_id,
+                    batch_start_time=batch_start_time,
+                    batch_finish_time=batch_finish_time,
+                    knowledge_time=knowledge_time,
+                    batch_params=batch_params,
+                    series_id=sid,
+                    routing=routing,
+                    series_unit=series_unit,
+                    _pool=self._pool,
+                    _registry=col_registry,
+                )
+                results.append(result)
+            return results
+
+        # --- TimeSeries: convert to DataFrame ---
+        if isinstance(data, TimeSeries):
+            df = data.to_pandas_dataframe().reset_index()
             df.columns = ["valid_time", "value"]
+        elif isinstance(data, pd.DataFrame):
+            df = data
+        else:
+            raise ValueError(
+                f"Unsupported data type: {type(data).__name__}. "
+                "Expected DataFrame, TimeSeries, or MultivariateTimeSeries."
+            )
 
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
@@ -313,11 +356,12 @@ class SeriesCollection:
         include_updates: bool = False,
         as_pint: bool = False,
         as_timeseries: bool = False,
-    ) -> Union[pd.DataFrame, TimeSeries]:
+    ) -> Union[pd.DataFrame, TimeSeries, MultivariateTimeSeries]:
         """
         Read time series data for this collection.
 
-        **Single-series reads only.** Collection must resolve to exactly one series.
+        Single-series reads by default. When ``as_timeseries=True`` and multiple
+        series match, returns a ``MultivariateTimeSeries`` instead.
 
         Args:
             start_valid: Start of valid time range (optional)
@@ -381,6 +425,8 @@ class SeriesCollection:
             >>> # Full bi-temporal dump: every run and every correction
             >>> df = td.get_series("wind_power").read(overlapping=True, include_updates=True)
         """
+        import numpy as np
+
         series_ids = self._resolve_ids()
 
         if len(series_ids) == 0:
@@ -389,13 +435,13 @@ class SeriesCollection:
                 f"unit={self._unit}, labels={self._label_filters}"
             )
 
-        if len(series_ids) > 1:
+        if len(series_ids) > 1 and not as_timeseries:
             # Show which series matched to help user debug
             matched_series = []
             for sid in series_ids[:5]:  # Show first 5
-                meta = self._registry.get_cached(sid)
-                labels_str = ", ".join(f"{k}={v}" for k, v in meta.get("labels", {}).items())
-                matched_series.append(f"{meta['name']} ({labels_str})" if labels_str else meta['name'])
+                m = self._registry.get_cached(sid)
+                labels_str = ", ".join(f"{k}={v}" for k, v in m.get("labels", {}).items())
+                matched_series.append(f"{m['name']} ({labels_str})" if labels_str else m['name'])
 
             series_list = ", ".join(matched_series)
             if len(series_ids) > 5:
@@ -408,6 +454,74 @@ class SeriesCollection:
                 f"Tip: Use .where(label_key='value') to narrow down."
             )
 
+        if as_pint and as_timeseries:
+            raise ValueError("Cannot use both 'as_pint' and 'as_timeseries' at the same time.")
+
+        if as_timeseries and (overlapping or include_updates):
+            raise ValueError(
+                "as_timeseries=True is not supported with overlapping=True or "
+                "include_updates=True. TimeSeries only supports a flat "
+                "timestamp-to-value mapping."
+            )
+
+        # --- Multi-series read as MultivariateTimeSeries ---
+        if as_timeseries and len(series_ids) > 1:
+            per_series_dfs = []
+            metas = []
+            for sid in series_ids:
+                m = self._registry.get_cached(sid)
+                metas.append(m)
+                is_ovlp = m["overlapping"]
+                if is_ovlp:
+                    s_df = _read_overlapping_latest(
+                        series_id=sid,
+                        start_valid=start_valid, end_valid=end_valid,
+                        start_known=start_known, end_known=end_known,
+                        _pool=self._pool,
+                    )
+                else:
+                    s_df = _read_flat(
+                        series_id=sid,
+                        start_valid=start_valid, end_valid=end_valid,
+                        start_known=start_known, end_known=end_known,
+                        _pool=self._pool,
+                    )
+                per_series_dfs.append(s_df)
+
+            # Build union of all timestamps
+            all_ts = set()
+            for s_df in per_series_dfs:
+                all_ts.update(s_df.index.tolist())
+            sorted_ts = sorted(all_ts)
+
+            n_ts = len(sorted_ts)
+            n_series = len(series_ids)
+            values_2d = np.full((n_ts, n_series), np.nan, dtype=np.float64)
+            ts_to_idx = {t: i for i, t in enumerate(sorted_ts)}
+
+            for j, s_df in enumerate(per_series_dfs):
+                for t, row in s_df.iterrows():
+                    values_2d[ts_to_idx[t], j] = row["value"]
+
+            # Infer resolution from timestamps
+            if n_ts >= 2:
+                delta = sorted_ts[1] - sorted_ts[0]
+                freq = _TIMEDELTA_TO_FREQUENCY.get(delta, Frequency.NONE)
+            else:
+                freq = Frequency.NONE
+            resolution = Resolution(frequency=freq)
+
+            return MultivariateTimeSeries(
+                resolution,
+                timestamps=sorted_ts,
+                values=values_2d,
+                names=[m.get("name") for m in metas],
+                units=[m.get("unit") for m in metas],
+                descriptions=[m.get("description") for m in metas],
+                attributes=[m.get("labels", {}) for m in metas],
+            )
+
+        # --- Single-series read ---
         series_id = series_ids[0]
         meta = self._registry.get_cached(series_id)
         is_overlapping = meta["overlapping"]
@@ -475,9 +589,6 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
 
-        if as_pint and as_timeseries:
-            raise ValueError("Cannot use both 'as_pint' and 'as_timeseries' at the same time.")
-
         if as_pint and len(df) > 0:
             try:
                 import pint
@@ -494,24 +605,16 @@ class SeriesCollection:
             df["value"] = pa
 
         if as_timeseries:
-            if overlapping or include_updates:
-                raise ValueError(
-                    "as_timeseries=True is not supported with overlapping=True or "
-                    "include_updates=True. TimeSeries only supports a flat "
-                    "timestamp-to-value mapping."
-                )
-            storage_type = StorageType.OVERLAPPING if is_overlapping else StorageType.FLAT
-            metadata = Metadata(
-                name=meta.get("name"),
-                unit=meta.get("unit"),
-                description=meta.get("description"),
-                storage_type=storage_type,
-                attributes=meta.get("labels", {}),
-            )
+            ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
             frequency = _infer_frequency(df)
             resolution = Resolution(frequency=frequency)
             return TimeSeries.from_pandas(
-                df, resolution=resolution, metadata=metadata, value_column="value",
+                df, resolution=resolution, value_column="value",
+                name=meta.get("name"),
+                unit=meta.get("unit"),
+                description=meta.get("description"),
+                timeseries_type=ts_type,
+                attributes=meta.get("labels", {}),
             )
 
         return df
@@ -830,8 +933,6 @@ class TimeDataClient:
         description: Optional[str] = None,
         overlapping: bool = False,
         retention: str = "medium",
-        *,
-        metadata: Optional[Metadata] = None,
     ) -> int:
         """
         Create a new time series with metadata and labels.
@@ -899,20 +1000,8 @@ class TimeDataClient:
             ...     retention='medium'
             ... )
         """
-        if metadata is not None:
-            if name is None:
-                name = metadata.name
-            if unit == "dimensionless" and metadata.unit is not None:
-                unit = metadata.unit
-            if labels is None and metadata.attributes:
-                labels = metadata.attributes
-            if description is None and metadata.description is not None:
-                description = metadata.description
-            if not overlapping and metadata.storage_type == StorageType.OVERLAPPING:
-                overlapping = True
-
         if name is None:
-            raise ValueError("'name' is required. Provide it directly or via metadata.")
+            raise ValueError("'name' is required.")
 
         return _create_series(
             name=name,

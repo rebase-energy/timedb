@@ -28,7 +28,7 @@ from .sdk import (
     InsertResult,
     IncompatibleUnitError,
 )
-from timedatamodel import TimeSeries, Resolution, Metadata, Frequency, StorageType, DataType
+from timedatamodel import TimeSeries, MultivariateTimeSeries, MultiTimeSeries, Resolution, Frequency, TimeSeriesType, DataType
 
 # ---------------------------------------------------------------------------
 # Lazy default client & module-level convenience functions
@@ -60,11 +60,11 @@ def delete():
 
 
 def create_series(name=None, unit="dimensionless", labels=None, description=None,
-                  overlapping=False, retention="medium", *, metadata=None):
+                  overlapping=False, retention="medium"):
     """Create a new time series. See :meth:`TimeDataClient.create_series`."""
     return _get_default_client().create_series(
         name, unit=unit, labels=labels, description=description,
-        overlapping=overlapping, retention=retention, metadata=metadata,
+        overlapping=overlapping, retention=retention,
     )
 
 
@@ -83,9 +83,10 @@ __all__ = [
     'create_series',
     'get_series',
     'TimeSeries',
+    'MultivariateTimeSeries',
+    'MultiTimeSeries',
     'Resolution',
-    'Metadata',
     'Frequency',
-    'StorageType',
+    'TimeSeriesType',
     'DataType',
 ]
