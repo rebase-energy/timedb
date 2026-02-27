@@ -27,6 +27,7 @@ from .db.series import SeriesRegistry
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
+from timedatamodel import TimeSeries, Metadata, StorageType, Resolution, Frequency
 
 
 class InsertResult(NamedTuple):
@@ -185,17 +186,21 @@ class SeriesCollection:
 
     def insert(
         self,
-        df: pd.DataFrame,
+        df: Optional[pd.DataFrame] = None,
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
         knowledge_time: Optional[datetime] = None,
         batch_params: Optional[dict] = None,
+        *,
+        ts: Optional[TimeSeries] = None,
     ) -> InsertResult:
         """
         Insert time series data for this collection.
 
-        **Single-series inserts only.** DataFrame must have fixed columns:
+        **Single-series inserts only.** Accepts either a DataFrame or a TimeSeries object.
+
+        DataFrame must have fixed columns:
         - Point-in-time: [valid_time, value]
         - Intervals: [valid_time, valid_time_end, value]
 
@@ -205,6 +210,7 @@ class SeriesCollection:
 
         Args:
             df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
+            ts: TimeSeries object (alternative to df). Converted to DataFrame internally.
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
@@ -215,9 +221,21 @@ class SeriesCollection:
             InsertResult with batch_id, workflow_id, series_id
 
         Raises:
+            ValueError: If both df and ts are provided
+            ValueError: If neither df nor ts is provided
             ValueError: If collection matches multiple series (use more specific filters)
             ValueError: If DataFrame doesn't have the required columns
         """
+        if df is not None and ts is not None:
+            raise ValueError("Cannot provide both 'df' and 'ts'. Use one or the other.")
+        if df is None and ts is None:
+            raise ValueError("Must provide either 'df' (DataFrame) or 'ts' (TimeSeries).")
+
+        if ts is not None:
+            df = ts.to_pandas_dataframe()
+            df = df.reset_index()
+            df.columns = ["valid_time", "value"]
+
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
         series_unit = self._registry.get_cached(series_id)["unit"]
@@ -294,7 +312,8 @@ class SeriesCollection:
         overlapping: bool = False,
         include_updates: bool = False,
         as_pint: bool = False,
-    ) -> pd.DataFrame:
+        as_timeseries: bool = False,
+    ) -> Union[pd.DataFrame, TimeSeries]:
         """
         Read time series data for this collection.
 
@@ -456,6 +475,9 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
 
+        if as_pint and as_timeseries:
+            raise ValueError("Cannot use both 'as_pint' and 'as_timeseries' at the same time.")
+
         if as_pint and len(df) > 0:
             try:
                 import pint
@@ -470,6 +492,27 @@ class SeriesCollection:
                 pint.Quantity(df["value"].values, ureg(meta["unit"]))
             )
             df["value"] = pa
+
+        if as_timeseries:
+            if overlapping or include_updates:
+                raise ValueError(
+                    "as_timeseries=True is not supported with overlapping=True or "
+                    "include_updates=True. TimeSeries only supports a flat "
+                    "timestamp-to-value mapping."
+                )
+            storage_type = StorageType.OVERLAPPING if is_overlapping else StorageType.FLAT
+            metadata = Metadata(
+                name=meta.get("name"),
+                unit=meta.get("unit"),
+                description=meta.get("description"),
+                storage_type=storage_type,
+                attributes=meta.get("labels", {}),
+            )
+            frequency = _infer_frequency(df)
+            resolution = Resolution(frequency=frequency)
+            return TimeSeries.from_pandas(
+                df, resolution=resolution, metadata=metadata, value_column="value",
+            )
 
         return df
 
@@ -781,12 +824,14 @@ class TimeDataClient:
 
     def create_series(
         self,
-        name: str,
+        name: Optional[str] = None,
         unit: str = "dimensionless",
         labels: Optional[Dict[str, str]] = None,
         description: Optional[str] = None,
         overlapping: bool = False,
         retention: str = "medium",
+        *,
+        metadata: Optional[Metadata] = None,
     ) -> int:
         """
         Create a new time series with metadata and labels.
@@ -854,6 +899,21 @@ class TimeDataClient:
             ...     retention='medium'
             ... )
         """
+        if metadata is not None:
+            if name is None:
+                name = metadata.name
+            if unit == "dimensionless" and metadata.unit is not None:
+                unit = metadata.unit
+            if labels is None and metadata.attributes:
+                labels = metadata.attributes
+            if description is None and metadata.description is not None:
+                description = metadata.description
+            if not overlapping and metadata.storage_type == StorageType.OVERLAPPING:
+                overlapping = True
+
+        if name is None:
+            raise ValueError("'name' is required. Provide it directly or via metadata.")
+
         return _create_series(
             name=name,
             unit=unit,
@@ -866,6 +926,30 @@ class TimeDataClient:
 # =============================================================================
 # Internal helper functions (not part of public API)
 # =============================================================================
+
+_TIMEDELTA_TO_FREQUENCY = {
+    timedelta(days=365): Frequency.P1Y,
+    timedelta(days=90): Frequency.P3M,
+    timedelta(days=30): Frequency.P1M,
+    timedelta(weeks=1): Frequency.P1W,
+    timedelta(days=1): Frequency.P1D,
+    timedelta(hours=1): Frequency.PT1H,
+    timedelta(minutes=30): Frequency.PT30M,
+    timedelta(minutes=15): Frequency.PT15M,
+    timedelta(minutes=10): Frequency.PT10M,
+    timedelta(minutes=5): Frequency.PT5M,
+    timedelta(minutes=1): Frequency.PT1M,
+    timedelta(seconds=1): Frequency.PT1S,
+}
+
+
+def _infer_frequency(df: pd.DataFrame) -> Frequency:
+    """Infer a timedatamodel Frequency from a DataFrame's index."""
+    if len(df) < 2:
+        return Frequency.NONE
+    idx = df.index
+    delta = idx[1] - idx[0]
+    return _TIMEDELTA_TO_FREQUENCY.get(delta, Frequency.NONE)
 
 def _get_conninfo() -> str:
     """Get database connection string from environment variables."""
