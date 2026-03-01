@@ -7,7 +7,7 @@ dimensionless floats - unit conversion is the user's responsibility.
 
 The SDK exposes two main classes:
 - TimeDataClient: Main entry point for database operations
-- SeriesCollection: Fluent API for series filtering and operations
+- SeriesQuery: Fluent API for series filtering and operations
 
 Data model:
 - Flat: Immutable fact data (meter readings, measurements). Stored in 'flat' table.
@@ -42,11 +42,11 @@ class IncompatibleUnitError(ValueError):
     pass
 
 
-class SeriesCollection:
+class SeriesQuery:
     """
     A lazy collection of time series that matches a set of filters.
 
-    SeriesCollection provides a fluent, chainable API for filtering and
+    SeriesQuery provides a fluent, chainable API for filtering and
     operating on one or more time series without manually managing series IDs.
 
     The collection resolves which series match the filters only when an
@@ -101,11 +101,11 @@ class SeriesCollection:
         self._resolved = False
         self._pool = _pool
 
-    def where(self, **labels) -> 'SeriesCollection':
+    def where(self, **labels) -> 'SeriesQuery':
         """
         Add additional label filters to narrow down the collection.
 
-        Creates a new SeriesCollection with combined filters. This method is
+        Creates a new SeriesQuery with combined filters. This method is
         chainable and does not modify the original collection (immutable).
 
         Args:
@@ -113,7 +113,7 @@ class SeriesCollection:
                      Example: where(site='offshore_1', turbine='T01')
 
         Returns:
-            SeriesCollection: New collection with combined filters applied
+            SeriesQuery: New collection with combined filters applied
 
         Example:
             >>> coll = client.get_series('wind_power')
@@ -123,7 +123,7 @@ class SeriesCollection:
             >>> df = coll.read()  # Only applies both filters at read time
         """
         new_filters = {**self._label_filters, **labels}
-        return SeriesCollection(
+        return SeriesQuery(
             conninfo=self._conninfo,
             name=self._name,
             unit=self._unit,
@@ -239,7 +239,7 @@ class SeriesCollection:
                 col_name = col_ts.name
                 # Resolve each column with a fresh registry to avoid cache conflicts
                 col_registry = SeriesRegistry()
-                col_coll = SeriesCollection(
+                col_coll = SeriesQuery(
                     conninfo=self._conninfo,
                     name=col_name or self._name,
                     unit=self._unit,
@@ -354,14 +354,15 @@ class SeriesCollection:
         end_known: Optional[datetime] = None,
         overlapping: bool = False,
         include_updates: bool = False,
+        output: str = "timeseries",
         as_pint: bool = False,
-        as_timeseries: bool = False,
     ) -> Union[pd.DataFrame, TimeSeries, MultivariateTimeSeries]:
         """
         Read time series data for this collection.
 
-        Single-series reads by default. When ``as_timeseries=True`` and multiple
-        series match, returns a ``MultivariateTimeSeries`` instead.
+        By default returns a ``TimeSeries`` (single series) or
+        ``MultivariateTimeSeries`` (multiple series). Use the ``output``
+        parameter to request pandas, polars, or numpy instead.
 
         Args:
             start_valid: Start of valid time range (optional)
@@ -388,44 +389,54 @@ class SeriesCollection:
                   every model run and every correction ever made. Raises ValueError for flat.
                   Index: ``[knowledge_time, change_time, valid_time]``
 
-            as_pint: If True, return value column as pint dtype with series unit (default: False).
+            output: Output format (default: ``"timeseries"``).
+
+                - ``"timeseries"``: Return ``TimeSeries`` (single) or
+                  ``MultivariateTimeSeries`` (multi). Works with all read modes
+                  including overlapping and include_updates (multi-index).
+                - ``"pandas"``: Return a pandas ``DataFrame``.
+                - ``"polars"``: Return a polars ``DataFrame``.
+                - ``"numpy"``: Return a numpy ``ndarray``.
+
+            as_pint: If True, return value column as pint dtype with series unit
+                (default: False). Only valid with ``output="pandas"``.
                 Requires pint and pint-pandas: pip install pint pint-pandas
 
         Returns:
-            DataFrame with an index and columns that depend on the flag combination:
-
-            +--------------+-----------------+-------------------------------------+
-            | overlapping  | include_updates | Index                               |
-            +==============+=================+=====================================+
-            | False        | False (default) | [valid_time]                        |
-            +--------------+-----------------+-------------------------------------+
-            | False        | True            | [valid_time, change_time]           |
-            +--------------+-----------------+-------------------------------------+
-            | True         | False           | [knowledge_time, valid_time]        |
-            +--------------+-----------------+-------------------------------------+
-            | True         | True            | [knowledge_time, change_time,       |
-            |              |                 |  valid_time]                        |
-            +--------------+-----------------+-------------------------------------+
+            TimeSeries, MultivariateTimeSeries, DataFrame, or ndarray depending
+            on the ``output`` parameter.
 
         Raises:
-            ValueError: If collection matches multiple series, no series, or
-                ``overlapping=True`` is used with a flat series
+            ValueError: If collection matches no series, ``overlapping=True``
+                is used with a flat series, or ``output`` is invalid
+            ValueError: If ``as_pint=True`` with ``output`` other than ``"pandas"``
             ImportError: If as_pint=True but pint/pint-pandas not installed
 
         Example:
-            >>> # Latest forecast — the single best value per timestamp
-            >>> df = td.get_series("wind_power").where(site="Gotland").read()
+            >>> # Latest forecast as TimeSeries (default)
+            >>> ts = td.get_series("wind_power").where(site="Gotland").read()
             >>>
-            >>> # Who edited the numbers we're currently using, and when?
-            >>> df = td.get_series("wind_power").read(include_updates=True)
+            >>> # As pandas DataFrame
+            >>> df = td.get_series("wind_power").read(output="pandas")
             >>>
-            >>> # Compare all forecast model runs against each other
-            >>> df = td.get_series("wind_power").read(overlapping=True)
+            >>> # Multiple series → MultivariateTimeSeries
+            >>> mts = td.get_series("wind").read()
             >>>
-            >>> # Full bi-temporal dump: every run and every correction
-            >>> df = td.get_series("wind_power").read(overlapping=True, include_updates=True)
+            >>> # Overlapping with multi-index TimeSeries
+            >>> ts = td.get_series("wind_power").read(overlapping=True)
         """
         import numpy as np
+
+        _VALID_OUTPUTS = ("timeseries", "pandas", "polars", "numpy")
+        if output not in _VALID_OUTPUTS:
+            raise ValueError(
+                f"Invalid output={output!r}. Must be one of {_VALID_OUTPUTS}."
+            )
+
+        if as_pint and output != "pandas":
+            raise ValueError(
+                "as_pint=True is only valid with output='pandas'."
+            )
 
         series_ids = self._resolve_ids()
 
@@ -435,37 +446,8 @@ class SeriesCollection:
                 f"unit={self._unit}, labels={self._label_filters}"
             )
 
-        if len(series_ids) > 1 and not as_timeseries:
-            # Show which series matched to help user debug
-            matched_series = []
-            for sid in series_ids[:5]:  # Show first 5
-                m = self._registry.get_cached(sid)
-                labels_str = ", ".join(f"{k}={v}" for k, v in m.get("labels", {}).items())
-                matched_series.append(f"{m['name']} ({labels_str})" if labels_str else m['name'])
-
-            series_list = ", ".join(matched_series)
-            if len(series_ids) > 5:
-                series_list += f", ... ({len(series_ids) - 5} more)"
-
-            raise ValueError(
-                f"Collection matches {len(series_ids)} series. "
-                f"Single-series reads only. Use more specific filters to match exactly one series.\n"
-                f"Matched series: [{series_list}]\n"
-                f"Tip: Use .where(label_key='value') to narrow down."
-            )
-
-        if as_pint and as_timeseries:
-            raise ValueError("Cannot use both 'as_pint' and 'as_timeseries' at the same time.")
-
-        if as_timeseries and (overlapping or include_updates):
-            raise ValueError(
-                "as_timeseries=True is not supported with overlapping=True or "
-                "include_updates=True. TimeSeries only supports a flat "
-                "timestamp-to-value mapping."
-            )
-
-        # --- Multi-series read as MultivariateTimeSeries ---
-        if as_timeseries and len(series_ids) > 1:
+        # --- Multi-series read ---
+        if len(series_ids) > 1:
             per_series_dfs = []
             metas = []
             for sid in series_ids:
@@ -509,7 +491,8 @@ class SeriesCollection:
                 freq = _TIMEDELTA_TO_FREQUENCY.get(delta, Frequency.NONE)
             else:
                 freq = Frequency.NONE
-            return MultivariateTimeSeries(
+
+            mts = MultivariateTimeSeries(
                 freq,
                 timestamps=sorted_ts,
                 values=values_2d,
@@ -518,6 +501,15 @@ class SeriesCollection:
                 descriptions=[m.get("description") for m in metas],
                 attributes=[m.get("labels", {}) for m in metas],
             )
+
+            if output == "timeseries":
+                return mts
+            elif output == "pandas":
+                return mts.to_pandas_dataframe()
+            elif output == "polars":
+                return mts.to_polars_dataframe()
+            else:  # numpy
+                return mts.to_numpy()
 
         # --- Single-series read ---
         series_id = series_ids[0]
@@ -587,34 +579,57 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
 
-        if as_pint and len(df) > 0:
-            try:
-                import pint
-                import pint_pandas  # noqa: F401
-            except ImportError:
-                raise ImportError(
-                    "as_pint=True requires pint and pint-pandas. "
-                    "Install with: pip install pint pint-pandas"
+        # --- Dispatch on output format ---
+        if output == "pandas":
+            if as_pint and len(df) > 0:
+                try:
+                    import pint
+                    import pint_pandas  # noqa: F401
+                except ImportError:
+                    raise ImportError(
+                        "as_pint=True requires pint and pint-pandas. "
+                        "Install with: pip install pint pint-pandas"
+                    )
+                ureg = pint.application_registry.get()
+                pa = pint_pandas.PintArray.from_1darray_quantity(
+                    pint.Quantity(df["value"].values, ureg(meta["unit"]))
                 )
-            ureg = pint.application_registry.get()
-            pa = pint_pandas.PintArray.from_1darray_quantity(
-                pint.Quantity(df["value"].values, ureg(meta["unit"]))
-            )
-            df["value"] = pa
+                df["value"] = pa
+            return df
 
-        if as_timeseries:
-            ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
-            frequency = _infer_frequency(df)
-            return TimeSeries.from_pandas(
-                df, frequency=frequency, value_column="value",
-                name=meta.get("name"),
-                unit=meta.get("unit"),
-                description=meta.get("description"),
-                timeseries_type=ts_type,
-                attributes=meta.get("labels", {}),
-            )
+        if output != "timeseries" and include_updates:
+            # For include_updates + polars/numpy, return via DataFrame to
+            # preserve extra columns (changed_by, annotation).
+            if output == "polars":
+                try:
+                    import polars as pl
+                except ImportError as e:
+                    raise ImportError(
+                        "polars is required for output='polars'. "
+                        "Install it with: pip install polars"
+                    ) from e
+                return pl.from_pandas(df.reset_index())
+            else:  # numpy
+                return df.reset_index().to_numpy()
 
-        return df
+        # Convert to TimeSeries
+        ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
+        frequency = _infer_frequency(df)
+        ts = TimeSeries.from_pandas(
+            df, frequency=frequency, value_column="value",
+            name=meta.get("name"),
+            unit=meta.get("unit"),
+            description=meta.get("description"),
+            timeseries_type=ts_type,
+            attributes=meta.get("labels", {}),
+        )
+
+        if output == "timeseries":
+            return ts
+        elif output == "polars":
+            return ts.to_polars_dataframe()
+        else:  # numpy
+            return ts.to_numpy()
 
     def read_relative(
         self,
@@ -626,7 +641,8 @@ class SeriesCollection:
         *,
         days_ahead: Optional[int] = None,
         time_of_day: Optional[time] = None,
-    ) -> pd.DataFrame:
+        output: str = "timeseries",
+    ) -> Union[pd.DataFrame, TimeSeries]:
         """
         Read overlapping series using a per-window knowledge_time cutoff.
 
@@ -658,9 +674,11 @@ class SeriesCollection:
             start_valid: Start of valid time range. Also sets window alignment
                          (midnight of this date). Required in daily mode.
             end_valid: End of valid time range (optional)
+            output: Output format (default: ``"timeseries"``). One of
+                ``"timeseries"``, ``"pandas"``, ``"polars"``, ``"numpy"``.
 
         Returns:
-            DataFrame with index (valid_time,) and column (value).
+            TimeSeries, DataFrame, or ndarray depending on ``output``.
 
         Raises:
             ValueError: If collection matches no series, multiple series,
@@ -669,19 +687,25 @@ class SeriesCollection:
         Examples:
             >>> from datetime import datetime, timedelta, time, timezone
             >>> # Low-level: arbitrary window length
-            >>> df = td.get_series("wind_forecast").read_relative(
+            >>> ts = td.get_series("wind_forecast").read_relative(
             ...     window_length=timedelta(hours=24),
             ...     issue_offset=timedelta(hours=-12),
             ...     start_window=datetime(2026, 2, 1, tzinfo=timezone.utc),
             ... )
             >>> # Daily shorthand: day-ahead, issued by 06:00
-            >>> df = td.get_series("wind_forecast").read_relative(
+            >>> ts = td.get_series("wind_forecast").read_relative(
             ...     days_ahead=1,
             ...     time_of_day=time(6, 0),
             ...     start_valid=datetime(2026, 2, 1, tzinfo=timezone.utc),
             ...     end_valid=datetime(2026, 2, 28, tzinfo=timezone.utc),
             ... )
         """
+        _VALID_OUTPUTS = ("timeseries", "pandas", "polars", "numpy")
+        if output not in _VALID_OUTPUTS:
+            raise ValueError(
+                f"Invalid output={output!r}. Must be one of {_VALID_OUTPUTS}."
+            )
+
         using_daily    = days_ahead is not None or time_of_day is not None
         using_explicit = window_length is not None or issue_offset is not None
 
@@ -725,7 +749,7 @@ class SeriesCollection:
                 f"Series '{meta['name']}' is a flat series. Use read() instead."
             )
 
-        return _read_overlapping_relative(
+        df = _read_overlapping_relative(
             series_id=series_id,
             window_length=window_length,
             issue_offset=issue_offset,
@@ -734,6 +758,27 @@ class SeriesCollection:
             end_valid=end_valid,
             _pool=self._pool,
         )
+
+        if output == "pandas":
+            return df
+
+        ts_type = TimeSeriesType.OVERLAPPING
+        frequency = _infer_frequency(df)
+        ts = TimeSeries.from_pandas(
+            df, frequency=frequency, value_column="value",
+            name=meta.get("name"),
+            unit=meta.get("unit"),
+            description=meta.get("description"),
+            timeseries_type=ts_type,
+            attributes=meta.get("labels", {}),
+        )
+
+        if output == "timeseries":
+            return ts
+        elif output == "polars":
+            return ts.to_polars_dataframe()
+        else:  # numpy
+            return ts.to_numpy()
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
@@ -792,7 +837,7 @@ class SeriesCollection:
 
     def __repr__(self) -> str:
         return (
-            f"SeriesCollection(name={self._name!r}, unit={self._unit!r}, "
+            f"SeriesQuery(name={self._name!r}, unit={self._unit!r}, "
             f"series_id={self._series_id!r}, labels={self._label_filters!r}, resolved={self._resolved})"
         )
 
@@ -854,11 +899,11 @@ class TimeDataClient:
         name: Optional[str] = None,
         unit: Optional[str] = None,
         series_id: Optional[int] = None,
-    ) -> SeriesCollection:
+    ) -> SeriesQuery:
         """
         Start building a series collection by name, unit, and/or series_id.
 
-        Creates a lazy SeriesCollection that can be further filtered using
+        Creates a lazy SeriesQuery that can be further filtered using
         .where() to add label-based filters. The collection resolves to the
         actual series only when an operation like .read() or .insert() is called.
 
@@ -868,7 +913,7 @@ class TimeDataClient:
             series_id: Optional series_id for direct lookup (e.g., 123)
 
         Returns:
-            SeriesCollection: A lazy collection that can be further filtered
+            SeriesQuery: A lazy collection that can be further filtered
                 with .where() and then used for read/insert/update operations
 
         Example:
@@ -880,7 +925,7 @@ class TimeDataClient:
             >>> # Get series by ID (if you know it)
             >>> client.get_series(series_id=123).read()
         """
-        return SeriesCollection(
+        return SeriesQuery(
             conninfo=self._conninfo,
             name=name,
             unit=unit,

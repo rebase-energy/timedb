@@ -36,7 +36,7 @@ For custom connection settings, use ``TimeDataClient`` directly:
 Series Operations
 ~~~~~~~~~~~~~~~~~
 
-.. autoclass:: timedb.SeriesCollection
+.. autoclass:: timedb.SeriesQuery
    :members:
    :show-inheritance:
 

@@ -215,7 +215,7 @@ def test_update_nonexistent_record_with_value(td, sample_datetime):
 # =============================================================================
 
 def test_update_via_collection(td, clean_db, sample_datetime):
-    """Test updating overlappings via the SeriesCollection API."""
+    """Test updating overlappings via the SeriesQuery API."""
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     outcome = td.get_series("forecast").update_records(updates=[{
@@ -377,7 +377,7 @@ def test_update_flat_nonexistent_row_errors(td, sample_datetime):
 
 
 def test_update_flat_via_collection(td, clean_db, sample_datetime):
-    """Test updating flat via the SeriesCollection API."""
+    """Test updating flat via the SeriesQuery API."""
     td, series_id = _setup_flat_series(td, sample_datetime)
 
     outcome = td.get_series("meter_reading").update_records(updates=[{
@@ -495,7 +495,7 @@ def test_update_overlapping_latest_no_identifiers(td, clean_db, sample_datetime)
 
 
 def test_update_overlapping_via_collection_no_batch_id(td, clean_db, sample_datetime):
-    """Test updating overlapping via SeriesCollection without batch_id."""
+    """Test updating overlapping via SeriesQuery without batch_id."""
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     # Update via collection API without batch_id

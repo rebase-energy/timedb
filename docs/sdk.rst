@@ -9,7 +9,7 @@ Overview
 The SDK centers around two main concepts:
 
 - **TimeDataClient**: Main entry point for database operations
-- **SeriesCollection**: Fluent API for filtering and operating on series
+- **SeriesQuery**: Fluent API for filtering and operating on series
 
 Time series in TimeDB fall into two categories:
 
@@ -124,7 +124,7 @@ The function returns the ``series_id`` (integer) which can be used directly if n
 Inserting Data
 --------------
 
-Use the fluent ``SeriesCollection`` API to insert data. First, select a series by name (and optionally by unit):
+Use the fluent ``SeriesQuery`` API to insert data. First, select a series by name (and optionally by unit):
 
 .. code-block:: python
 
@@ -250,15 +250,23 @@ Full read signature:
 
 .. code-block:: python
 
-   df = td.get_series("name").read(
+   result = td.get_series("name").read(
        start_valid=None,  # Optional, start of valid time range
        end_valid=None,  # Optional, end of valid time range
        start_known=None,  # Optional, start of knowledge_time (overlapping only)
        end_known=None,  # Optional, end of knowledge_time (overlapping only)
        overlapping=False,  # If True, return per-knowledge_time rows (overlapping only)
        include_updates=False,  # If True, expose correction chain with change_time index
-       as_pint=False,  # If True, return value column with pint dtype
+       output="timeseries",  # "timeseries", "pandas", "polars", or "numpy"
+       as_pint=False,  # If True, return value column with pint dtype (output="pandas" only)
    )
+
+Output formats:
+
+- ``"timeseries"`` (default): Returns ``TimeSeries`` for a single series, ``MultivariateTimeSeries`` for multiple series
+- ``"pandas"``: Returns a pandas ``DataFrame``
+- ``"polars"``: Returns a polars ``DataFrame``
+- ``"numpy"``: Returns a numpy ``ndarray``
 
 Reading with Units
 ~~~~~~~~~~~~~~~~~~

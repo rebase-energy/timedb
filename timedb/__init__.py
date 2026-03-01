@@ -24,11 +24,11 @@ load_dotenv(find_dotenv())
 
 from .sdk import (
     TimeDataClient,
-    SeriesCollection,
+    SeriesQuery,
     InsertResult,
     IncompatibleUnitError,
 )
-from timedatamodel import TimeSeries, MultivariateTimeSeries, MultiTimeSeries, Frequency, TimeSeriesType, DataType
+from timedatamodel import TimeSeries, MultivariateTimeSeries, MultiTimeSeries, TimeSeriesCollection, Frequency, TimeSeriesType, DataType
 
 # ---------------------------------------------------------------------------
 # Lazy default client & module-level convenience functions
@@ -75,7 +75,7 @@ def get_series(name=None, unit=None, series_id=None):
 
 __all__ = [
     'TimeDataClient',
-    'SeriesCollection',
+    'SeriesQuery',
     'InsertResult',
     'IncompatibleUnitError',
     'create',
@@ -85,6 +85,7 @@ __all__ = [
     'TimeSeries',
     'MultivariateTimeSeries',
     'MultiTimeSeries',
+    'TimeSeriesCollection',
     'Frequency',
     'TimeSeriesType',
     'DataType',

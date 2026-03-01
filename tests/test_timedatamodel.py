@@ -26,9 +26,10 @@ def test_insert_timeseries_flat(td, clean_db, sample_datetime):
     result = td.get_series("temperature").insert(data=ts)
     assert result.series_id > 0
 
-    df = td.get_series("temperature").read()
-    assert len(df) == 2
-    assert df["value"].tolist() == [20.5, 21.0]
+    ts_out = td.get_series("temperature").read()
+    assert isinstance(ts_out, TimeSeries)
+    assert len(ts_out) == 2
+    assert ts_out.values == [20.5, 21.0]
 
 
 def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
@@ -47,8 +48,9 @@ def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
     )
     assert result.batch_id is not None
 
-    df = td.get_series("wind_forecast").read()
-    assert len(df) == 2
+    ts_out = td.get_series("wind_forecast").read()
+    assert isinstance(ts_out, TimeSeries)
+    assert len(ts_out) == 2
 
 
 def test_insert_none_raises(td, clean_db):
@@ -60,11 +62,11 @@ def test_insert_none_raises(td, clean_db):
 
 
 # =============================================================================
-# read() with as_timeseries
+# read() with output parameter
 # =============================================================================
 
-def test_read_as_timeseries_flat(td, clean_db, sample_datetime):
-    """Read flat series back as TimeSeries."""
+def test_read_timeseries_flat(td, clean_db, sample_datetime):
+    """Read flat series back as TimeSeries (default output)."""
     td.create_series(
         name="temperature", unit="C", description="Air temperature",
         labels={"site": "north"},
@@ -76,7 +78,7 @@ def test_read_as_timeseries_flat(td, clean_db, sample_datetime):
     })
     td.get_series("temperature").where(site="north").insert(data=df)
 
-    ts = td.get_series("temperature").where(site="north").read(as_timeseries=True)
+    ts = td.get_series("temperature").where(site="north").read()
 
     assert isinstance(ts, TimeSeries)
     assert ts.name == "temperature"
@@ -89,7 +91,7 @@ def test_read_as_timeseries_flat(td, clean_db, sample_datetime):
     assert ts.values[1] == 21.0
 
 
-def test_read_as_timeseries_overlapping_latest(td, clean_db, sample_datetime):
+def test_read_timeseries_overlapping_latest(td, clean_db, sample_datetime):
     """Read overlapping series (latest view) back as TimeSeries."""
     td.create_series(name="forecast", unit="MW", overlapping=True)
 
@@ -100,15 +102,15 @@ def test_read_as_timeseries_overlapping_latest(td, clean_db, sample_datetime):
     knowledge_time = sample_datetime - timedelta(hours=1)
     td.get_series("forecast").insert(data=df, knowledge_time=knowledge_time)
 
-    ts = td.get_series("forecast").read(as_timeseries=True)
+    ts = td.get_series("forecast").read()
 
     assert isinstance(ts, TimeSeries)
     assert ts.timeseries_type == TimeSeriesType.OVERLAPPING
     assert len(ts.values) == 2
 
 
-def test_read_as_timeseries_with_overlapping_raises(td, clean_db, sample_datetime):
-    """as_timeseries with overlapping=True should raise ValueError."""
+def test_read_overlapping_output_timeseries(td, clean_db, sample_datetime):
+    """overlapping=True + output='timeseries' returns multi-index TimeSeries."""
     td.create_series(name="forecast", unit="MW", overlapping=True)
 
     df = pd.DataFrame({
@@ -119,12 +121,14 @@ def test_read_as_timeseries_with_overlapping_raises(td, clean_db, sample_datetim
         data=df, knowledge_time=sample_datetime - timedelta(hours=1),
     )
 
-    with pytest.raises(ValueError, match="as_timeseries=True is not supported"):
-        td.get_series("forecast").read(as_timeseries=True, overlapping=True)
+    ts = td.get_series("forecast").read(overlapping=True)
+
+    assert isinstance(ts, TimeSeries)
+    assert ts.is_multi_index
 
 
-def test_read_as_timeseries_with_include_updates_raises(td, clean_db, sample_datetime):
-    """as_timeseries with include_updates=True should raise ValueError."""
+def test_read_include_updates_output_timeseries(td, clean_db, sample_datetime):
+    """include_updates=True + output='timeseries' returns multi-index TimeSeries."""
     td.create_series(name="temperature", unit="C")
 
     df = pd.DataFrame({
@@ -133,12 +137,14 @@ def test_read_as_timeseries_with_include_updates_raises(td, clean_db, sample_dat
     })
     td.get_series("temperature").insert(data=df)
 
-    with pytest.raises(ValueError, match="as_timeseries=True is not supported"):
-        td.get_series("temperature").read(as_timeseries=True, include_updates=True)
+    ts = td.get_series("temperature").read(include_updates=True)
+
+    assert isinstance(ts, TimeSeries)
+    assert ts.is_multi_index
 
 
-def test_read_as_pint_and_as_timeseries_raises(td, clean_db, sample_datetime):
-    """as_pint and as_timeseries together should raise ValueError."""
+def test_read_as_pint_with_non_pandas_raises(td, clean_db, sample_datetime):
+    """as_pint with output != 'pandas' should raise ValueError."""
     td.create_series(name="temperature", unit="C")
 
     df = pd.DataFrame({
@@ -147,8 +153,75 @@ def test_read_as_pint_and_as_timeseries_raises(td, clean_db, sample_datetime):
     })
     td.get_series("temperature").insert(data=df)
 
-    with pytest.raises(ValueError, match="Cannot use both"):
-        td.get_series("temperature").read(as_pint=True, as_timeseries=True)
+    with pytest.raises(ValueError, match="as_pint=True is only valid"):
+        td.get_series("temperature").read(as_pint=True)
+
+
+def test_read_output_invalid(td, clean_db, sample_datetime):
+    """Invalid output value should raise ValueError."""
+    td.create_series(name="temperature", unit="C")
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime],
+        "value": [20.0],
+    })
+    td.get_series("temperature").insert(data=df)
+
+    with pytest.raises(ValueError, match="Invalid output"):
+        td.get_series("temperature").read(output="xml")
+
+
+def test_read_output_pandas(td, clean_db, sample_datetime):
+    """output='pandas' returns a DataFrame."""
+    td.create_series(name="temperature", unit="C")
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
+        "value": [20.5, 21.0],
+    })
+    td.get_series("temperature").insert(data=df)
+
+    result = td.get_series("temperature").read(output="pandas")
+
+    assert isinstance(result, pd.DataFrame)
+    assert "value" in result.columns
+    assert len(result) == 2
+    assert result["value"].tolist() == [20.5, 21.0]
+
+
+def test_read_output_numpy(td, clean_db, sample_datetime):
+    """output='numpy' returns a numpy ndarray."""
+    td.create_series(name="temperature", unit="C")
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
+        "value": [20.5, 21.0],
+    })
+    td.get_series("temperature").insert(data=df)
+
+    result = td.get_series("temperature").read(output="numpy")
+
+    assert isinstance(result, np.ndarray)
+    assert len(result) == 2
+
+
+def test_read_multi_output_pandas(td, clean_db, sample_datetime):
+    """Multi-series read with output='pandas' returns a DataFrame."""
+    td.create_series(name="wind", unit="MW", labels={"park": "alpha"})
+    td.create_series(name="wind", unit="MW", labels={"park": "beta"})
+
+    timestamps = [sample_datetime, sample_datetime + timedelta(hours=1)]
+    df1 = pd.DataFrame({"valid_time": timestamps, "value": [10.0, 20.0]})
+    df2 = pd.DataFrame({"valid_time": timestamps, "value": [30.0, 40.0]})
+
+    td.get_series("wind").where(park="alpha").insert(data=df1)
+    td.get_series("wind").where(park="beta").insert(data=df2)
+
+    result = td.get_series("wind").read(output="pandas")
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.shape[1] == 2  # Two columns (one per series)
+    assert len(result) == 2
 
 
 # =============================================================================
@@ -188,7 +261,7 @@ def test_roundtrip_timeseries(td, clean_db, sample_datetime):
 
     td.get_series("wind_power").where(park="alpha").insert(data=ts_in)
 
-    ts_out = td.get_series("wind_power").where(park="alpha").read(as_timeseries=True)
+    ts_out = td.get_series("wind_power").where(park="alpha").read()
 
     assert isinstance(ts_out, TimeSeries)
     assert ts_out.name == "wind_power"
@@ -223,18 +296,18 @@ def test_insert_multi_timeseries(td, clean_db, sample_datetime):
     assert len(results) == 2
 
     # Verify power series
-    df_power = td.get_series("power").read()
-    assert len(df_power) == 2
-    assert df_power["value"].tolist() == [10.0, 15.0]
+    ts_power = td.get_series("power").read()
+    assert len(ts_power) == 2
+    assert ts_power.values == [10.0, 15.0]
 
     # Verify temperature series
-    df_temp = td.get_series("temperature").read()
-    assert len(df_temp) == 2
-    assert df_temp["value"].tolist() == [20.0, 25.0]
+    ts_temp = td.get_series("temperature").read()
+    assert len(ts_temp) == 2
+    assert ts_temp.values == [20.0, 25.0]
 
 
 def test_read_multi_timeseries(td, clean_db, sample_datetime):
-    """Read a collection matching N series with as_timeseries=True, verify MTS returned."""
+    """Read a collection matching N series, verify MTS returned."""
     td.create_series(name="wind", unit="MW", labels={"park": "alpha"})
     td.create_series(name="wind", unit="MW", labels={"park": "beta"})
 
@@ -246,7 +319,7 @@ def test_read_multi_timeseries(td, clean_db, sample_datetime):
     td.get_series("wind").where(park="alpha").insert(data=df1)
     td.get_series("wind").where(park="beta").insert(data=df2)
 
-    mts = td.get_series("wind").read(as_timeseries=True)
+    mts = td.get_series("wind").read()
 
     assert isinstance(mts, MultivariateTimeSeries)
     assert mts.n_columns == 2
@@ -267,7 +340,7 @@ def test_read_single_returns_timeseries(td, clean_db, sample_datetime):
     })
     td.get_series("solo").insert(data=df)
 
-    ts = td.get_series("solo").read(as_timeseries=True)
+    ts = td.get_series("solo").read()
 
     assert isinstance(ts, TimeSeries)
     assert not isinstance(ts, MultivariateTimeSeries)

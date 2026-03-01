@@ -263,7 +263,7 @@ async def insert_values(request_body: InsertRequest, request: Request):
 
         knowledge_time = _ensure_tz(request_body.knowledge_time)
 
-        # Build SeriesCollection via SDK
+        # Build SeriesQuery via SDK
         td = _get_client(request)
         if request_body.series_id is not None:
             collection = td.get_series(series_id=request_body.series_id)
@@ -338,7 +338,7 @@ async def read_values(
         start_known = _ensure_tz(start_known)
         end_known = _ensure_tz(end_known)
 
-        # Build SeriesCollection via SDK
+        # Build SeriesQuery via SDK
         td = _get_client(request)
         collection = td.get_series(name=name, series_id=series_id)
         if label_filters:
@@ -352,6 +352,7 @@ async def read_values(
             end_known=end_known,
             overlapping=overlapping,
             include_updates=include_updates,
+            output="pandas",
         )
 
         if df.empty:
