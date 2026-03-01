@@ -36,7 +36,7 @@ Requirements
 
 timedb requires:
 
-- Python 3.9 or higher
+- Python 3.11 or higher
 - PostgreSQL database (version 12+) with TimescaleDB extension (version 2.0+)
 - For API functionality: FastAPI and uvicorn (included in dependencies)
 
@@ -172,4 +172,3 @@ Once installed, you can:
    :hidden:
 
    sdk
-

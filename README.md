@@ -51,7 +51,7 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 pip install timedb
 ```
 
-Requires Python 3.9+ and PostgreSQL 12+ with TimescaleDB.
+Requires Python 3.11+ and PostgreSQL 12+ with TimescaleDB.
 
 ### 2. Usage Example
 
