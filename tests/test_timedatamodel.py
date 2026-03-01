@@ -346,3 +346,131 @@ def test_read_single_returns_timeseries(td, clean_db, sample_datetime):
     assert not isinstance(ts, MultivariateTimeSeries)
     assert ts.name == "solo"
     assert len(ts.values) == 2
+
+
+# =============================================================================
+# insert() with dict (numpy arrays / Python lists)
+# =============================================================================
+
+def test_insert_dict_numpy_flat(td, clean_db, sample_datetime):
+    """Insert dict with numpy arrays into a flat series."""
+    td.create_series(name="temperature", unit="C")
+
+    timestamps = np.array([
+        sample_datetime,
+        sample_datetime + timedelta(hours=1),
+    ], dtype="datetime64[us]")
+    values = np.array([20.5, 21.0])
+
+    result = td.get_series("temperature").insert(data={
+        "timestamps": timestamps,
+        "values": values,
+    })
+    assert result.series_id > 0
+
+    ts_out = td.get_series("temperature").read()
+    assert isinstance(ts_out, TimeSeries)
+    assert len(ts_out) == 2
+    assert ts_out.values == [20.5, 21.0]
+
+
+def test_insert_dict_numpy_overlapping(td, clean_db, sample_datetime):
+    """Insert dict with numpy arrays into an overlapping series."""
+    td.create_series(name="wind_forecast", unit="MW", overlapping=True)
+
+    timestamps = np.array([
+        sample_datetime,
+        sample_datetime + timedelta(hours=1),
+    ], dtype="datetime64[us]")
+    values = np.array([100.0, 110.0])
+
+    knowledge_time = sample_datetime - timedelta(hours=1)
+    result = td.get_series("wind_forecast").insert(
+        data={"timestamps": timestamps, "values": values},
+        knowledge_time=knowledge_time,
+    )
+    assert result.batch_id is not None
+
+    ts_out = td.get_series("wind_forecast").read()
+    assert isinstance(ts_out, TimeSeries)
+    assert len(ts_out) == 2
+
+
+def test_insert_dict_python_lists(td, clean_db, sample_datetime):
+    """Insert dict with Python lists (no numpy dependency in data)."""
+    td.create_series(name="temperature", unit="C")
+
+    timestamps = [sample_datetime, sample_datetime + timedelta(hours=1)]
+    values = [20.5, 21.0]
+
+    result = td.get_series("temperature").insert(data={
+        "timestamps": timestamps,
+        "values": values,
+    })
+    assert result.series_id > 0
+
+    ts_out = td.get_series("temperature").read()
+    assert len(ts_out) == 2
+    assert ts_out.values == [20.5, 21.0]
+
+
+def test_insert_dict_mixed_types(td, clean_db, sample_datetime):
+    """Insert dict with Python list timestamps and numpy array values."""
+    td.create_series(name="temperature", unit="C")
+
+    timestamps = [sample_datetime, sample_datetime + timedelta(hours=1)]
+    values = np.array([20.5, 21.0])
+
+    result = td.get_series("temperature").insert(data={
+        "timestamps": timestamps,
+        "values": values,
+    })
+    assert result.series_id > 0
+
+    ts_out = td.get_series("temperature").read()
+    assert len(ts_out) == 2
+    assert ts_out.values == [20.5, 21.0]
+
+
+def test_insert_dict_with_intervals(td, clean_db, sample_datetime):
+    """Insert dict with timestamps_end for interval data."""
+    td.create_series(name="energy", unit="MWh")
+
+    timestamps = [sample_datetime, sample_datetime + timedelta(hours=1)]
+    timestamps_end = [
+        sample_datetime + timedelta(hours=1),
+        sample_datetime + timedelta(hours=2),
+    ]
+    values = [100.0, 110.0]
+
+    result = td.get_series("energy").insert(data={
+        "timestamps": timestamps,
+        "timestamps_end": timestamps_end,
+        "values": values,
+    })
+    assert result.series_id > 0
+
+
+def test_insert_dict_missing_keys_raises(td, clean_db):
+    """Dict without required keys raises ValueError."""
+    td.create_series(name="temperature", unit="C")
+
+    with pytest.raises(ValueError, match="Dict must contain 'timestamps' and 'values' keys"):
+        td.get_series("temperature").insert(data={"timestamps": [1, 2, 3]})
+
+    with pytest.raises(ValueError, match="Dict must contain 'timestamps' and 'values' keys"):
+        td.get_series("temperature").insert(data={"values": [1, 2, 3]})
+
+
+def test_insert_dict_length_mismatch_raises(td, clean_db, sample_datetime):
+    """Mismatched array lengths raises ValueError."""
+    td.create_series(name="temperature", unit="C")
+
+    timestamps = [sample_datetime, sample_datetime + timedelta(hours=1)]
+    values = [20.5]  # Length mismatch
+
+    with pytest.raises(ValueError, match="same length"):
+        td.get_series("temperature").insert(data={
+            "timestamps": timestamps,
+            "values": values,
+        })

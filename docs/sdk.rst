@@ -171,6 +171,60 @@ Full insert signature:
        batch_params=None,  # Optional dict of metadata
    )
 
+Using NumPy Arrays or Python Lists
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can insert data directly from numpy arrays or Python lists by passing a dict, bypassing pandas entirely:
+
+.. code-block:: python
+
+   import numpy as np
+   from datetime import datetime, timezone, timedelta
+
+   # Create timestamps as numpy datetime64 (treated as UTC)
+   timestamps = np.array([
+       datetime(2025, 1, 1, i, tzinfo=timezone.utc)
+       for i in range(24)
+   ], dtype="datetime64[us]")
+   values = np.random.rand(24) * 100
+
+   result = td.get_series("wind_power").where(site="Gotland").insert(data={
+       "timestamps": timestamps,
+       "values": values,
+   })
+
+For interval data, include ``timestamps_end``:
+
+.. code-block:: python
+
+   timestamps_end = timestamps + np.timedelta64(1, "h")
+
+   td.get_series("energy").insert(data={
+       "timestamps": timestamps,
+       "timestamps_end": timestamps_end,
+       "values": values,
+   })
+
+Plain Python lists also work — any combination of lists and numpy arrays is valid:
+
+.. code-block:: python
+
+   timestamps = [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)]
+   values = [100.0 + i * 2 for i in range(24)]
+
+   td.get_series("wind_power").insert(data={
+       "timestamps": timestamps,
+       "values": values,
+   })
+
+Rules:
+
+- ``"timestamps"`` and ``"values"`` are required keys
+- ``"timestamps_end"`` is optional (for interval data)
+- All arrays must have the same length
+- Timestamps must be timezone-aware (numpy ``datetime64`` is treated as UTC, Python ``datetime`` must have ``tzinfo``)
+- NaN values in ``values`` are stored as NULL
+
 Using pint Units
 ~~~~~~~~~~~~~~~~
 

@@ -9,7 +9,7 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 | Notebook | Colab |
 |----------|-------|
 | Quickstart | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb) |
-| Writing and Reading with Pandas | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_01_write_read_pandas.ipynb) |
+| Writing and Reading | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_01_write_read.ipynb) |
 | Units Validation | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_02_units_validation.ipynb) |
 | Forecast Revisions | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_03_forecast_revisions.ipynb) |
 | Relative Forecasts | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_04_relative_forecasts.ipynb) |
@@ -49,11 +49,11 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 
 ## Notebooks
 
-### Notebook 1: Writing and Reading with Pandas (`nb_01_write_read_pandas.ipynb`)
+### Notebook 1: Writing and Reading (`nb_01_write_read.ipynb`)
 Learn the fundamentals of writing and reading time series data:
-- Writing time series data from pandas DataFrames
-- Reading data back into DataFrames
-- Working with series IDs
+- Inserting data as DataFrames, `TimeSeries`, or `MultivariateTimeSeries`
+- Reading data back as `TimeSeries` (default) or DataFrames
+- Working with labels and progressive filtering
 
 ### Notebook 2: Units Validation (`nb_02_units_validation.ipynb`)
 Working with physical units in timedb:
@@ -89,9 +89,9 @@ Using the REST API:
 Open any notebook with:
 
 ```bash
-jupyter notebook examples/nb_01_write_read_pandas.ipynb
+jupyter notebook examples/nb_01_write_read.ipynb
 # OR
-jupyter lab examples/nb_01_write_read_pandas.ipynb
+jupyter lab examples/nb_01_write_read.ipynb
 ```
 
 ## Notes

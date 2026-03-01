@@ -32,7 +32,7 @@ Available Notebooks
    :hidden:
 
    notebooks/quickstart
-   notebooks/nb_01_write_read_pandas
+   notebooks/nb_01_write_read
    notebooks/nb_02_units_validation
    notebooks/nb_03_forecast_revisions
    notebooks/nb_04_relative_forecasts
@@ -40,7 +40,7 @@ Available Notebooks
    notebooks/nb_06_api_usage
 
 - :doc:`Quickstart <notebooks/quickstart>`
-- :doc:`Writing and Reading with Pandas <notebooks/nb_01_write_read_pandas>`
+- :doc:`Writing and Reading <notebooks/nb_01_write_read>`
 - :doc:`Units Validation <notebooks/nb_02_units_validation>`
 - :doc:`Forecast Revisions <notebooks/nb_03_forecast_revisions>`
 - :doc:`Relative Forecasts <notebooks/nb_04_relative_forecasts>`
@@ -52,7 +52,7 @@ Notebook Descriptions
 
 **Quickstart**: Get up and running in 5 minutes with basic insert, read, and versioning operations.
 
-**nb_01_write_read_pandas**: Demonstrates the fluent API with label-based filtering and broad vs. targeted operations on multiple series.
+**nb_01_write_read**: Demonstrates the fluent API with label-based filtering, multiple insert types (DataFrame, TimeSeries, MultivariateTimeSeries), and broad vs. targeted operations.
 
 **nb_02_units_validation**: Shows how TimeDB handles unit conversion and validation with Pint.
 

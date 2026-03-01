@@ -186,7 +186,7 @@ class SeriesQuery:
 
     def insert(
         self,
-        data: Union[pd.DataFrame, TimeSeries, MultivariateTimeSeries, None] = None,
+        data: Union[pd.DataFrame, TimeSeries, MultivariateTimeSeries, dict, None] = None,
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
@@ -196,11 +196,16 @@ class SeriesQuery:
         """
         Insert time series data for this collection.
 
-        Accepts a DataFrame, TimeSeries, or MultivariateTimeSeries.
+        Accepts a DataFrame, TimeSeries, MultivariateTimeSeries, or dict.
 
         DataFrame must have fixed columns:
         - Point-in-time: [valid_time, value]
         - Intervals: [valid_time, valid_time_end, value]
+
+        Dict must have keys:
+        - "timestamps": list[datetime] or np.ndarray (datetime64, treated as UTC)
+        - "values": list[float | None] or np.ndarray (float64)
+        - "timestamps_end" (optional): same types as "timestamps", for interval data
 
         Automatically routes data to the correct table based on the series' overlapping flag:
         - flat (overlapping=False): inserts into 'flat' table (immutable facts, upsert on conflict)
@@ -211,6 +216,7 @@ class SeriesQuery:
                 - pd.DataFrame with columns [valid_time, value]
                 - TimeSeries object (converted to DataFrame internally)
                 - MultivariateTimeSeries (each column inserted as a separate series)
+                - dict with "timestamps" and "values" keys (numpy/list, no pandas needed)
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
@@ -224,9 +230,29 @@ class SeriesQuery:
             ValueError: If data is None or an unsupported type
             ValueError: If collection matches multiple series for single-series insert
             ValueError: If DataFrame doesn't have the required columns
+            ValueError: If dict is missing required keys or arrays have mismatched lengths
         """
         if data is None:
-            raise ValueError("Must provide 'data' (DataFrame, TimeSeries, or MultivariateTimeSeries).")
+            raise ValueError("Must provide 'data' (DataFrame, TimeSeries, MultivariateTimeSeries, or dict).")
+
+        # --- Dict of arrays/lists: bypass pandas entirely ---
+        if isinstance(data, dict):
+            if "timestamps" not in data or "values" not in data:
+                raise ValueError("Dict must contain 'timestamps' and 'values' keys.")
+            series_id = self._get_single_id()
+            routing = self._get_series_routing(series_id)
+            value_rows = _dict_to_value_rows(data, series_id)
+            return _insert_rows(
+                value_rows=value_rows,
+                workflow_id=workflow_id,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
+                knowledge_time=knowledge_time,
+                batch_params=batch_params,
+                series_id=series_id,
+                routing=routing,
+                _pool=self._pool,
+            )
 
         # --- MultivariateTimeSeries: insert each column as a separate series ---
         if isinstance(data, MultivariateTimeSeries):
@@ -276,7 +302,7 @@ class SeriesQuery:
         else:
             raise ValueError(
                 f"Unsupported data type: {type(data).__name__}. "
-                "Expected DataFrame, TimeSeries, or MultivariateTimeSeries."
+                "Expected DataFrame, TimeSeries, MultivariateTimeSeries, or dict."
             )
 
         series_id = self._get_single_id()
@@ -1261,6 +1287,145 @@ def _dataframe_to_value_rows(
     return rows
 
 
+def _dict_to_value_rows(
+    data: dict,
+    series_id: int,
+) -> List[Tuple]:
+    """
+    Convert a dict of arrays/lists to TimeDB value_rows format (no pandas dependency).
+
+    Dict keys:
+    - "timestamps" (required): list[datetime] or np.ndarray with datetime64 dtype
+    - "values" (required): list[float | None] or np.ndarray of float64
+    - "timestamps_end" (optional): same types as "timestamps", for interval data
+
+    Args:
+        data: Dict with "timestamps", "values", and optionally "timestamps_end"
+        series_id: Series ID for all rows
+
+    Returns:
+        List of tuples:
+        - Point-in-time: (valid_time, series_id, value)
+        - Interval: (valid_time, valid_time_end, series_id, value)
+    """
+    import numpy as np
+
+    timestamps = data["timestamps"]
+    values = data["values"]
+    timestamps_end = data.get("timestamps_end")
+
+    # Validate lengths
+    if len(timestamps) != len(values):
+        raise ValueError(
+            f"'timestamps' and 'values' must have the same length. "
+            f"Got {len(timestamps)} timestamps and {len(values)} values."
+        )
+    if timestamps_end is not None and len(timestamps_end) != len(timestamps):
+        raise ValueError(
+            f"'timestamps_end' must have the same length as 'timestamps'. "
+            f"Got {len(timestamps_end)} vs {len(timestamps)}."
+        )
+
+    # Convert timestamps to Python datetimes
+    def _to_python_datetimes(arr, name):
+        if isinstance(arr, np.ndarray) and np.issubdtype(arr.dtype, np.datetime64):
+            # numpy datetime64 → Python datetime (treated as UTC)
+            return [
+                dt.replace(tzinfo=timezone.utc)
+                for dt in arr.astype("datetime64[us]").astype(datetime).tolist()
+            ]
+        else:
+            # list of Python datetimes — validate tzinfo
+            result = list(arr)
+            if result:
+                first = result[0]
+                if isinstance(first, datetime) and first.tzinfo is None:
+                    raise ValueError(
+                        f"{name} must be timezone-aware. "
+                        "Found timezone-naive datetime."
+                    )
+            return result
+
+    vt_list = _to_python_datetimes(timestamps, "timestamps")
+    vte_list = _to_python_datetimes(timestamps_end, "timestamps_end") if timestamps_end is not None else None
+
+    # Convert values: ndarray or list → list of float/None
+    if isinstance(values, np.ndarray):
+        values_clean = [None if np.isnan(v) else float(v) for v in values]
+    else:
+        import math
+        values_clean = [
+            None if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v)
+            for v in values
+        ]
+
+    n_rows = len(vt_list)
+    if vte_list is not None:
+        rows = list(zip(vt_list, vte_list, repeat(series_id, n_rows), values_clean))
+    else:
+        rows = list(zip(vt_list, repeat(series_id, n_rows), values_clean))
+
+    return rows
+
+
+def _insert_rows(
+    value_rows: List[Tuple],
+    workflow_id: Optional[str] = None,
+    batch_start_time: Optional[datetime] = None,
+    batch_finish_time: Optional[datetime] = None,
+    knowledge_time: Optional[datetime] = None,
+    batch_params: Optional[dict] = None,
+    series_id: int = None,
+    routing: Optional[Dict[str, Any]] = None,
+    _pool: Optional[ConnectionPool] = None,
+) -> InsertResult:
+    """
+    Insert pre-built value_rows into the database.
+
+    Handles batch creation, connection management, and error handling.
+    This is the shared path for both DataFrame and dict inserts.
+    """
+    conninfo = _get_conninfo()
+
+    if workflow_id is None:
+        workflow_id = "sdk-workflow"
+    if batch_start_time is None:
+        batch_start_time = datetime.now(timezone.utc)
+    elif batch_start_time.tzinfo is None:
+        raise ValueError("batch_start_time must be timezone-aware")
+
+    if series_id is None:
+        raise ValueError("series_id must be provided")
+
+    if routing is None:
+        raise ValueError("routing must be provided")
+
+    try:
+        with _get_connection(_pool, conninfo) as conn:
+            batch_id = db.insert.insert_values(
+                conninfo=conn,
+                workflow_id=workflow_id,
+                batch_start_time=batch_start_time,
+                batch_finish_time=batch_finish_time,
+                value_rows=value_rows,
+                knowledge_time=knowledge_time,
+                batch_params=batch_params,
+                series_id=series_id,
+                routing=routing,
+            )
+    except (errors.UndefinedTable, errors.UndefinedObject) as e:
+        raise ValueError(
+            "TimeDB tables do not exist. Please create the schema first by running:\n"
+            "  td.create()"
+        ) from e
+
+    return InsertResult(
+        batch_id=batch_id,
+        workflow_id=workflow_id,
+        series_id=series_id,
+    )
+
+
 def _create(
     retention_short: str = "6 months",
     retention_medium: str = "3 years",
@@ -1515,21 +1680,6 @@ def _insert(
     Supports single-series inserts only.
     Requires series to exist — use td.create_series() first.
     """
-    conninfo = _get_conninfo()
-
-    if workflow_id is None:
-        workflow_id = "sdk-workflow"
-    if batch_start_time is None:
-        batch_start_time = datetime.now(timezone.utc)
-    elif batch_start_time.tzinfo is None:
-        raise ValueError("batch_start_time must be timezone-aware")
-
-    if series_id is None:
-        raise ValueError("series_id must be provided")
-
-    if routing is None:
-        raise ValueError("routing must be provided")
-
     # Validate columns before accessing df['value'] to give a clear error message
     _validate_df_columns(df)
 
@@ -1544,29 +1694,16 @@ def _insert(
         series_id=series_id,
     )
 
-    try:
-        with _get_connection(_pool, conninfo) as conn:
-            batch_id = db.insert.insert_values(
-                conninfo=conn,
-                workflow_id=workflow_id,
-                batch_start_time=batch_start_time,
-                batch_finish_time=batch_finish_time,
-                value_rows=value_rows,
-                knowledge_time=knowledge_time,
-                batch_params=batch_params,
-                series_id=series_id,
-                routing=routing,
-            )
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        raise ValueError(
-            "TimeDB tables do not exist. Please create the schema first by running:\n"
-            "  td.create()"
-        ) from e
-
-    return InsertResult(
-        batch_id=batch_id,
+    return _insert_rows(
+        value_rows=value_rows,
         workflow_id=workflow_id,
+        batch_start_time=batch_start_time,
+        batch_finish_time=batch_finish_time,
+        knowledge_time=knowledge_time,
+        batch_params=batch_params,
         series_id=series_id,
+        routing=routing,
+        _pool=_pool,
     )
 
 
