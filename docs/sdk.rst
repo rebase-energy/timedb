@@ -154,7 +154,7 @@ For overlapping (versioned) series, use ``knowledge_time`` to indicate when the 
 .. code-block:: python
 
    result = td.get_series("wind_power").where(site="offshore_1").insert(
-       df=df,
+       df,
        knowledge_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
    )
 
@@ -163,7 +163,7 @@ Full insert signature:
 .. code-block:: python
 
    result = td.get_series("name").where(...).insert(
-       df=pd.DataFrame(...),  # Columns: [valid_time, value] or [valid_time, valid_time_end, value]
+       pd.DataFrame(...),  # Columns: [valid_time, value] or [valid_time, valid_time_end, value]
        workflow_id=None,  # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
        batch_finish_time=None,  # Optional
@@ -187,7 +187,7 @@ Install the optional pint dependencies first: ``pip install timedb[pint]``
    })
 
    # kW is automatically converted to MW (the series' canonical unit)
-   td.get_series("power").insert(df=df)
+   td.get_series("power").insert(df)
 
 Rules:
 
@@ -217,7 +217,7 @@ For interval-based data (e.g., energy over a time period):
        "value": [100.0, 105.0, 110.0] * 8
    })
 
-   td.get_series("energy").where(...).insert(df=df_intervals)
+   td.get_series("energy").where(...).insert(df_intervals)
 
 Reading Data
 ------------
@@ -608,7 +608,7 @@ Best Practices
    .. code-block:: python
 
       td.get_series("forecast").insert(
-          df=df,
+          df,
           knowledge_time=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
       )
 
@@ -617,7 +617,7 @@ Best Practices
    .. code-block:: python
 
       td.get_series("power").insert(
-          df=df,
+          df,
           workflow_id="forecast-v2"
       )
 
@@ -655,7 +655,7 @@ A complete workflow from setup to analysis:
    })
 
    result = td.get_series("wind_power").where(site="Gotland").insert(
-       df=df,
+       df,
        knowledge_time=base_time,
        workflow_id="forecast-run-1"
    )
@@ -668,7 +668,7 @@ A complete workflow from setup to analysis:
    })
 
    td.get_series("wind_power").where(site="Gotland").insert(
-       df=df_revised,
+       df_revised,
        knowledge_time=revised_time,
        workflow_id="forecast-run-1"
    )

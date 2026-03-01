@@ -18,7 +18,7 @@ def test_insert_flat_no_batch(td, clean_db, sample_datetime):
         "value": [20.5, 21.0],
     })
 
-    result = td.get_series("temperature").insert(df=df)
+    result = td.get_series("temperature").insert(df)
 
     assert result.batch_id is None
     assert result.series_id > 0
@@ -50,7 +50,7 @@ def test_insert_flat_with_knowledge_time(td, clean_db, sample_datetime):
     })
 
     result = td.get_series("temperature").insert(
-        df=df,
+        df,
         batch_start_time=sample_datetime,
         knowledge_time=knowledge_time,
     )
@@ -81,7 +81,7 @@ def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
         "value": [100.5, 101.0, 102.5],
     })
 
-    result = td.get_series("power").insert(df=df)
+    result = td.get_series("power").insert(df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -99,7 +99,7 @@ def test_insert_flat_interval(td, clean_db, sample_datetime):
         "value": [500.0],
     })
 
-    result = td.get_series("energy").insert(df=df)
+    result = td.get_series("energy").insert(df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -118,14 +118,14 @@ def test_insert_flat_upsert(td, clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.get_series("meter").insert(df=df1)
+    td.get_series("meter").insert(df1)
 
     # Second insert with different value for same valid_time
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [150.0],
     })
-    td.get_series("meter").insert(df=df2)
+    td.get_series("meter").insert(df2)
 
     # Should still have only 1 row (upsert), with updated value
     with psycopg.connect(clean_db) as conn:
@@ -153,7 +153,7 @@ def test_insert_overlapping_creates_batch(td, clean_db, sample_datetime):
         "value": [50.0, 55.0],
     })
 
-    result = td.get_series("wind_forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("wind_forecast").insert(df, knowledge_time=sample_datetime)
 
     assert result.batch_id is not None
     assert result.series_id > 0
@@ -187,7 +187,7 @@ def test_insert_overlapping_short_tier(td, clean_db):
         "value": [42.0],
     })
 
-    td.get_series("price_forecast").insert(df=df, knowledge_time=recent_time)
+    td.get_series("price_forecast").insert(df, knowledge_time=recent_time)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -213,7 +213,7 @@ def test_insert_overlapping_long_tier(td, clean_db, sample_datetime):
         "value": [15.0],
     })
 
-    td.get_series("climate_forecast").insert(df=df, knowledge_time=sample_datetime)
+    td.get_series("climate_forecast").insert(df, knowledge_time=sample_datetime)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -235,7 +235,7 @@ def test_insert_overlapping_interval(td, clean_db, sample_datetime):
     })
 
     td.get_series("energy_forecast").insert(
-        df=df, knowledge_time=sample_datetime,
+        df, knowledge_time=sample_datetime,
     )
 
     with psycopg.connect(clean_db) as conn:
@@ -260,4 +260,4 @@ def test_insert_timezone_aware_required(td):
     })
 
     with pytest.raises(ValueError, match="timezone-aware"):
-        td.get_series("temp").insert(df=df)
+        td.get_series("temp").insert(df)

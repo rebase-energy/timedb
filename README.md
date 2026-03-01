@@ -80,7 +80,7 @@ df = pd.DataFrame({
 
 td.get_series("wind_power")
    .where(site="offshore_1")
-   .insert(df=df, knowledge_time=knowledge_time)
+   .insert(df, knowledge_time=knowledge_time)
 
 # 3. Read latest forecast
 df_latest = td.get_series("wind_power").where(site="offshore_1").read()

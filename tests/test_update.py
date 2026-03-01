@@ -16,7 +16,7 @@ def _setup_overlapping_series(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    result = td.get_series("forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("forecast").insert(df, knowledge_time=sample_datetime)
 
     return td, result, series_id
 
@@ -171,7 +171,7 @@ def test_update_nonexistent_record_without_value(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    result = td.get_series("forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("forecast").insert(df, knowledge_time=sample_datetime)
 
     # Try to update a different valid_time that doesn't exist
     non_existent_time = sample_datetime + timedelta(hours=999)
@@ -196,7 +196,7 @@ def test_update_nonexistent_record_with_value(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    result = td.get_series("forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("forecast").insert(df, knowledge_time=sample_datetime)
 
     # Update a different valid_time — even with a value this must fail now
     new_time = sample_datetime + timedelta(hours=1)
@@ -303,7 +303,7 @@ def _setup_flat_series(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.get_series("meter_reading").insert(df=df)
+    td.get_series("meter_reading").insert(df)
 
     return td, series_id
 

@@ -8,7 +8,7 @@ Quick usage:
     td.create_series(name='wind_power', unit='MW',
                      labels={'site': 'offshore_1'}, overlapping=True)
 
-    td.get_series('wind_power').where(site='offshore_1').insert(df=df, knowledge_time=knowledge_time)
+    td.get_series('wind_power').where(site='offshore_1').insert(df, knowledge_time=knowledge_time)
     df = td.get_series('wind_power').where(site='offshore_1').read()
 
 Explicit client usage (for custom connection settings):

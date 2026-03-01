@@ -135,7 +135,7 @@ def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
         "value": [100.5],
     })
 
-    result = td.get_series("power").insert(df=df)
+    result = td.get_series("power").insert(df)
     assert result.batch_id is None
 
     with psycopg.connect(clean_db) as conn:

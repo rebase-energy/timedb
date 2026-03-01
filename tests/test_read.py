@@ -19,13 +19,13 @@ def test_read_flat_via_sdk(td, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [20.5, 21.0],
     })
-    td.get_series("temperature").insert(df=df_temp)
+    td.get_series("temperature").insert(df_temp)
 
     df_hum = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [65.0],
     })
-    td.get_series("humidity").insert(df=df_hum)
+    td.get_series("humidity").insert(df_hum)
 
     # Read all flat via SDK
     df = td.get_series("temperature").read(
@@ -46,7 +46,7 @@ def test_read_flat_db_layer(td, clean_db, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [100.0, 101.0],
     })
-    td.get_series("power").insert(df=df)
+    td.get_series("power").insert(df)
 
     # Read via db layer
     result = read.read_flat(
@@ -74,7 +74,7 @@ def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
         ],
         "value": [100.0, 101.0, 102.0, 103.0],
     })
-    td.get_series("power").insert(df=df)
+    td.get_series("power").insert(df)
 
     # Read only a subset
     result = read.read_flat(
@@ -107,7 +107,7 @@ def test_read_overlapping_latest_via_sdk(td, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [50.0, 55.0],
     })
-    td.get_series("wind_forecast").insert(df=df, knowledge_time=sample_datetime)
+    td.get_series("wind_forecast").insert(df, knowledge_time=sample_datetime)
 
     # Read latest (default, versions=False)
     result = td.get_series("wind_forecast").read(
@@ -132,7 +132,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [50.0, 55.0],
     })
-    td.get_series("wind_forecast").insert(df=df1, knowledge_time=knowledge_time_1)
+    td.get_series("wind_forecast").insert(df1, knowledge_time=knowledge_time_1)
 
     # Insert second batch (revision) for the same valid times
     knowledge_time_2 = sample_datetime + timedelta(hours=1)
@@ -140,7 +140,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value": [52.0, 57.0],
     })
-    td.get_series("wind_forecast").insert(df=df2, knowledge_time=knowledge_time_2)
+    td.get_series("wind_forecast").insert(df2, knowledge_time=knowledge_time_2)
 
     # Read forecast history (one row per knowledge_time × valid_time)
     result = td.get_series("wind_forecast").read(
@@ -167,14 +167,14 @@ def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.get_series("forecast").insert(df=df1, knowledge_time=knowledge_time_1)
+    td.get_series("forecast").insert(df1, knowledge_time=knowledge_time_1)
 
     knowledge_time_2 = sample_datetime + timedelta(hours=1)
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [105.0],
     })
-    td.get_series("forecast").insert(df=df2, knowledge_time=knowledge_time_2)
+    td.get_series("forecast").insert(df2, knowledge_time=knowledge_time_2)
 
     result = read.read_overlapping(
         clean_db,
@@ -200,7 +200,7 @@ def test_read_overlapping_latest_picks_newest(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.get_series("price").insert(df=df1, knowledge_time=sample_datetime)
+    td.get_series("price").insert(df1, knowledge_time=sample_datetime)
 
     # Insert revised forecast with newer knowledge_time
     df2 = pd.DataFrame({
@@ -208,7 +208,7 @@ def test_read_overlapping_latest_picks_newest(td, sample_datetime):
         "value": [110.0],
     })
     td.get_series("price").insert(
-        df=df2,
+        df2,
         knowledge_time=sample_datetime + timedelta(hours=1),
     )
 
@@ -239,12 +239,12 @@ def test_read_relative_basic_via_sdk(td, sample_datetime):
     # knowledge_time strictly before the cutoff (sample_datetime - 12h): included
     kt_early = sample_datetime - timedelta(hours=13)
     df_early = pd.DataFrame({"valid_time": valid_times, "value": [10.0, 11.0, 12.0]})
-    td.get_series("wind_forecast").insert(df=df_early, knowledge_time=kt_early)
+    td.get_series("wind_forecast").insert(df_early, knowledge_time=kt_early)
 
     # knowledge_time after the cutoff: excluded
     kt_late = sample_datetime - timedelta(hours=11)
     df_late = pd.DataFrame({"valid_time": valid_times, "value": [99.0, 99.0, 99.0]})
-    td.get_series("wind_forecast").insert(df=df_late, knowledge_time=kt_late)
+    td.get_series("wind_forecast").insert(df_late, knowledge_time=kt_late)
 
     result = td.get_series("wind_forecast").read_relative(
         start_valid=sample_datetime,
@@ -278,7 +278,7 @@ def test_read_relative_picks_latest_before_cutoff(td, sample_datetime):
 
     for kt, val in [(kt1, 1.0), (kt2, 2.0), (kt3, 3.0), (kt4, 99.0)]:
         td.get_series("wind_forecast").insert(
-            df=pd.DataFrame({"valid_time": valid_times, "value": [val]}),
+            pd.DataFrame({"valid_time": valid_times, "value": [val]}),
             knowledge_time=kt,
         )
 
@@ -315,19 +315,19 @@ def test_read_relative_multi_window(td, sample_datetime):
     kt_w2_late = sample_datetime + timedelta(hours=13)
 
     td.get_series("wind_forecast").insert(
-        df=pd.DataFrame({"valid_time": [w1_valid, w2_valid], "value": [1.0, 2.0]}),
+        pd.DataFrame({"valid_time": [w1_valid, w2_valid], "value": [1.0, 2.0]}),
         knowledge_time=kt_w1,
     )
     td.get_series("wind_forecast").insert(
-        df=pd.DataFrame({"valid_time": [w1_valid, w2_valid], "value": [99.0, 99.0]}),
+        pd.DataFrame({"valid_time": [w1_valid, w2_valid], "value": [99.0, 99.0]}),
         knowledge_time=kt_w1_late,
     )
     td.get_series("wind_forecast").insert(
-        df=pd.DataFrame({"valid_time": [w2_valid], "value": [2.0]}),
+        pd.DataFrame({"valid_time": [w2_valid], "value": [2.0]}),
         knowledge_time=kt_w2,
     )
     td.get_series("wind_forecast").insert(
-        df=pd.DataFrame({"valid_time": [w2_valid], "value": [99.0]}),
+        pd.DataFrame({"valid_time": [w2_valid], "value": [99.0]}),
         knowledge_time=kt_w2_late,
     )
 
@@ -354,7 +354,7 @@ def test_read_relative_empty_when_no_qualifying_forecasts(td, sample_datetime):
     # Insert only with knowledge_time after the cutoff
     kt_too_late = sample_datetime - timedelta(hours=11)
     td.get_series("wind_forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [99.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [99.0]}),
         knowledge_time=kt_too_late,
     )
 
@@ -373,7 +373,7 @@ def test_read_relative_raises_for_flat_series(td, sample_datetime):
     """read_relative raises ValueError for non-overlapping (flat) series."""
     td.create_series(name="temperature", unit="dimensionless", overlapping=False)
     td.get_series("temperature").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
     )
 
     with pytest.raises(ValueError, match="flat series"):
@@ -394,7 +394,7 @@ def test_read_relative_db_layer(td, clean_db, sample_datetime):
 
     kt = sample_datetime - timedelta(hours=13)
     td.get_series("wind_forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [42.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [42.0]}),
         knowledge_time=kt,
     )
 
@@ -433,7 +433,7 @@ def test_read_relative_daily_basic(td, sample_datetime):
 
     for kt, val in [(kt_early, 10.0), (kt_late, 99.0)]:
         td.get_series("wind_forecast").insert(
-            df=pd.DataFrame({"valid_time": [sample_datetime], "value": [val]}),
+            pd.DataFrame({"valid_time": [sample_datetime], "value": [val]}),
             knowledge_time=kt,
         )
 
@@ -462,7 +462,7 @@ def test_read_relative_daily_same_day(td, sample_datetime):
 
     for kt, val in [(kt_before, 5.0), (kt_after, 99.0)]:
         td.get_series("price").insert(
-            df=pd.DataFrame({"valid_time": [sample_datetime], "value": [val]}),
+            pd.DataFrame({"valid_time": [sample_datetime], "value": [val]}),
             knowledge_time=kt,
         )
 
@@ -512,7 +512,7 @@ def test_read_mode_history_hides_corrections(td, sample_datetime):
                      overlapping=True, retention="medium")
 
     result = td.get_series("forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
         knowledge_time=sample_datetime,
     )
 
@@ -537,7 +537,7 @@ def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
                      overlapping=True, retention="medium")
 
     result = td.get_series("forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
         knowledge_time=sample_datetime,
     )
 
@@ -567,11 +567,11 @@ def test_read_include_updates_overlapping(td, sample_datetime):
     kt_new = sample_datetime + timedelta(hours=1)
 
     result_old = td.get_series("forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [10.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [10.0]}),
         knowledge_time=kt_old,
     )
     result_new = td.get_series("forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]}),
         knowledge_time=kt_new,
     )
 
@@ -601,7 +601,7 @@ def test_read_include_updates_flat(td, sample_datetime):
     td.create_series(name="temperature", unit="dimensionless", overlapping=False)
 
     td.get_series("temperature").insert(
-        df=pd.DataFrame({
+        pd.DataFrame({
             "valid_time": [sample_datetime],
             "value": [20.0],
         })
@@ -632,7 +632,7 @@ def test_read_overlapping_true_raises_for_flat(td, sample_datetime):
     td.create_series(name="temperature", unit="dimensionless", overlapping=False)
 
     td.get_series("temperature").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
     )
 
     with pytest.raises(ValueError, match="overlapping"):
@@ -647,7 +647,7 @@ def test_read_relative_picks_latest_correction(td, sample_datetime):
     kt = sample_datetime - timedelta(hours=13)
 
     result = td.get_series("forecast").insert(
-        df=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
+        pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
         knowledge_time=kt,
     )
 
