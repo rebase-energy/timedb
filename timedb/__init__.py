@@ -28,7 +28,7 @@ from .sdk import (
     InsertResult,
     IncompatibleUnitError,
 )
-from timedatamodel import TimeSeries, MultivariateTimeSeries, MultiTimeSeries, Resolution, Frequency, TimeSeriesType, DataType
+from timedatamodel import TimeSeries, MultivariateTimeSeries, MultiTimeSeries, Frequency, TimeSeriesType, DataType
 
 # ---------------------------------------------------------------------------
 # Lazy default client & module-level convenience functions
@@ -85,7 +85,6 @@ __all__ = [
     'TimeSeries',
     'MultivariateTimeSeries',
     'MultiTimeSeries',
-    'Resolution',
     'Frequency',
     'TimeSeriesType',
     'DataType',

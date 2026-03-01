@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
 
-from timedatamodel import TimeSeries, MultivariateTimeSeries, Resolution, Frequency, TimeSeriesType
+from timedatamodel import TimeSeries, MultivariateTimeSeries, Frequency, TimeSeriesType
 
 
 # =============================================================================
@@ -16,7 +16,7 @@ def test_insert_timeseries_flat(td, clean_db, sample_datetime):
     td.create_series(name="temperature", unit="C")
 
     ts = TimeSeries(
-        resolution=Resolution(Frequency.PT1H),
+        Frequency.PT1H,
         name="temperature",
         unit="C",
         timestamps=[sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -36,7 +36,7 @@ def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
     td.create_series(name="wind_forecast", unit="MW", overlapping=True)
 
     ts = TimeSeries(
-        resolution=Resolution(Frequency.PT1H),
+        Frequency.PT1H,
         timestamps=[sample_datetime, sample_datetime + timedelta(hours=1)],
         values=[100.0, 110.0],
     )
@@ -173,7 +173,7 @@ def test_roundtrip_timeseries(td, clean_db, sample_datetime):
     )
 
     ts_in = TimeSeries(
-        resolution=Resolution(Frequency.PT1H),
+        Frequency.PT1H,
         name="wind_power",
         unit="MW",
         description="Wind generation",
@@ -211,7 +211,7 @@ def test_insert_multi_timeseries(td, clean_db, sample_datetime):
     values = np.array([[10.0, 20.0], [15.0, 25.0]])
 
     mts = MultivariateTimeSeries(
-        Resolution(Frequency.PT1H),
+        Frequency.PT1H,
         timestamps=timestamps,
         values=values,
         names=["power", "temperature"],

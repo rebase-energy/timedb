@@ -27,7 +27,7 @@ from .db.series import SeriesRegistry
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
-from timedatamodel import TimeSeries, MultivariateTimeSeries, TimeSeriesType, Resolution, Frequency
+from timedatamodel import TimeSeries, MultivariateTimeSeries, TimeSeriesType, Frequency
 
 
 class InsertResult(NamedTuple):
@@ -509,10 +509,8 @@ class SeriesCollection:
                 freq = _TIMEDELTA_TO_FREQUENCY.get(delta, Frequency.NONE)
             else:
                 freq = Frequency.NONE
-            resolution = Resolution(frequency=freq)
-
             return MultivariateTimeSeries(
-                resolution,
+                freq,
                 timestamps=sorted_ts,
                 values=values_2d,
                 names=[m.get("name") for m in metas],
@@ -607,9 +605,8 @@ class SeriesCollection:
         if as_timeseries:
             ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
             frequency = _infer_frequency(df)
-            resolution = Resolution(frequency=frequency)
             return TimeSeries.from_pandas(
-                df, resolution=resolution, value_column="value",
+                df, frequency=frequency, value_column="value",
                 name=meta.get("name"),
                 unit=meta.get("unit"),
                 description=meta.get("description"),
