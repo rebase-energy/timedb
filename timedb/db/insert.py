@@ -64,7 +64,8 @@ def insert_values(
     if not rows_list:
         return None
 
-    _t0_total = time.perf_counter()
+    _prof = profiling._enabled
+    _t0_total = time.perf_counter() if _prof else 0.0
     with _ensure_conn(conninfo) as conn:
         with conn.transaction():
             is_overlapping = routing["overlapping"]
@@ -72,7 +73,7 @@ def insert_values(
             # Route to appropriate insert function
             if not is_overlapping:
                 _insert_flat(conn, value_rows=rows_list, knowledge_time=knowledge_time)
-                profiling._record(profiling.PHASE_INSERT_TOTAL, time.perf_counter() - _t0_total)
+                if _prof: profiling._record(profiling.PHASE_INSERT_TOTAL, time.perf_counter() - _t0_total)
                 return None
             else:
                 batch_id, batch_knowledge_time = _create_batch(
@@ -91,7 +92,7 @@ def insert_values(
                     series_id=series_id,
                     routing=routing,
                 )
-                profiling._record(profiling.PHASE_INSERT_TOTAL, time.perf_counter() - _t0_total)
+                if _prof: profiling._record(profiling.PHASE_INSERT_TOTAL, time.perf_counter() - _t0_total)
                 return batch_id
 
 
@@ -122,7 +123,8 @@ def _create_batch(
     if knowledge_time is not None and knowledge_time.tzinfo is None:
         raise ValueError("knowledge_time must be timezone-aware")
 
-    _t0 = time.perf_counter()
+    _prof = profiling._enabled
+    _t0 = time.perf_counter() if _prof else 0.0
     with conn.cursor() as cur:
         if knowledge_time is not None:
             cur.execute(
@@ -150,7 +152,7 @@ def _create_batch(
             )
         result = cur.fetchone()
         assert result is not None
-    profiling._record(profiling.PHASE_INSERT_BATCH_META, time.perf_counter() - _t0)
+    if _prof: profiling._record(profiling.PHASE_INSERT_BATCH_META, time.perf_counter() - _t0)
     return result[0], result[1]
 
 
@@ -178,7 +180,8 @@ def _insert_flat(
     # Normalize to (series_id, valid_time, valid_time_end, value, knowledge_time) format
     first_row = value_rows[0]
 
-    _t0 = time.perf_counter()
+    _prof = profiling._enabled
+    _t0 = time.perf_counter() if _prof else 0.0
     if len(first_row) == 3:
         # Point-in-time: (valid_time, series_id, value)
         rows_with_kt = [(row[1], row[0], None, row[2], knowledge_time) for row in value_rows]
@@ -190,12 +193,12 @@ def _insert_flat(
             "Flat rows must be (valid_time, series_id, value) "
             "or (valid_time, valid_time_end, series_id, value)"
         )
-    profiling._record(profiling.PHASE_INSERT_NORMALIZE, time.perf_counter() - _t0)
+    if _prof: profiling._record(profiling.PHASE_INSERT_NORMALIZE, time.perf_counter() - _t0)
 
     with conn.cursor() as cur:
         if len(rows_with_kt) >= _COPY_THRESHOLD:
             # COPY path: staging table → INSERT...ON CONFLICT
-            _t0 = time.perf_counter()
+            _t0 = time.perf_counter() if _prof else 0.0
             cur.execute("""
                 CREATE TEMP TABLE _flat_staging (
                     series_id bigint,
@@ -205,24 +208,24 @@ def _insert_flat(
                     knowledge_time timestamptz
                 ) ON COMMIT DROP
             """)
-            profiling._record(profiling.PHASE_INSERT_STAGE_CREATE, time.perf_counter() - _t0)
+            if _prof: profiling._record(profiling.PHASE_INSERT_STAGE_CREATE, time.perf_counter() - _t0)
 
-            _t0 = time.perf_counter()
+            _t0 = time.perf_counter() if _prof else 0.0
             with cur.copy("COPY _flat_staging (series_id, valid_time, valid_time_end, value, knowledge_time) FROM STDIN") as copy:
                 for row in rows_with_kt:
                     copy.write_row(row)
-            profiling._record(profiling.PHASE_INSERT_COPY, time.perf_counter() - _t0)
+            if _prof: profiling._record(profiling.PHASE_INSERT_COPY, time.perf_counter() - _t0)
 
-            _t0 = time.perf_counter()
+            _t0 = time.perf_counter() if _prof else 0.0
             cur.execute("""
                 INSERT INTO flat (series_id, valid_time, valid_time_end, value, knowledge_time)
                 SELECT series_id, valid_time, valid_time_end, value, COALESCE(knowledge_time, now()) FROM _flat_staging
                 ON CONFLICT (series_id, valid_time)
                 DO UPDATE SET value = EXCLUDED.value, valid_time_end = EXCLUDED.valid_time_end, knowledge_time = EXCLUDED.knowledge_time
             """)
-            profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
+            if _prof: profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
         else:
-            _t0 = time.perf_counter()
+            _t0 = time.perf_counter() if _prof else 0.0
             cur.executemany(
                 """
                 INSERT INTO flat (series_id, valid_time, valid_time_end, value, knowledge_time)
@@ -232,7 +235,7 @@ def _insert_flat(
                 """,
                 rows_with_kt,
             )
-            profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
+            if _prof: profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
 
 
 def _insert_overlapping(
@@ -262,7 +265,8 @@ def _insert_overlapping(
     # Detect format from first row (all rows have same format in single-series inserts)
     first_row = value_rows[0]
 
-    _t0 = time.perf_counter()
+    _prof = profiling._enabled
+    _t0 = time.perf_counter() if _prof else 0.0
     if len(first_row) == 3:
         # Point-in-time: (valid_time, series_id, value)
         rows_prepared = [
@@ -280,7 +284,7 @@ def _insert_overlapping(
             "Overlapping rows must be (valid_time, series_id, value) "
             "or (valid_time, valid_time_end, series_id, value)"
         )
-    profiling._record(profiling.PHASE_INSERT_NORMALIZE, time.perf_counter() - _t0)
+    if _prof: profiling._record(profiling.PHASE_INSERT_NORMALIZE, time.perf_counter() - _t0)
 
     # Route to retention tier
     retention = routing["retention"]
@@ -292,13 +296,13 @@ def _insert_overlapping(
             copy_sql = sql.SQL(
                 "COPY {} (batch_id, series_id, valid_time, valid_time_end, value, knowledge_time) FROM STDIN"
             ).format(sql.Identifier(table))
-            _t0 = time.perf_counter()
+            _t0 = time.perf_counter() if _prof else 0.0
             with cur.copy(copy_sql) as copy:
                 for row in rows_prepared:
                     copy.write_row(row)
-            profiling._record(profiling.PHASE_INSERT_COPY, time.perf_counter() - _t0)
+            if _prof: profiling._record(profiling.PHASE_INSERT_COPY, time.perf_counter() - _t0)
         else:
-            _t0 = time.perf_counter()
+            _t0 = time.perf_counter() if _prof else 0.0
             cur.executemany(
                 sql.SQL("""
                 INSERT INTO {} (batch_id, series_id, valid_time, valid_time_end, value, knowledge_time)
@@ -306,6 +310,6 @@ def _insert_overlapping(
                 """).format(sql.Identifier(table)),
                 rows_prepared,
             )
-            profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
+            if _prof: profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
 
 

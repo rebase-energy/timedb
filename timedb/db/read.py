@@ -82,24 +82,25 @@ def _timed_query(
     Returns:
         Flat DataFrame (no index set); callers set the index.
     """
+    _prof = profiling._enabled
     with conn.cursor() as cur:
-        _t0 = time.perf_counter()
+        _t0 = time.perf_counter() if _prof else 0.0
         cur.execute(sql, params)
-        profiling._record(profiling.PHASE_READ_SQL_EXEC, time.perf_counter() - _t0)
+        if _prof: profiling._record(profiling.PHASE_READ_SQL_EXEC, time.perf_counter() - _t0)
 
-        _t0 = time.perf_counter()
+        _t0 = time.perf_counter() if _prof else 0.0
         rows = cur.fetchall()
         col_names = [desc.name for desc in cur.description] if cur.description else []
-        profiling._record(profiling.PHASE_READ_FETCH, time.perf_counter() - _t0)
+        if _prof: profiling._record(profiling.PHASE_READ_FETCH, time.perf_counter() - _t0)
 
-    _t0 = time.perf_counter()
+    _t0 = time.perf_counter() if _prof else 0.0
     df = pd.DataFrame(rows, columns=col_names)
     for col in timestamp_cols:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], utc=True)
     if "value" in df.columns and len(df) > 0:
         df["value"] = df["value"].astype("float64")
-    profiling._record(profiling.PHASE_READ_DATAFRAME, time.perf_counter() - _t0)
+    if _prof: profiling._record(profiling.PHASE_READ_DATAFRAME, time.perf_counter() - _t0)
 
     return df
 
@@ -142,10 +143,11 @@ def read_flat(
     ORDER BY v.valid_time;
     """
 
-    _t0_total = time.perf_counter()
+    _prof = profiling._enabled
+    _t0_total = time.perf_counter() if _prof else 0.0
     with _ensure_conn(conninfo) as conn:
         df = _timed_query(conn, sql, params, timestamp_cols=["valid_time"])
-    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
+    if _prof: profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
@@ -196,10 +198,11 @@ def read_overlapping_latest(
     ORDER BY v.valid_time, v.knowledge_time DESC, v.change_time DESC;
     """
 
-    _t0_total = time.perf_counter()
+    _prof = profiling._enabled
+    _t0_total = time.perf_counter() if _prof else 0.0
     with _ensure_conn(conninfo) as conn:
         df = _timed_query(conn, sql, params, timestamp_cols=["valid_time"])
-    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
+    if _prof: profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
@@ -276,10 +279,11 @@ def read_overlapping_relative(
     ORDER BY valid_time, knowledge_time DESC, change_time DESC;
     """
 
-    _t0_total = time.perf_counter()
+    _prof = profiling._enabled
+    _t0_total = time.perf_counter() if _prof else 0.0
     with _ensure_conn(conninfo) as conn:
         df = _timed_query(conn, sql, params, timestamp_cols=["valid_time"])
-    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
+    if _prof: profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df
@@ -331,10 +335,11 @@ def read_overlapping(
     ORDER BY v.knowledge_time, v.valid_time, v.change_time DESC;
     """
 
-    _t0_total = time.perf_counter()
+    _prof = profiling._enabled
+    _t0_total = time.perf_counter() if _prof else 0.0
     with _ensure_conn(conninfo) as conn:
         df = _timed_query(conn, sql, params, timestamp_cols=["knowledge_time", "valid_time"])
-    profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
+    if _prof: profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t0_total)
 
     if len(df) == 0:
         return df

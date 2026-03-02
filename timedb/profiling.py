@@ -1,8 +1,9 @@
 """
 Opt-in per-phase timing collector for TimeDB internal operations.
 
-Disabled by default — zero overhead in production. Benchmark scripts
-activate it per-trial to collect phase-level timing breakdowns.
+Disabled by default — zero overhead when disabled (no perf_counter calls,
+no function calls). Benchmark scripts activate it per-trial to collect
+phase-level timing breakdowns.
 
 Not thread-safe; designed for single-threaded benchmark use.
 
