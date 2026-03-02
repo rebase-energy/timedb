@@ -263,13 +263,16 @@ class SeriesQuery:
                 col_df.columns = ["valid_time", "value"]
 
                 col_name = col_ts.name
+                # Merge per-column labels from data with the SeriesQuery's label_filters
+                col_labels = col_ts.labels if col_ts.labels else {}
+                merged_labels = {**self._label_filters, **col_labels}
                 # Resolve each column with a fresh registry to avoid cache conflicts
                 col_registry = SeriesRegistry()
                 col_coll = SeriesQuery(
                     conninfo=self._conninfo,
                     name=col_name or self._name,
                     unit=self._unit,
-                    label_filters=self._label_filters,
+                    label_filters=merged_labels,
                     _registry=col_registry,
                     _pool=self._pool,
                 )
