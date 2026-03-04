@@ -1,10 +1,30 @@
 import os
-import warnings
+import time
 from contextlib import contextmanager
-import pandas as pd
-import psycopg
 from datetime import datetime, timedelta
-from typing import Optional, Union
+from typing import Dict, List, Optional, Union
+
+import psycopg
+import pyarrow as pa
+
+from .. import profiling
+
+
+# ---------------------------------------------------------------------------
+# Arrow type constants
+# ---------------------------------------------------------------------------
+
+_TS_TYPE = pa.timestamp("us", tz="UTC")
+
+_COL_ARROW_TYPE: Dict[str, pa.DataType] = {
+    "valid_time":     _TS_TYPE,
+    "valid_time_end": _TS_TYPE,
+    "knowledge_time": _TS_TYPE,
+    "change_time":    _TS_TYPE,
+    "value":          pa.float64(),
+    "changed_by":     pa.string(),
+    "annotation":     pa.string(),
+}
 
 
 @contextmanager
@@ -15,6 +35,60 @@ def _ensure_conn(conninfo_or_conn):
             yield conn
     else:
         yield conninfo_or_conn
+
+
+def _fetch_arrow(
+    conn: psycopg.Connection,
+    sql: str,
+    params: dict,
+    columns: List[str],
+) -> pa.Table:
+    """Execute *sql* with a binary cursor and return results as a ``pa.Table``.
+
+    Using the psycopg3 binary wire protocol avoids the text-to-datetime
+    parsing overhead in ``pd.read_sql`` and yields a zero-copy Arrow table
+    that can be wrapped in ``TimeSeries.from_arrow()`` without further
+    conversion.
+
+    Parameters
+    ----------
+    conn:
+        An open psycopg ``Connection``.
+    sql:
+        SQL query string with ``%(name)s`` placeholders.
+    params:
+        Query parameter dict.
+    columns:
+        Column names in the order they appear in the SELECT clause.
+        Used to build the Arrow schema; each name must be a key in
+        ``_COL_ARROW_TYPE``.
+    """
+    _prof = profiling._enabled
+    _t_total = time.perf_counter() if _prof else 0.0
+
+    with conn.cursor(binary=True) as cur:
+        _t0 = time.perf_counter() if _prof else 0.0
+        cur.execute(sql, params)  # type: ignore[arg-type]  # psycopg stubs are stricter than runtime
+        if _prof: profiling._record(profiling.PHASE_READ_SQL_EXEC, time.perf_counter() - _t0)
+
+        _t0 = time.perf_counter() if _prof else 0.0
+        rows = cur.fetchall()
+        if _prof: profiling._record(profiling.PHASE_READ_FETCH_ROWS, time.perf_counter() - _t0)
+
+    _t0 = time.perf_counter() if _prof else 0.0
+    if not rows:
+        result = pa.table({c: pa.array([], type=_COL_ARROW_TYPE[c]) for c in columns})
+    else:
+        # Transpose row-major list-of-tuples → column-major tuple-of-lists.
+        col_data = list(zip(*rows))
+        result = pa.table({
+            col: pa.array(data, type=_COL_ARROW_TYPE[col])
+            for col, data in zip(columns, col_data)
+        })
+    if _prof: profiling._record(profiling.PHASE_READ_BUILD_ARROW, time.perf_counter() - _t0)
+
+    if _prof: profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t_total)
+    return result
 
 
 def _build_where_clause(
@@ -65,7 +139,7 @@ def read_flat(
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read flat (fact) values from the flat table.
 
@@ -78,7 +152,7 @@ def read_flat(
         end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (valid_time) and columns (value)
+        ``pa.Table`` with columns ``(valid_time, value)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -95,22 +169,8 @@ def read_flat(
     ORDER BY v.valid_time;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index("valid_time")
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(conn, sql, params, ["valid_time", "value"])
 
 
 def read_overlapping_latest(
@@ -121,7 +181,7 @@ def read_overlapping_latest(
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read latest overlapping values from the overlapping table.
 
@@ -137,7 +197,7 @@ def read_overlapping_latest(
         end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (valid_time) and columns (value)
+        ``pa.Table`` with columns ``(valid_time, value)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -155,22 +215,8 @@ def read_overlapping_latest(
     ORDER BY v.valid_time, v.knowledge_time DESC, v.change_time DESC;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index("valid_time")
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(conn, sql, params, ["valid_time", "value"])
 
 
 def read_overlapping_relative(
@@ -182,7 +228,7 @@ def read_overlapping_relative(
     start_window: datetime,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read overlapping values using a per-window knowledge_time cutoff.
 
@@ -202,7 +248,7 @@ def read_overlapping_relative(
         end_valid: End of valid time range (optional)
 
     Returns:
-        DataFrame with index (valid_time) and columns (value)
+        ``pa.Table`` with columns ``(valid_time, value)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -241,22 +287,8 @@ def read_overlapping_relative(
     ORDER BY valid_time, knowledge_time DESC, change_time DESC;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index("valid_time")
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(conn, sql, params, ["valid_time", "value"])
 
 
 def read_overlapping(
@@ -267,7 +299,7 @@ def read_overlapping(
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read overlapping forecast history, one row per (knowledge_time, valid_time).
 
@@ -284,7 +316,7 @@ def read_overlapping(
         end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (knowledge_time, valid_time) and columns (value)
+        ``pa.Table`` with columns ``(knowledge_time, valid_time, value)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -302,22 +334,8 @@ def read_overlapping(
     ORDER BY v.knowledge_time, v.valid_time, v.change_time DESC;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"knowledge_time": {"utc": True}, "valid_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index(["knowledge_time", "valid_time"])
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(conn, sql, params, ["knowledge_time", "valid_time", "value"])
 
 
 def read_overlapping_latest_with_updates(
@@ -328,7 +346,7 @@ def read_overlapping_latest_with_updates(
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read all corrections for the currently winning forecast run per valid_time.
 
@@ -346,7 +364,7 @@ def read_overlapping_latest_with_updates(
         end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (valid_time, change_time) and columns (value, changed_by, annotation)
+        ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -371,22 +389,11 @@ def read_overlapping_latest_with_updates(
     ORDER BY v.valid_time, v.change_time;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}, "change_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index(["valid_time", "change_time"])
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(
+            conn, sql, params,
+            ["valid_time", "change_time", "value", "changed_by", "annotation"],
+        )
 
 
 def read_flat_with_updates(
@@ -397,7 +404,7 @@ def read_flat_with_updates(
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read flat values with edit metadata (change_time, changed_by, annotation).
 
@@ -413,7 +420,7 @@ def read_flat_with_updates(
         end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (valid_time, change_time) and columns (value, changed_by, annotation)
+        ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -430,22 +437,11 @@ def read_flat_with_updates(
     ORDER BY v.valid_time, v.change_time;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"valid_time": {"utc": True}, "change_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index(["valid_time", "change_time"])
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(
+            conn, sql, params,
+            ["valid_time", "change_time", "value", "changed_by", "annotation"],
+        )
 
 
 def read_overlapping_with_updates(
@@ -456,7 +452,7 @@ def read_overlapping_with_updates(
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """
     Read the full audit log from the overlapping table.
 
@@ -473,7 +469,7 @@ def read_overlapping_with_updates(
         end_known: End of knowledge_time range (optional)
 
     Returns:
-        DataFrame with index (knowledge_time, change_time, valid_time) and columns (value, changed_by, annotation)
+        ``pa.Table`` with columns ``(knowledge_time, change_time, valid_time, value, changed_by, annotation)``.
     """
     where_clause, params = _build_where_clause(
         series_id=series_id,
@@ -490,22 +486,11 @@ def read_overlapping_with_updates(
     ORDER BY v.knowledge_time, v.change_time, v.valid_time;
     """
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*pandas only supports SQLAlchemy.*")
-        with _ensure_conn(conninfo) as conn:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=params,
-                dtype={"value": "float64"},
-                parse_dates={"knowledge_time": {"utc": True}, "change_time": {"utc": True}, "valid_time": {"utc": True}},
-            )
-
-    if len(df) == 0:
-        return df
-
-    df = df.set_index(["knowledge_time", "change_time", "valid_time"])
-    return df
+    with _ensure_conn(conninfo) as conn:
+        return _fetch_arrow(
+            conn, sql, params,
+            ["knowledge_time", "change_time", "valid_time", "value", "changed_by", "annotation"],
+        )
 
 
 if __name__ == "__main__":

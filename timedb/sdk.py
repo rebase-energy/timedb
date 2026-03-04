@@ -16,14 +16,17 @@ Data model:
 """
 import atexit
 import os
+import warnings
 from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timedelta, timezone, time
-from itertools import repeat
 import pandas as pd
+import pyarrow as pa
 
 from . import db
 from .db.series import SeriesRegistry
+from timedatamodel.timeseries_arrow import TimeSeries, DataShape
+from timedatamodel.enums import TimeSeriesType
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
@@ -34,6 +37,7 @@ class InsertResult(NamedTuple):
     batch_id: Optional[int]
     workflow_id: Optional[str]
     series_id: int
+    batch_ids: Optional[List[int]] = None
 
 
 class IncompatibleUnitError(ValueError):
@@ -185,7 +189,7 @@ class SeriesCollection:
 
     def insert(
         self,
-        df: pd.DataFrame,
+        df: Union[pd.DataFrame, "TimeSeries"],
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
@@ -195,45 +199,61 @@ class SeriesCollection:
         """
         Insert time series data for this collection.
 
-        **Single-series inserts only.** DataFrame must have fixed columns:
-        - Point-in-time: [valid_time, value]
-        - Intervals: [valid_time, valid_time_end, value]
+        **Single-series inserts only.**  Accepts either:
 
-        Automatically routes data to the correct table based on the series' overlapping flag:
-        - flat (overlapping=False): inserts into 'flat' table (immutable facts, upsert on conflict)
-        - overlapping (overlapping=True): inserts into 'overlapping_{tier}' table with batch and knowledge_time
+        - A :class:`~timedb.timeseries.TimeSeries` with shape ``SIMPLE``.  The
+          series' ``unit`` is compared against the stored unit and a conversion
+          factor is applied automatically when they differ.
+        - A ``pd.DataFrame`` with columns ``[valid_time, value]`` or
+          ``[valid_time, valid_time_end, value]`` (backward-compatible).
+
+        Automatically routes data to the correct table based on the series'
+        overlapping flag:
+
+        - flat (``overlapping=False``): inserts into ``flat`` table (upsert on conflict)
+        - overlapping (``overlapping=True``): inserts into ``overlapping_{tier}``
+          table with batch and knowledge_time
+
+        For :attr:`~timedb.timeseries.DataShape.VERSIONED` inputs, each unique
+        ``knowledge_time`` value in the table becomes its own batch.  The
+        ``knowledge_time`` keyword argument is silently ignored in this case
+        (a :class:`UserWarning` is emitted).
 
         Args:
-            df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
+            df: TimeSeries or DataFrame with time series data
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
-            knowledge_time: Time of knowledge (optional, used for overlapping)
+            knowledge_time: Time of knowledge (optional, used for SIMPLE overlapping
+                inserts; ignored for VERSIONED inserts)
             batch_params: Batch parameters (optional)
 
         Returns:
-            InsertResult with batch_id, workflow_id, series_id
+            InsertResult with batch_id, workflow_id, series_id.  For VERSIONED
+            inserts ``batch_ids`` holds the list of created batch IDs and
+            ``batch_id`` is ``None``.
 
         Raises:
             ValueError: If collection matches multiple series (use more specific filters)
-            ValueError: If DataFrame doesn't have the required columns
+            ValueError: If input data doesn't have the required columns or shape
+            ValueError: If a VERSIONED TimeSeries is inserted into a flat series
         """
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
         series_unit = self._registry.get_cached(series_id)["unit"]
 
+        table, shape = _normalize_insert_input(df, series_unit, knowledge_time=knowledge_time)
+
         return _insert(
-            df=df,
+            table=table,
+            shape=shape,
+            series_id=series_id,
+            routing=routing,
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
-            knowledge_time=knowledge_time,
             batch_params=batch_params,
-            series_id=series_id,
-            routing=routing,
-            series_unit=series_unit,
             _pool=self._pool,
-            _registry=self._registry,
         )
 
     def update_records(self, updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -294,9 +314,13 @@ class SeriesCollection:
         overlapping: bool = False,
         include_updates: bool = False,
         as_pint: bool = False,
-    ) -> pd.DataFrame:
+    ) -> Union["TimeSeries", pd.DataFrame]:
         """
         Read time series data for this collection.
+
+        Returns a :class:`~timedb.timeseries.TimeSeries` instance.
+        Call ``.to_pandas()`` on it to get a ``pd.DataFrame`` with the
+        conventional index.
 
         **Single-series reads only.** Collection must resolve to exactly one series.
 
@@ -400,7 +424,7 @@ class SeriesCollection:
                     "Flat series have a single value per timestamp with no forecast runs."
                 )
             if include_updates:
-                df = _read_overlapping_with_updates(
+                table = _read_overlapping_with_updates(
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -409,7 +433,7 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
             else:
-                df = _read_overlapping(
+                table = _read_overlapping(
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -419,7 +443,7 @@ class SeriesCollection:
                 )
         elif include_updates:
             if is_overlapping:
-                df = _read_overlapping_latest_with_updates(
+                table = _read_overlapping_latest_with_updates(
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -428,7 +452,7 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
             else:
-                df = _read_flat_with_updates(
+                table = _read_flat_with_updates(
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -438,7 +462,7 @@ class SeriesCollection:
                 )
         else:
             if is_overlapping:
-                df = _read_overlapping_latest(
+                table = _read_overlapping_latest(
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -447,7 +471,7 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
             else:
-                df = _read_flat(
+                table = _read_flat(
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
@@ -456,22 +480,41 @@ class SeriesCollection:
                     _pool=self._pool,
                 )
 
-        if as_pint and len(df) > 0:
-            try:
-                import pint
-                import pint_pandas  # noqa: F401
-            except ImportError:
-                raise ImportError(
-                    "as_pint=True requires pint and pint-pandas. "
-                    "Install with: pip install pint pint-pandas"
-                )
-            ureg = pint.application_registry.get()
-            pa = pint_pandas.PintArray.from_1darray_quantity(
-                pint.Quantity(df["value"].values, ureg(meta["unit"]))
-            )
-            df["value"] = pa
+        ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
+        ts = TimeSeries.from_arrow(
+            table,
+            name=meta.get("name"),
+            unit=meta.get("unit", "dimensionless"),
+            labels=meta.get("labels") or {},
+            description=meta.get("description"),
+            timeseries_type=ts_type,
+        )
 
-        return df
+        if as_pint:
+            warnings.warn(
+                "as_pint=True is deprecated. "
+                "Call .to_pandas() on the returned TimeSeries instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if ts.num_rows > 0:
+                try:
+                    import pint
+                    import pint_pandas  # noqa: F401
+                except ImportError:
+                    raise ImportError(
+                        "as_pint=True requires pint and pint-pandas. "
+                        "Install with: pip install pint pint-pandas"
+                    )
+                ureg = pint.application_registry.get()
+                pdf = ts.to_pandas()
+                pint_arr = pint_pandas.PintArray.from_1darray_quantity(
+                    pint.Quantity(pdf["value"].values, ureg(meta["unit"]))
+                )
+                pdf["value"] = pint_arr
+                return pdf
+
+        return ts
 
     def read_relative(
         self,
@@ -483,7 +526,7 @@ class SeriesCollection:
         *,
         days_ahead: Optional[int] = None,
         time_of_day: Optional[time] = None,
-    ) -> pd.DataFrame:
+    ) -> "TimeSeries":
         """
         Read overlapping series using a per-window knowledge_time cutoff.
 
@@ -582,7 +625,7 @@ class SeriesCollection:
                 f"Series '{meta['name']}' is a flat series. Use read() instead."
             )
 
-        return _read_overlapping_relative(
+        table = _read_overlapping_relative(
             series_id=series_id,
             window_length=window_length,
             issue_offset=issue_offset,
@@ -590,6 +633,14 @@ class SeriesCollection:
             start_valid=start_valid,
             end_valid=end_valid,
             _pool=self._pool,
+        )
+        return TimeSeries.from_arrow(
+            table,
+            name=meta.get("name"),
+            unit=meta.get("unit", "dimensionless"),
+            labels=meta.get("labels") or {},
+            description=meta.get("description"),
+            timeseries_type=TimeSeriesType.OVERLAPPING,
         )
 
     def list_labels(self, label_key: str) -> List[str]:
@@ -955,95 +1006,134 @@ def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series
     return pd.Series(converted, index=value_series.index, name=value_series.name)
 
 
-def _validate_df_columns(df: pd.DataFrame) -> bool:
-    """Validate DataFrame column structure. Returns True if interval data, False if point-in-time."""
+def _validate_df_columns(df: pd.DataFrame) -> None:
+    """Validate DataFrame column structure.
+
+    Accepted column sets:
+
+    - ``[valid_time, value]``
+    - ``[valid_time, valid_time_end, value]``
+    - ``[knowledge_time, valid_time, value]``
+    - ``[knowledge_time, valid_time, valid_time_end, value]``
+    """
     cols = list(df.columns)
-    if len(cols) == 2:
-        if cols != ['valid_time', 'value']:
-            raise ValueError(
-                f"For point-in-time data, DataFrame must have columns ['valid_time', 'value']. "
-                f"Found: {cols}"
-            )
-        return False
-    elif len(cols) == 3:
-        if cols != ['valid_time', 'valid_time_end', 'value']:
-            raise ValueError(
-                f"For interval data, DataFrame must have columns ['valid_time', 'valid_time_end', 'value']. "
-                f"Found: {cols}"
-            )
-        return True
-    else:
+    valid_sets = [
+        ['valid_time', 'value'],
+        ['valid_time', 'valid_time_end', 'value'],
+        ['knowledge_time', 'valid_time', 'value'],
+        ['knowledge_time', 'valid_time', 'valid_time_end', 'value'],
+    ]
+    if cols not in valid_sets:
         raise ValueError(
-            f"DataFrame must have 2 columns ['valid_time', 'value'] or 3 columns ['valid_time', 'valid_time_end', 'value']. "
+            f"DataFrame columns must be one of: {valid_sets}. "
             f"Found {len(cols)} columns: {cols}"
         )
 
 
-def _dataframe_to_value_rows(
-    df: pd.DataFrame,
-    series_id: int,
-) -> List[Tuple]:
+def _check_df_timezone(df: pd.DataFrame) -> None:
+    """Raise ValueError if any timestamp column contains timezone-naive datetimes."""
+    for col in ['knowledge_time', 'valid_time', 'valid_time_end']:
+        if col not in df.columns:
+            continue
+        s = df[col]
+        if hasattr(s.dtype, 'tz'):
+            if s.dtype.tz is None:
+                raise ValueError(
+                    f"{col} must be timezone-aware. Found timezone-naive datetime."
+                )
+        elif len(s) > 0:
+            first = s.iloc[0]
+            if isinstance(first, (pd.Timestamp, datetime)) and first.tzinfo is None:
+                raise ValueError(
+                    f"{col} must be timezone-aware. Found timezone-naive datetime."
+                )
+
+
+def _resolve_arrow_units(table: pa.Table, ts_unit: str, series_unit: str) -> pa.Table:
+    """Scale the ``value`` column when *ts_unit* and *series_unit* differ.
+
+    Rules:
+    - Same unit or ``ts_unit == "dimensionless"`` → return unchanged.
+    - Compatible units → multiply ``value`` by the pint conversion factor.
+    - Incompatible units → raise :class:`IncompatibleUnitError`.
     """
-    Convert a pandas DataFrame to TimeDB value_rows format.
-    All numeric values are treated as dimensionless floats.
+    if ts_unit == series_unit or ts_unit == "dimensionless":
+        return table
+    try:
+        import pint
+    except ImportError:
+        raise ImportError(
+            "pint is required for automatic unit conversion. "
+            "Install with: pip install pint"
+        )
+    ureg = pint.application_registry.get()
+    try:
+        factor = float(ureg.Quantity(1, ts_unit).to(series_unit).magnitude)
+    except pint.DimensionalityError:
+        raise IncompatibleUnitError(
+            f"Cannot convert '{ts_unit}' to '{series_unit}'. "
+            f"Units are not dimensionally compatible."
+        )
+    scaled = pa.array(
+        table.column("value").to_numpy(zero_copy_only=False) * factor,
+        type=pa.float64(),
+    )
+    idx = table.schema.get_field_index("value")
+    return table.set_column(idx, "value", scaled)
 
-    DataFrame must have fixed columns:
-    - Point-in-time: [valid_time, value]
-    - Intervals: [valid_time, valid_time_end, value]
 
-    Args:
-        df: DataFrame with columns [valid_time, value] or [valid_time, valid_time_end, value]
-        series_id: Series ID for all rows
+def _normalize_insert_input(
+    data: Union[pd.DataFrame, "TimeSeries"],
+    series_unit: str,
+    knowledge_time: Optional[datetime] = None,
+) -> Tuple[pa.Table, DataShape]:
+    """Convert DataFrame or TimeSeries insert input to a validated ``(pa.Table, DataShape)``.
+
+    For :class:`~timedb.timeseries.TimeSeries` inputs, calls
+    :meth:`~timedb.timeseries.TimeSeries.validate_for_insert` and applies unit
+    conversion if needed.  For ``pd.DataFrame`` inputs, performs column
+    validation, timezone checks, pint stripping, and Arrow conversion.
+
+    After conversion the table is guaranteed to contain a ``knowledge_time``
+    column (baked in Python, never NULL).  If ``knowledge_time`` is provided
+    as a keyword argument *and* the data already contains a ``knowledge_time``
+    column a :class:`ValueError` is raised to prevent ambiguity.
 
     Returns:
-        List of tuples:
-        - Point-in-time: (valid_time, series_id, value)
-        - Interval: (valid_time, valid_time_end, series_id, value)
+        ``(pa.Table, DataShape)`` tuple ready to pass to :func:`_insert`.
     """
-    has_intervals = _validate_df_columns(df)
-
-    # Validate timezone on the column dtype or first value (once, not per-row)
-    vt_series = df['valid_time']
-    if hasattr(vt_series.dtype, 'tz'):
-        if vt_series.dtype.tz is None:
-            raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
-    elif len(vt_series) > 0:
-        first_vt = vt_series.iloc[0]
-        if isinstance(first_vt, (pd.Timestamp, datetime)) and first_vt.tzinfo is None:
-            raise ValueError("valid_time must be timezone-aware. Found timezone-naive datetime.")
-
-    if has_intervals:
-        vte_series = df['valid_time_end']
-        if hasattr(vte_series.dtype, 'tz'):
-            if vte_series.dtype.tz is None:
-                raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
-        elif len(vte_series) > 0:
-            first_vte = vte_series.iloc[0]
-            if isinstance(first_vte, (pd.Timestamp, datetime)) and first_vte.tzinfo is None:
-                raise ValueError("valid_time_end must be timezone-aware. Found timezone-naive datetime.")
-
-    # Convert time columns to numpy arrays once (much faster than repeated .iloc access)
-    vt_array = df['valid_time'].values
-    vte_array = df['valid_time_end'].values if has_intervals else None
-    n_rows = len(df)
-    
-    # Convert datetime64 to Python datetime objects (psycopg3 requires this)
-    vt_list = [pd.Timestamp(x).to_pydatetime() for x in vt_array]
-    vte_list = [pd.Timestamp(x).to_pydatetime() for x in vte_array] if has_intervals else None
-
-    # Convert value column to float array (vectorized operation)
-    values = df['value'].astype(float).values
-    
-    # Convert NaN to None (vectorized check with list comprehension)
-    values_clean = [None if pd.isna(v) else v for v in values]
-    
-    if has_intervals:
-        # Use zip with itertools.repeat - avoids creating intermediate list
-        rows = list(zip(vt_list, vte_list, repeat(series_id, n_rows), values_clean))
+    if isinstance(data, TimeSeries):
+        table, shape = data.validate_for_insert()
+        table = _resolve_arrow_units(table, ts_unit=data.unit, series_unit=series_unit)
     else:
-        rows = list(zip(vt_list, repeat(series_id, n_rows), values_clean))
+        # --- pd.DataFrame path ---
+        _validate_df_columns(data)
+        _check_df_timezone(data)
 
-    return rows
+        resolved = _resolve_pint_values(data['value'], series_unit)
+        if resolved is not data['value']:
+            data = data.copy()
+            data['value'] = resolved
+
+        # from_pandas infers VERSIONED when knowledge_time column is present
+        ts = TimeSeries.from_pandas(data)
+        table, shape = ts.table, ts.shape
+
+    # Ambiguity check: KT in data AND as kwarg is not allowed
+    if "knowledge_time" in table.schema.names and knowledge_time is not None:
+        raise ValueError(
+            "Ambiguous knowledge_time: the data already contains a 'knowledge_time' column "
+            "and knowledge_time was also passed as a keyword argument. "
+            "Remove the kwarg or the column."
+        )
+
+    # Bake knowledge_time into the table if not already present
+    if "knowledge_time" not in table.schema.names:
+        kt = knowledge_time if knowledge_time is not None else datetime.now(timezone.utc)
+        kt_arr = pa.array([kt] * len(table), type=pa.timestamp("us", tz="UTC"))
+        table = table.append_column("knowledge_time", kt_arr)
+
+    return table, shape
 
 
 def _create(
@@ -1116,12 +1206,12 @@ def _read_flat(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read flat values for a single series."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_flat(
+        table = db.read.read_flat(
             conn,
             series_id=series_id,
             start_valid=start_valid,
@@ -1130,7 +1220,7 @@ def _read_flat(
             end_known=end_known,
         )
 
-    return df
+    return table
 
 
 def _read_overlapping_latest(
@@ -1140,12 +1230,12 @@ def _read_overlapping_latest(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read latest overlapping values for a single series."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_overlapping_latest(
+        table = db.read.read_overlapping_latest(
             conn,
             series_id=series_id,
             start_valid=start_valid,
@@ -1154,7 +1244,7 @@ def _read_overlapping_latest(
             end_known=end_known,
         )
 
-    return df
+    return table
 
 
 def _read_overlapping_with_updates(
@@ -1164,12 +1254,12 @@ def _read_overlapping_with_updates(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read all overlapping versions for a single series."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_overlapping_with_updates(
+        table = db.read.read_overlapping_with_updates(
             conn,
             series_id=series_id,
             start_valid=start_valid,
@@ -1178,7 +1268,7 @@ def _read_overlapping_with_updates(
             end_known=end_known,
         )
 
-    return df
+    return table
 
 
 def _read_overlapping(
@@ -1188,12 +1278,12 @@ def _read_overlapping(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read overlapping forecast history (latest correction per knowledge_time × valid_time)."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_overlapping(
+        table = db.read.read_overlapping(
             conn,
             series_id=series_id,
             start_valid=start_valid,
@@ -1202,7 +1292,7 @@ def _read_overlapping(
             end_known=end_known,
         )
 
-    return df
+    return table
 
 
 def _read_overlapping_latest_with_updates(
@@ -1212,12 +1302,12 @@ def _read_overlapping_latest_with_updates(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read all corrections for the winning knowledge_time per valid_time."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_overlapping_latest_with_updates(
+        table = db.read.read_overlapping_latest_with_updates(
             conn,
             series_id=series_id,
             start_valid=start_valid,
@@ -1226,7 +1316,7 @@ def _read_overlapping_latest_with_updates(
             end_known=end_known,
         )
 
-    return df
+    return table
 
 
 def _read_flat_with_updates(
@@ -1236,12 +1326,12 @@ def _read_flat_with_updates(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read flat values with change_time, changed_by, annotation columns."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_flat_with_updates(
+        table = db.read.read_flat_with_updates(
             conn,
             series_id=series_id,
             start_valid=start_valid,
@@ -1250,7 +1340,7 @@ def _read_flat_with_updates(
             end_known=end_known,
         )
 
-    return df
+    return table
 
 
 def _read_overlapping_relative(
@@ -1261,12 +1351,12 @@ def _read_overlapping_relative(
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     _pool: Optional[ConnectionPool] = None,
-) -> pd.DataFrame:
+) -> pa.Table:
     """Read overlapping values with per-window knowledge_time cutoff."""
     conninfo = _get_conninfo()
 
     with _get_connection(_pool, conninfo) as conn:
-        df = db.read.read_overlapping_relative(
+        table = db.read.read_overlapping_relative(
             conn,
             series_id=series_id,
             window_length=window_length,
@@ -1276,31 +1366,35 @@ def _read_overlapping_relative(
             end_valid=end_valid,
         )
 
-    return df
+    return table
 
 
 def _insert(
-    df: pd.DataFrame,
+    table: pa.Table,
+    shape: DataShape,
+    series_id: int,
+    routing: Dict[str, Any],
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
-    knowledge_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
-    series_id: int = None,
-    routing: Optional[Dict[str, Any]] = None,
-    series_unit: str = "dimensionless",
     _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[SeriesRegistry] = None,
 ) -> InsertResult:
     """
-    Insert time series data from a pandas DataFrame.
+    Insert an Arrow table of time series data into the database.
 
-    DataFrame must have columns [valid_time, value] or [valid_time, valid_time_end, value].
-    Routes data to the correct table based on series overlapping flag and retention.
-    Supports single-series inserts only.
-    Requires series to exist — use td.create_series() first.
+    Accepts a ``(pa.Table, DataShape)`` produced by :func:`_normalize_insert_input`
+    and routes it to the correct Postgres table via :func:`db.insert.insert_table`.
+    The table must already contain a ``knowledge_time`` column (guaranteed by
+    :func:`_normalize_insert_input`).
     """
     conninfo = _get_conninfo()
+
+    if shape == DataShape.VERSIONED and not routing.get("overlapping", False):
+        raise ValueError(
+            "VERSIONED TimeSeries can only be inserted into overlapping series "
+            "(overlapping=True).  The target series is flat."
+        )
 
     if workflow_id is None:
         workflow_id = "sdk-workflow"
@@ -1311,33 +1405,17 @@ def _insert(
 
     if series_id is None:
         raise ValueError("series_id must be provided")
-
     if routing is None:
         raise ValueError("routing must be provided")
 
-    # Validate columns before accessing df['value'] to give a clear error message
-    _validate_df_columns(df)
-
-    # Resolve pint units before row conversion (only copy if pint conversion happened)
-    resolved = _resolve_pint_values(df['value'], series_unit)
-    if resolved is not df['value']:
-        df = df.copy()
-        df['value'] = resolved
-
-    value_rows = _dataframe_to_value_rows(
-        df=df,
-        series_id=series_id,
-    )
-
     try:
         with _get_connection(_pool, conninfo) as conn:
-            batch_id = db.insert.insert_values(
-                conninfo=conn,
+            result = db.insert.insert_table(
+                conn,
+                table=table,
                 workflow_id=workflow_id,
                 batch_start_time=batch_start_time,
                 batch_finish_time=batch_finish_time,
-                value_rows=value_rows,
-                knowledge_time=knowledge_time,
                 batch_params=batch_params,
                 series_id=series_id,
                 routing=routing,
@@ -1348,10 +1426,29 @@ def _insert(
             "  td.create()"
         ) from e
 
+    if result is None:
+        # Flat insert
+        return InsertResult(
+            batch_id=None,
+            workflow_id=workflow_id,
+            series_id=series_id,
+        )
+
+    # Overlapping insert (SIMPLE or VERSIONED)
+    if shape == DataShape.VERSIONED:
+        return InsertResult(
+            batch_id=None,
+            workflow_id=workflow_id,
+            series_id=series_id,
+            batch_ids=result,
+        )
+
+    # SIMPLE overlapping: single batch — expose batch_id for backward compat
     return InsertResult(
-        batch_id=batch_id,
+        batch_id=result[0] if result else None,
         workflow_id=workflow_id,
         series_id=series_id,
+        batch_ids=result,
     )
 
 

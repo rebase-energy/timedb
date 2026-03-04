@@ -29,6 +29,12 @@ from .sdk import (
     IncompatibleUnitError,
 )
 
+from timedatamodel.timeseries_arrow import TimeSeries, DataShape
+from timedatamodel.enums import DataType, TimeSeriesType
+from timedatamodel.location import GeoLocation
+
+from . import profiling
+
 # ---------------------------------------------------------------------------
 # Lazy default client & module-level convenience functions
 # ---------------------------------------------------------------------------
@@ -73,6 +79,7 @@ def get_series(name=None, unit=None, series_id=None):
 
 
 __all__ = [
+    # SDK
     'TimeDataClient',
     'SeriesCollection',
     'InsertResult',
@@ -81,4 +88,12 @@ __all__ = [
     'delete',
     'create_series',
     'get_series',
+    # Profiling
+    'profiling',
+    # TimeSeries container
+    'TimeSeries',
+    'DataShape',
+    'DataType',
+    'TimeSeriesType',
+    'GeoLocation',
 ]

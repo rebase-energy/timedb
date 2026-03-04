@@ -3,6 +3,12 @@ import pytest
 import psycopg
 from datetime import datetime, timezone, timedelta
 import pandas as pd
+import pyarrow as pa
+
+from timedb import TimeSeries, DataShape
+from timedatamodel.enums import TimeSeriesType
+
+_TS_TYPE = pa.timestamp("us", tz="UTC")
 
 
 # =============================================================================
@@ -261,3 +267,306 @@ def test_insert_timezone_aware_required(td):
 
     with pytest.raises(ValueError, match="timezone-aware"):
         td.get_series("temp").insert(df=df)
+
+
+# =============================================================================
+# TimeSeries insert tests
+# =============================================================================
+
+def _make_simple_ts(datetimes, values, unit="dimensionless", timeseries_type=TimeSeriesType.FLAT):
+    """Helper: build a SIMPLE TimeSeries from lists."""
+    table = pa.table({
+        "valid_time": pa.array(datetimes, type=_TS_TYPE),
+        "value": pa.array(values, type=pa.float64()),
+    })
+    return TimeSeries.from_arrow(table, unit=unit, timeseries_type=timeseries_type)
+
+
+def test_insert_timeseries_flat(td, clean_db, sample_datetime):
+    """TimeSeries with SIMPLE shape inserts correctly into a flat series."""
+    td.create_series(name="ts_flat", unit="dimensionless", overlapping=False)
+
+    ts = _make_simple_ts(
+        [sample_datetime, sample_datetime + timedelta(hours=1)],
+        [10.0, 20.0],
+    )
+
+    result = td.get_series("ts_flat").insert(df=ts)
+
+    assert result.batch_id is None
+    assert result.series_id > 0
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM flat")
+            assert cur.fetchone()[0] == 2
+
+
+def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
+    """TimeSeries with SIMPLE shape inserts correctly into an overlapping series."""
+    td.create_series(name="ts_ovlp", unit="dimensionless", overlapping=True, retention="medium")
+
+    ts = _make_simple_ts(
+        [sample_datetime, sample_datetime + timedelta(hours=1)],
+        [50.0, 55.0],
+        timeseries_type=TimeSeriesType.OVERLAPPING,
+    )
+
+    result = td.get_series("ts_ovlp").insert(df=ts, knowledge_time=sample_datetime)
+
+    assert result.batch_id is not None
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s",
+                (result.batch_id,),
+            )
+            assert cur.fetchone()[0] == 2
+
+
+def test_insert_timeseries_unit_conversion(td, clean_db, sample_datetime):
+    """TimeSeries whose unit differs from the series unit is converted automatically."""
+    # Series stores in MW; insert in kW — value should be divided by 1000
+    td.create_series(name="power_mw", unit="MW", overlapping=False)
+
+    ts = _make_simple_ts([sample_datetime], [1000.0], unit="kW")
+
+    td.get_series("power_mw").insert(df=ts)
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM flat")
+            stored = cur.fetchone()[0]
+            assert abs(stored - 1.0) < 1e-9, f"Expected 1.0 MW, got {stored}"
+
+
+def test_insert_timeseries_interval(td, clean_db, sample_datetime):
+    """TimeSeries with valid_time_end column inserts interval data correctly."""
+    td.create_series(name="energy_ts", unit="dimensionless", overlapping=False)
+
+    table = pa.table({
+        "valid_time":     pa.array([sample_datetime], type=_TS_TYPE),
+        "valid_time_end": pa.array([sample_datetime + timedelta(hours=1)], type=_TS_TYPE),
+        "value":          pa.array([500.0], type=pa.float64()),
+    })
+    ts = TimeSeries.from_arrow(table)
+
+    td.get_series("energy_ts").insert(df=ts)
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT valid_time_end FROM flat")
+            row = cur.fetchone()
+            assert row is not None
+            assert row[0] is not None
+
+
+def test_insert_timeseries_wrong_shape(td, sample_datetime):
+    """TimeSeries with AUDIT or CORRECTED shape raises ValueError."""
+    td.create_series(name="audit_reject", unit="dimensionless", overlapping=True)
+
+    # Build an AUDIT table (has knowledge_time + change_time columns)
+    table = pa.table({
+        "knowledge_time": pa.array([sample_datetime], type=_TS_TYPE),
+        "change_time":    pa.array([sample_datetime], type=_TS_TYPE),
+        "valid_time":     pa.array([sample_datetime], type=_TS_TYPE),
+        "value":          pa.array([1.0], type=pa.float64()),
+    })
+    ts = TimeSeries.from_arrow(table, timeseries_type=TimeSeriesType.OVERLAPPING)
+    assert ts.shape == DataShape.AUDIT
+
+    with pytest.raises(ValueError, match="AUDIT"):
+        td.get_series("audit_reject").insert(df=ts)
+
+
+def _make_versioned_ts(knowledge_times, valid_times, values, unit="dimensionless"):
+    """Helper: build a VERSIONED TimeSeries from lists."""
+    table = pa.table({
+        "knowledge_time": pa.array(knowledge_times, type=_TS_TYPE),
+        "valid_time":     pa.array(valid_times,     type=_TS_TYPE),
+        "value":          pa.array(values,          type=pa.float64()),
+    })
+    ts = TimeSeries.from_arrow(table, unit=unit, timeseries_type=TimeSeriesType.OVERLAPPING)
+    assert ts.shape == DataShape.VERSIONED
+    return ts
+
+
+# =============================================================================
+# VERSIONED insert tests
+# =============================================================================
+
+def test_insert_versioned_single_kt(td, clean_db, sample_datetime):
+    """VERSIONED TimeSeries with one unique knowledge_time creates exactly one batch."""
+    td.create_series(
+        name="v_single", unit="dimensionless",
+        overlapping=True, retention="medium",
+    )
+    kt = sample_datetime
+    ts = _make_versioned_ts(
+        knowledge_times=[kt, kt],
+        valid_times=[sample_datetime, sample_datetime + timedelta(hours=1)],
+        values=[10.0, 20.0],
+    )
+    result = td.get_series("v_single").insert(df=ts)
+
+    assert result.batch_id is None
+    assert result.batch_ids is not None
+    assert len(result.batch_ids) == 1
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM batches_table")
+            assert cur.fetchone()[0] == 1
+            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
+            assert cur.fetchone()[0] == 2
+
+
+def test_insert_versioned_multi_kt(td, clean_db, sample_datetime):
+    """VERSIONED TimeSeries with 3 unique knowledge_times creates 3 batches."""
+    td.create_series(
+        name="v_multi", unit="dimensionless",
+        overlapping=True, retention="medium",
+    )
+    kt1 = sample_datetime
+    kt2 = sample_datetime + timedelta(hours=1)
+    kt3 = sample_datetime + timedelta(hours=2)
+
+    ts = _make_versioned_ts(
+        knowledge_times=[kt1, kt1, kt2, kt2, kt3],
+        valid_times=[
+            sample_datetime,
+            sample_datetime + timedelta(hours=1),
+            sample_datetime,
+            sample_datetime + timedelta(hours=1),
+            sample_datetime,
+        ],
+        values=[1.0, 2.0, 1.5, 2.5, 1.2],
+    )
+    result = td.get_series("v_multi").insert(df=ts)
+
+    assert result.batch_ids is not None
+    assert len(result.batch_ids) == 3
+    assert result.batch_ids == sorted(result.batch_ids)
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM batches_table")
+            assert cur.fetchone()[0] == 3
+            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
+            assert cur.fetchone()[0] == 5
+
+
+def test_insert_versioned_into_flat_raises(td, sample_datetime):
+    """VERSIONED TimeSeries inserted into a flat series raises ValueError."""
+    td.create_series(name="v_flat_fail", unit="dimensionless", overlapping=False)
+
+    ts = _make_versioned_ts(
+        knowledge_times=[sample_datetime],
+        valid_times=[sample_datetime],
+        values=[1.0],
+    )
+
+    with pytest.raises(ValueError, match="overlapping"):
+        td.get_series("v_flat_fail").insert(df=ts)
+
+
+def test_insert_versioned_kt_kwarg_ambiguity_raises(td, clean_db, sample_datetime):
+    """Passing knowledge_time kwarg with a VERSIONED insert raises ValueError (ambiguous)."""
+    td.create_series(
+        name="v_ambiguous", unit="dimensionless",
+        overlapping=True, retention="medium",
+    )
+    ts = _make_versioned_ts(
+        knowledge_times=[sample_datetime],
+        valid_times=[sample_datetime],
+        values=[42.0],
+    )
+
+    with pytest.raises(ValueError, match="Ambiguous"):
+        td.get_series("v_ambiguous").insert(
+            df=ts,
+            knowledge_time=sample_datetime,
+        )
+
+
+# =============================================================================
+# knowledge_time in DataFrame tests
+# =============================================================================
+
+def test_insert_df_with_kt_column_overlapping(td, clean_db, sample_datetime):
+    """DataFrame with knowledge_time column is accepted and routes correctly."""
+    td.create_series(
+        name="df_kt_col", unit="dimensionless",
+        overlapping=True, retention="medium",
+    )
+
+    kt1 = sample_datetime
+    kt2 = sample_datetime + timedelta(hours=1)
+
+    df = pd.DataFrame({
+        "knowledge_time": [kt1, kt1, kt2],
+        "valid_time": [
+            sample_datetime,
+            sample_datetime + timedelta(hours=1),
+            sample_datetime,
+        ],
+        "value": [10.0, 20.0, 11.0],
+    })
+
+    result = td.get_series("df_kt_col").insert(df=df)
+
+    assert result.batch_ids is not None
+    assert len(result.batch_ids) == 2  # two distinct knowledge_times
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM batches_table")
+            assert cur.fetchone()[0] == 2
+            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
+            assert cur.fetchone()[0] == 3
+
+
+def test_insert_df_kt_ambiguity_raises(td, sample_datetime):
+    """DataFrame with knowledge_time column + knowledge_time kwarg raises ValueError."""
+    td.create_series(
+        name="df_kt_ambig", unit="dimensionless",
+        overlapping=True, retention="medium",
+    )
+
+    df = pd.DataFrame({
+        "knowledge_time": [sample_datetime],
+        "valid_time": [sample_datetime],
+        "value": [42.0],
+    })
+
+    with pytest.raises(ValueError, match="Ambiguous"):
+        td.get_series("df_kt_ambig").insert(
+            df=df,
+            knowledge_time=sample_datetime,
+        )
+
+
+def test_insert_df_without_kt_defaults_to_now(td, clean_db, sample_datetime):
+    """DataFrame without knowledge_time and no kwarg stores rows with a recent knowledge_time."""
+    td.create_series(name="df_no_kt", unit="dimensionless", overlapping=False)
+
+    before = datetime.now(timezone.utc)
+
+    df = pd.DataFrame({
+        "valid_time": [sample_datetime],
+        "value": [99.0],
+    })
+
+    td.get_series("df_no_kt").insert(df=df)
+
+    after = datetime.now(timezone.utc)
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT knowledge_time FROM flat")
+            row = cur.fetchone()
+            assert row is not None
+            kt = row[0]
+            # knowledge_time should be between before and after (baked from now())
+            assert before <= kt <= after
