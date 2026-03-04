@@ -6,6 +6,7 @@ import pint_pandas
 from datetime import datetime, timezone, timedelta
 
 from timedb.sdk import IncompatibleUnitError, _resolve_pint_values
+from timedb import TimeSeries
 
 
 # =============================================================================
@@ -71,7 +72,7 @@ def test_insert_pint_same_unit(td, sample_datetime):
     })
     td.get_series("power").insert(df)
 
-    df_read = td.get_series("power").read()
+    df_read = td.get_series("power").read().to_pandas()
     assert df_read["value"].iloc[0] == pytest.approx(1.5)
     assert df_read["value"].iloc[1] == pytest.approx(2.5)
 
@@ -86,7 +87,7 @@ def test_insert_pint_converts_kw_to_mw(td, sample_datetime):
     })
     td.get_series("power").insert(df)
 
-    df_read = td.get_series("power").read()
+    df_read = td.get_series("power").read().to_pandas()
     assert df_read["value"].iloc[0] == pytest.approx(0.5)
 
 
@@ -113,12 +114,12 @@ def test_insert_plain_float_no_unit_check(td, sample_datetime):
     })
     td.get_series("power").insert(df)
 
-    df_read = td.get_series("power").read()
+    df_read = td.get_series("power").read().to_pandas()
     assert df_read["value"].iloc[0] == pytest.approx(999.0)
 
 
 def test_read_as_pint(td, sample_datetime):
-    """Read with as_pint=True returns pint dtype column."""
+    """Read with as_pint=True returns pint dtype column (deprecated path)."""
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -127,14 +128,15 @@ def test_read_as_pint(td, sample_datetime):
     })
     td.get_series("power").insert(df)
 
-    df_pint = td.get_series("power").read(as_pint=True)
+    with pytest.warns(DeprecationWarning, match="as_pint=True is deprecated"):
+        df_pint = td.get_series("power").read(as_pint=True)
     assert hasattr(df_pint["value"].dtype, 'units')
     assert str(df_pint["value"].dtype.units) == "megawatt"
     assert df_pint["value"].values.quantity.magnitude[0] == pytest.approx(1.5)
 
 
 def test_read_as_pint_false_default(td, sample_datetime):
-    """Read without as_pint returns plain float64 (default)."""
+    """Read without as_pint returns a TimeSeries (default)."""
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
@@ -143,6 +145,6 @@ def test_read_as_pint_false_default(td, sample_datetime):
     })
     td.get_series("power").insert(df)
 
-    df_read = td.get_series("power").read()
-    assert not hasattr(df_read["value"].dtype, 'units')
-    assert df_read["value"].dtype == "float64"
+    ts = td.get_series("power").read()
+    assert isinstance(ts, TimeSeries)
+    assert ts.to_pandas()["value"].dtype == "float64"

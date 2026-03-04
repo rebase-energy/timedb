@@ -345,7 +345,7 @@ async def read_values(
             collection = collection.where(**label_filters)
 
         # Read via SDK (handles all routing logic internally)
-        df = collection.read(
+        ts = collection.read(
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,
@@ -354,11 +354,11 @@ async def read_values(
             include_updates=include_updates,
         )
 
-        if df.empty:
+        if ts.num_rows == 0:
             return {"count": 0, "data": []}
 
-        # Convert DataFrame to JSON-serializable records
-        df_reset = df.reset_index()
+        # Convert TimeSeries → DataFrame → JSON-serializable records
+        df_reset = ts.to_pandas().reset_index()
         records = df_reset.to_dict(orient="records")
 
         for record in records:
