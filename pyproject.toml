@@ -34,7 +34,9 @@ dependencies = [
   "uvicorn[standard]>=0.24.0",
   "pydantic>=2.0.0",
   "pandas>=2.0.0",
+  "pyarrow>=14.0",
   "requests>=2.32.5",
+  "timedatamodel>=0.1.2",
 ]
 
 [project.optional-dependencies]

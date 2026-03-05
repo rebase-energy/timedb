@@ -594,5 +594,5 @@ def test_update_correction_chain(td, clean_db, sample_datetime):
     assert distinct_kt == 1  # All corrections share one knowledge_time
 
     # SDK read() must return the latest correction (120.0)
-    df = td.get_series("forecast").read()
-    assert df["value"].iloc[0] == 120.0
+    ts = td.get_series("forecast").read()
+    assert ts.to_pandas()["value"].iloc[0] == 120.0

@@ -1,9 +1,11 @@
 """Tests for reading flat and overlapping."""
 import pytest
 import pandas as pd
+import pyarrow as pa
 import numpy as np
 from datetime import datetime, timezone, timedelta, time
 from timedb.db import read
+from timedb import TimeSeries, DataShape
 
 
 # =============================================================================
@@ -33,9 +35,9 @@ def test_read_flat_via_sdk(td, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(df, pd.DataFrame)
+    assert isinstance(df, TimeSeries)
     assert len(df) == 2
-    assert "valid_time" in df.index.names or df.index.name == "valid_time"
+    assert df.shape == DataShape.SIMPLE
 
 
 def test_read_flat_db_layer(td, clean_db, sample_datetime):
@@ -56,9 +58,9 @@ def test_read_flat_db_layer(td, clean_db, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(result, pd.DataFrame)
-    assert len(result) == 2
-    assert result.index.name == "valid_time"
+    assert isinstance(result, pa.Table)
+    assert result.num_rows == 2
+    assert "valid_time" in result.schema.names
 
 
 def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
@@ -85,10 +87,11 @@ def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
     )
 
     # Should only get 2 values (hours 1 and 2)
-    assert len(result) == 2
+    assert result.num_rows == 2
+    valid_times = result.column("valid_time").to_pylist()
     assert all(
         sample_datetime + timedelta(hours=1) <= idx < sample_datetime + timedelta(hours=3)
-        for idx in result.index
+        for idx in valid_times
     )
 
 
@@ -115,7 +118,7 @@ def test_read_overlapping_latest_via_sdk(td, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(result, pd.DataFrame)
+    assert isinstance(result, TimeSeries)
     assert len(result) == 2
 
 
@@ -149,10 +152,10 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(result, pd.DataFrame)
+    assert isinstance(result, TimeSeries)
     # Should have 4 rows (2 valid_times x 2 knowledge_times)
     assert len(result) == 4
-    assert "knowledge_time" in result.index.names
+    assert result.shape == DataShape.VERSIONED
 
 
 def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
@@ -183,9 +186,9 @@ def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=1),
     )
 
-    assert isinstance(result, pd.DataFrame)
-    assert len(result) == 2
-    assert list(result.index.names) == ["knowledge_time", "valid_time"]
+    assert isinstance(result, pa.Table)
+    assert result.num_rows == 2
+    assert set(["knowledge_time", "valid_time", "value"]).issubset(set(result.schema.names))
 
 
 def test_read_overlapping_latest_picks_newest(td, sample_datetime):
@@ -220,7 +223,7 @@ def test_read_overlapping_latest_picks_newest(td, sample_datetime):
 
     assert len(result) == 1
     # The latest value should be 110.0
-    assert result.iloc[0, 0] == 110.0
+    assert result.to_pandas().iloc[0, 0] == 110.0
 
 
 # =============================================================================
@@ -253,11 +256,11 @@ def test_read_relative_basic_via_sdk(td, sample_datetime):
         issue_offset=timedelta(hours=-12),
     )
 
-    assert isinstance(result, pd.DataFrame)
+    assert isinstance(result, TimeSeries)
     assert len(result) == 3
-    assert result.index.name == "valid_time"
+    assert result.shape == DataShape.SIMPLE
     # Values should come from the early batch (10, 11, 12), not the late batch (99)
-    assert list(result["value"]) == [10.0, 11.0, 12.0]
+    assert list(result.to_pandas()["value"]) == [10.0, 11.0, 12.0]
 
 
 def test_read_relative_picks_latest_before_cutoff(td, sample_datetime):
@@ -291,7 +294,7 @@ def test_read_relative_picks_latest_before_cutoff(td, sample_datetime):
 
     assert len(result) == 1
     # Should return kt3's value (3.0) — latest at or before cutoff
-    assert result.iloc[0, 0] == 3.0
+    assert result.to_pandas().iloc[0, 0] == 3.0
 
 
 def test_read_relative_multi_window(td, sample_datetime):
@@ -340,8 +343,9 @@ def test_read_relative_multi_window(td, sample_datetime):
 
     assert len(result) == 2
     # w1_valid uses kt_w1 (value 1.0), w2_valid uses kt_w2 (value 2.0)
-    assert result.loc[w1_valid.astimezone(timezone.utc), "value"] == 1.0
-    assert result.loc[w2_valid.astimezone(timezone.utc), "value"] == 2.0
+    result_df = result.to_pandas()
+    assert result_df.loc[w1_valid.astimezone(timezone.utc), "value"] == 1.0
+    assert result_df.loc[w2_valid.astimezone(timezone.utc), "value"] == 2.0
 
 
 def test_read_relative_empty_when_no_qualifying_forecasts(td, sample_datetime):
@@ -365,7 +369,7 @@ def test_read_relative_empty_when_no_qualifying_forecasts(td, sample_datetime):
         issue_offset=timedelta(hours=-12),
     )
 
-    assert isinstance(result, pd.DataFrame)
+    assert isinstance(result, TimeSeries)
     assert len(result) == 0
 
 
@@ -408,10 +412,10 @@ def test_read_relative_db_layer(td, clean_db, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=1),
     )
 
-    assert isinstance(result, pd.DataFrame)
-    assert result.index.name == "valid_time"
-    assert len(result) == 1
-    assert result.iloc[0, 0] == 42.0
+    assert isinstance(result, pa.Table)
+    assert "valid_time" in result.schema.names
+    assert result.num_rows == 1
+    assert result.to_pydict()["value"][0] == 42.0
 
 
 # =============================================================================
@@ -445,7 +449,7 @@ def test_read_relative_daily_basic(td, sample_datetime):
     )
 
     assert len(result) == 1
-    assert result.iloc[0, 0] == 10.0
+    assert result.to_pandas().iloc[0, 0] == 10.0
 
 
 def test_read_relative_daily_same_day(td, sample_datetime):
@@ -474,7 +478,7 @@ def test_read_relative_daily_same_day(td, sample_datetime):
     )
 
     assert len(result) == 1
-    assert result.iloc[0, 0] == 5.0
+    assert result.to_pandas().iloc[0, 0] == 5.0
 
 
 def test_read_relative_daily_raises_mixed_params(td):
@@ -527,8 +531,8 @@ def test_read_mode_history_hides_corrections(td, sample_datetime):
 
     # Only one row per (knowledge_time, valid_time) — correction is collapsed
     assert len(history) == 1
-    assert list(history.index.names) == ["knowledge_time", "valid_time"]
-    assert history["value"].iloc[0] == 110.0  # latest correction wins
+    assert history.shape == DataShape.VERSIONED
+    assert history.to_pandas()["value"].iloc[0] == 110.0  # latest correction wins
 
 
 def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
@@ -552,9 +556,9 @@ def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
     audit = td.get_series("forecast").read(overlapping=True, include_updates=True)
 
     assert len(audit) == 3  # original + 2 corrections
-    assert list(audit.index.names) == ["knowledge_time", "change_time", "valid_time"]
+    assert audit.shape == DataShape.AUDIT
     # Values should be in chronological change_time order: 100, 110, 120
-    assert list(audit["value"]) == [100.0, 110.0, 120.0]
+    assert list(audit.to_pandas()["value"]) == [100.0, 110.0, 120.0]
 
 
 def test_read_include_updates_overlapping(td, sample_datetime):
@@ -587,13 +591,14 @@ def test_read_include_updates_overlapping(td, sample_datetime):
     df = td.get_series("forecast").read(include_updates=True)
 
     # Index must be [valid_time, change_time]
-    assert list(df.index.names) == ["valid_time", "change_time"]
+    assert df.shape == DataShape.CORRECTED
     # Only corrections for the winning knowledge_time (kt_new) are visible
     # kt_new has 2 rows: original (20.0) + correction (25.0)
     assert len(df) == 2
-    assert list(df["value"]) == [20.0, 25.0]
-    assert df["changed_by"].iloc[1] == "tester"
-    assert df["annotation"].iloc[1] == "corrected"
+    pdf = df.to_pandas()
+    assert list(pdf["value"]) == [20.0, 25.0]
+    assert pdf["changed_by"].iloc[1] == "tester"
+    assert pdf["annotation"].iloc[1] == "corrected"
 
 
 def test_read_include_updates_flat(td, sample_datetime):
@@ -617,11 +622,12 @@ def test_read_include_updates_flat(td, sample_datetime):
     df = td.get_series("temperature").read(include_updates=True)
 
     # Flat series use in-place UPDATE — only one row per valid_time, reflecting the latest state
-    assert list(df.index.names) == ["valid_time", "change_time"]
+    assert df.shape == DataShape.CORRECTED
     assert len(df) == 1
-    assert df["value"].iloc[0] == 21.0
-    assert df["changed_by"].iloc[0] == "tester"
-    assert df["annotation"].iloc[0] == "fixed typo"
+    pdf = df.to_pandas()
+    assert pdf["value"].iloc[0] == 21.0
+    assert pdf["changed_by"].iloc[0] == "tester"
+    assert pdf["annotation"].iloc[0] == "fixed typo"
     assert "value" in df.columns
     assert "changed_by" in df.columns
     assert "annotation" in df.columns
@@ -667,4 +673,4 @@ def test_read_relative_picks_latest_correction(td, sample_datetime):
 
     assert len(df) == 1
     # Correction (110.0) must win over original (100.0)
-    assert df["value"].iloc[0] == 110.0
+    assert df.to_pandas()["value"].iloc[0] == 110.0
