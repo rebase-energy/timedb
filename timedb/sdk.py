@@ -271,13 +271,18 @@ class SeriesCollection:
           - batch_id + valid_time: Latest version in that batch
           - valid_time only: Latest version overall
 
+        .. note::
+            Values must be in the series' canonical unit. Unlike ``insert()``,
+            no automatic unit conversion is performed here.
+
         Args:
             updates: List of update dicts. Each item must include ``valid_time``.
-                Optional fields are ``value`` (new value), ``annotation``
-                (text annotation; set to ``None`` to clear), ``tags``
-                (set to ``[]`` to clear), ``changed_by`` (user identifier),
-                ``batch_id`` (target specific batch, overlapping only), and
-                ``knowledge_time`` (target specific version, overlapping only).
+                Optional fields are ``value`` (new value, must be in the series'
+                canonical unit), ``annotation`` (text annotation; set to ``None``
+                to clear), ``tags`` (set to ``[]`` to clear), ``changed_by``
+                (user identifier), ``batch_id`` (target specific batch,
+                overlapping only), and ``knowledge_time`` (target specific
+                version, overlapping only).
 
         Returns:
             List of dicts with update info for each updated record
@@ -564,7 +569,7 @@ class SeriesCollection:
             end_valid: End of valid time range (optional)
 
         Returns:
-            DataFrame with index (valid_time,) and column (value).
+            TimeSeries with columns (valid_time, value).
 
         Raises:
             ValueError: If collection matches no series, multiple series,
