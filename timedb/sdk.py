@@ -426,6 +426,7 @@ class SeriesCollection:
             if include_updates:
                 table = _read_overlapping_with_updates(
                     series_id=series_id,
+                    routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
@@ -435,6 +436,7 @@ class SeriesCollection:
             else:
                 table = _read_overlapping(
                     series_id=series_id,
+                    routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
@@ -445,6 +447,7 @@ class SeriesCollection:
             if is_overlapping:
                 table = _read_overlapping_latest_with_updates(
                     series_id=series_id,
+                    routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
@@ -464,6 +467,7 @@ class SeriesCollection:
             if is_overlapping:
                 table = _read_overlapping_latest(
                     series_id=series_id,
+                    routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
@@ -627,6 +631,7 @@ class SeriesCollection:
 
         table = _read_overlapping_relative(
             series_id=series_id,
+            routing_table=meta["table"],
             window_length=window_length,
             issue_offset=issue_offset,
             start_window=start_window,
@@ -1225,6 +1230,7 @@ def _read_flat(
 
 def _read_overlapping_latest(
     series_id: int,
+    routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -1238,6 +1244,7 @@ def _read_overlapping_latest(
         table = db.read.read_overlapping_latest(
             conn,
             series_id=series_id,
+            table=routing_table,
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,
@@ -1249,6 +1256,7 @@ def _read_overlapping_latest(
 
 def _read_overlapping_with_updates(
     series_id: int,
+    routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -1262,6 +1270,7 @@ def _read_overlapping_with_updates(
         table = db.read.read_overlapping_with_updates(
             conn,
             series_id=series_id,
+            table=routing_table,
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,
@@ -1273,6 +1282,7 @@ def _read_overlapping_with_updates(
 
 def _read_overlapping(
     series_id: int,
+    routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -1286,6 +1296,7 @@ def _read_overlapping(
         table = db.read.read_overlapping(
             conn,
             series_id=series_id,
+            table=routing_table,
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,
@@ -1297,6 +1308,7 @@ def _read_overlapping(
 
 def _read_overlapping_latest_with_updates(
     series_id: int,
+    routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -1310,6 +1322,7 @@ def _read_overlapping_latest_with_updates(
         table = db.read.read_overlapping_latest_with_updates(
             conn,
             series_id=series_id,
+            table=routing_table,
             start_valid=start_valid,
             end_valid=end_valid,
             start_known=start_known,
@@ -1345,6 +1358,7 @@ def _read_flat_with_updates(
 
 def _read_overlapping_relative(
     series_id: int,
+    routing_table: str,
     window_length: timedelta,
     issue_offset: timedelta,
     start_window: datetime,
@@ -1359,6 +1373,7 @@ def _read_overlapping_relative(
         table = db.read.read_overlapping_relative(
             conn,
             series_id=series_id,
+            table=routing_table,
             window_length=window_length,
             issue_offset=issue_offset,
             start_window=start_window,

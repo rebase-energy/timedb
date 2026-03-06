@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Optional, Iterable, Tuple, Dict, List, Union, Any
 from datetime import datetime
 import psycopg
-from psycopg import sql
+from psycopg import sql as pgsql
 import pyarrow as pa
 import pyarrow.csv as pa_csv
 
@@ -103,12 +103,11 @@ def _insert_flat_from_table(
     series_id: int,
 ) -> None:
     """
-    Insert flat values using Arrow CSV serialisation → COPY → INSERT ON CONFLICT.
+    Upsert flat values via a staging table + INSERT ON CONFLICT DO UPDATE.
 
-    Serialises the entire Arrow table to CSV in-memory with Arrow's C++ engine
-    (no Python row iteration), then feeds the bytes to Postgres in a single
-    ``COPY FROM STDIN`` call.  A temporary staging table is used so that the
-    ``ON CONFLICT`` upsert logic can be applied after the bulk load.
+    Serialises the Arrow table to CSV, COPYs into a temp staging table, then
+    upserts into ``flat`` — updating ``valid_time_end``, ``value``, and
+    ``knowledge_time`` when a ``(series_id, valid_time)`` row already exists.
 
     *table* must have columns ``[knowledge_time, valid_time, (valid_time_end,) value]``.
     The ``knowledge_time`` column must be present and non-null.
@@ -120,7 +119,7 @@ def _insert_flat_from_table(
     _prof = profiling._enabled
 
     # ------------------------------------------------------------------
-    # Build staging table: series_id | valid_time | valid_time_end | value | knowledge_time
+    # Build Arrow table with series_id injected
     # ------------------------------------------------------------------
     _t0 = time.perf_counter() if _prof else 0.0
     valid_time_end_arr = (
@@ -128,7 +127,7 @@ def _insert_flat_from_table(
         if "valid_time_end" in table.schema.names
         else pa.array([None] * n, type=_TS_TYPE)
     )
-    staging = pa.table({
+    arrow_table = pa.table({
         "series_id":      pa.array([series_id] * n, type=pa.int64()),
         "valid_time":     table.column("valid_time"),
         "valid_time_end": valid_time_end_arr,
@@ -137,29 +136,35 @@ def _insert_flat_from_table(
     })
 
     # ------------------------------------------------------------------
-    # Serialise to in-memory CSV (C++ level) and COPY to Postgres
+    # Serialise to in-memory CSV (C++ level)
     # ------------------------------------------------------------------
     buf = io.BytesIO()
-    pa_csv.write_csv(staging, buf)
+    pa_csv.write_csv(arrow_table, buf)
     csv_bytes = buf.getvalue()
     if _prof: profiling._record(profiling.PHASE_INSERT_CSV_SERIALIZE, time.perf_counter() - _t0)
 
     with conn.cursor() as cur:
+        # ------------------------------------------------------------------
+        # Create temp staging table
+        # ------------------------------------------------------------------
         _t0 = time.perf_counter() if _prof else 0.0
         cur.execute("""
-            CREATE TEMP TABLE _flat_staging (
-                series_id bigint,
-                valid_time timestamptz,
-                valid_time_end timestamptz,
-                value double precision,
-                knowledge_time timestamptz
+            CREATE TEMP TABLE _flat_stage (
+                series_id       bigint NOT NULL,
+                valid_time      timestamptz NOT NULL,
+                valid_time_end  timestamptz,
+                value           double precision,
+                knowledge_time  timestamptz NOT NULL
             ) ON COMMIT DROP
         """)
         if _prof: profiling._record(profiling.PHASE_INSERT_STAGE_DDL, time.perf_counter() - _t0)
 
+        # ------------------------------------------------------------------
+        # COPY into staging, then upsert into flat
+        # ------------------------------------------------------------------
         _t0 = time.perf_counter() if _prof else 0.0
         with cur.copy(
-            "COPY _flat_staging (series_id, valid_time, valid_time_end, value, knowledge_time)"
+            "COPY _flat_stage (series_id, valid_time, valid_time_end, value, knowledge_time)"
             " FROM STDIN (FORMAT CSV, HEADER TRUE)"
         ) as copy:
             copy.write(csv_bytes)
@@ -169,11 +174,10 @@ def _insert_flat_from_table(
         cur.execute("""
             INSERT INTO flat (series_id, valid_time, valid_time_end, value, knowledge_time)
             SELECT series_id, valid_time, valid_time_end, value, knowledge_time
-            FROM _flat_staging
-            ON CONFLICT (series_id, valid_time)
-            DO UPDATE SET
-                value = EXCLUDED.value,
+            FROM _flat_stage
+            ON CONFLICT (series_id, valid_time) DO UPDATE SET
                 valid_time_end = EXCLUDED.valid_time_end,
+                value          = EXCLUDED.value,
                 knowledge_time = EXCLUDED.knowledge_time
         """)
         if _prof: profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
@@ -191,16 +195,17 @@ def _insert_overlapping_from_table(
     batch_params: Optional[Dict] = None,
 ) -> List[int]:
     """
-    Insert an Arrow table into overlapping storage using a staging-table + single CTE pattern.
+    Insert an Arrow table into overlapping storage using decoupled metadata + direct COPY.
 
     Each unique ``knowledge_time`` value in *table* becomes one row in
-    ``batches_table`` and one batch of rows in the target overlapping table.
-    The entire operation is a single round-trip after the COPY:
+    ``batches_table``.  The relational join (knowledge_time → batch_id) is
+    performed in Python/Arrow memory rather than inside the database:
 
-    1. COPY staging rows (knowledge_time, valid_time, valid_time_end, value).
-    2. One CTE that INSERT INTO batches_table ... SELECT DISTINCT knowledge_time
-       ... RETURNING batch_id, then INSERT INTO {tier} ... JOIN new_batches ON
-       knowledge_time.
+    1. Python: ``pc.unique()`` extracts distinct knowledge_times in memory.
+    2. SQL:    tiny ``INSERT INTO batches_table ... RETURNING batch_id`` (1–N rows).
+    3. Python: builds ``batch_id`` Arrow column via dict lookup (O(n), in-memory).
+    4. SQL:    single ``COPY`` of the fully-shaped Arrow table directly into the
+               target hypertable — no staging table, no in-DB join.
 
     *table* must have columns ``[knowledge_time, valid_time, (valid_time_end,) value]``.
 
@@ -217,8 +222,7 @@ def _insert_overlapping_from_table(
     _prof = profiling._enabled
 
     # ------------------------------------------------------------------
-    # Build staging table: knowledge_time | valid_time | valid_time_end | value
-    # series_id is supplied as a SQL parameter, not in the staging rows.
+    # Step 1 & 2: extract unique knowledge_times in Arrow, register batches
     # ------------------------------------------------------------------
     _t0 = time.perf_counter() if _prof else 0.0
     valid_time_end_arr = (
@@ -226,91 +230,63 @@ def _insert_overlapping_from_table(
         if "valid_time_end" in table.schema.names
         else pa.array([None] * n, type=_TS_TYPE)
     )
-    staging = pa.table({
-        "knowledge_time":  table.column("knowledge_time"),
-        "valid_time":      table.column("valid_time"),
-        "valid_time_end":  valid_time_end_arr,
-        "value":           table.column("value"),
-    })
+    kt_col = table.column("knowledge_time")
+    unique_kts_py = sorted(kt_col.unique().to_pylist())
+
+    with conn.cursor() as cur:
+        batch_placeholders = pgsql.SQL(", ").join(
+            [pgsql.SQL("(%s, %s, %s, %s, %s::jsonb)")] * len(unique_kts_py)
+        )
+        cur.execute(
+            pgsql.SQL(
+                "INSERT INTO batches_table "
+                "(workflow_id, batch_start_time, batch_finish_time, knowledge_time, batch_params) "
+                "VALUES {} RETURNING batch_id, knowledge_time"
+            ).format(batch_placeholders),
+            [x for kt in unique_kts_py
+               for x in (workflow_id, batch_start_time, batch_finish_time, kt, batch_params_json)],
+        )
+        kt_to_batch = {row[1]: row[0] for row in cur.fetchall()}
+    if _prof: profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
 
     # ------------------------------------------------------------------
-    # Serialise and COPY to temp staging table
+    # Step 3 & 4: build batch_id column in Python, serialize, COPY to hypertable
     # ------------------------------------------------------------------
+    _t0 = time.perf_counter() if _prof else 0.0
+    if len(unique_kts_py) == 1:
+        # Fast path: single knowledge_time — O(1) constant fill
+        batch_id_arr = pa.array([kt_to_batch[unique_kts_py[0]]] * n, type=pa.int64())
+    else:
+        # Multi-kt: O(n) dict lookup per row
+        batch_id_arr = pa.array(
+            [kt_to_batch[kt] for kt in kt_col.to_pylist()], type=pa.int64()
+        )
+
+    arrow_table = pa.table({
+        "batch_id":       batch_id_arr,
+        "series_id":      pa.array([series_id] * n, type=pa.int64()),
+        "valid_time":     table.column("valid_time"),
+        "valid_time_end": valid_time_end_arr,
+        "value":          table.column("value"),
+        "knowledge_time": kt_col,
+    })
+
     buf = io.BytesIO()
-    pa_csv.write_csv(staging, buf)
+    pa_csv.write_csv(arrow_table, buf)
     csv_bytes = buf.getvalue()
     if _prof: profiling._record(profiling.PHASE_INSERT_CSV_SERIALIZE, time.perf_counter() - _t0)
 
     with conn.cursor() as cur:
         _t0 = time.perf_counter() if _prof else 0.0
-        cur.execute("""
-            CREATE TEMP TABLE _overlap_staging (
-                knowledge_time timestamptz NOT NULL,
-                valid_time     timestamptz NOT NULL,
-                valid_time_end timestamptz,
-                value          double precision NOT NULL
-            ) ON COMMIT DROP
-        """)
-        if _prof: profiling._record(profiling.PHASE_INSERT_STAGE_DDL, time.perf_counter() - _t0)
-
-        _t0 = time.perf_counter() if _prof else 0.0
         with cur.copy(
-            "COPY _overlap_staging (knowledge_time, valid_time, valid_time_end, value)"
-            " FROM STDIN (FORMAT CSV, HEADER TRUE)"
+            pgsql.SQL(
+                "COPY {} (batch_id, series_id, valid_time, valid_time_end, value, knowledge_time)"
+                " FROM STDIN (FORMAT CSV, HEADER TRUE)"
+            ).format(pgsql.Identifier(target_table))
         ) as copy:
             copy.write(csv_bytes)
         if _prof: profiling._record(profiling.PHASE_INSERT_COPY, time.perf_counter() - _t0)
 
-        # ------------------------------------------------------------------
-        # Single-round-trip CTE:
-        #   1. INSERT DISTINCT knowledge_times into batches_table.
-        #   2. INSERT staging rows into overlapping tier, joined to new batches.
-        # (batch_meta is merged into the CTE, so PHASE_INSERT_BATCH_META = 0)
-        # ------------------------------------------------------------------
-        cte_sql = sql.SQL("""
-            WITH new_batches AS (
-                INSERT INTO batches_table (
-                    workflow_id, batch_start_time, batch_finish_time,
-                    knowledge_time, batch_params
-                )
-                SELECT DISTINCT
-                    %(workflow_id)s::text,
-                    %(batch_start_time)s::timestamptz,
-                    %(batch_finish_time)s::timestamptz,
-                    knowledge_time,
-                    %(batch_params)s::jsonb
-                FROM _overlap_staging
-                RETURNING batch_id, knowledge_time
-            )
-            INSERT INTO {target} (
-                batch_id, series_id, valid_time, valid_time_end, value, knowledge_time
-            )
-            SELECT
-                nb.batch_id,
-                %(series_id)s::bigint,
-                s.valid_time,
-                s.valid_time_end,
-                s.value,
-                s.knowledge_time
-            FROM _overlap_staging s
-            JOIN new_batches nb ON nb.knowledge_time = s.knowledge_time
-            RETURNING batch_id
-        """).format(target=sql.Identifier(target_table))
-
-        _t0 = time.perf_counter() if _prof else 0.0
-        cur.execute(
-            cte_sql,
-            {
-                "workflow_id":       workflow_id,
-                "batch_start_time":  batch_start_time,
-                "batch_finish_time": batch_finish_time,
-                "batch_params":      batch_params_json,
-                "series_id":         series_id,
-            },
-        )
-        if _prof: profiling._record(profiling.PHASE_INSERT_UPSERT, time.perf_counter() - _t0)
-        rows = cur.fetchall()
-
-    return sorted({row[0] for row in rows})
+    return sorted(kt_to_batch.values())
 
 
