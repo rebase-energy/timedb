@@ -146,15 +146,4 @@ CREATE INDEX IF NOT EXISTS medium_lookup_idx ON overlapping_medium (series_id, v
 CREATE INDEX IF NOT EXISTS long_lookup_idx   ON overlapping_long   (series_id, valid_time, knowledge_time DESC, change_time DESC);
 
 
--- ============================================================================
--- 5) UNIFIED OVERLAPPING VIEW
--- ============================================================================
-
-CREATE OR REPLACE VIEW all_overlapping_raw AS
-SELECT *, 'short'  as retention FROM overlapping_short
-UNION ALL
-SELECT *, 'medium' as retention FROM overlapping_medium
-UNION ALL
-SELECT *, 'long'   as retention FROM overlapping_long;
-
 COMMIT;

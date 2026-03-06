@@ -177,6 +177,7 @@ def read_overlapping_latest(
     conninfo: Union[psycopg.Connection, str],
     *,
     series_id: int,
+    table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -210,7 +211,7 @@ def read_overlapping_latest(
     sql = f"""
     SELECT DISTINCT ON (v.valid_time)
         v.valid_time, v.value
-    FROM all_overlapping_raw v
+    FROM {table} v
     {where_clause}
     ORDER BY v.valid_time, v.knowledge_time DESC, v.change_time DESC;
     """
@@ -223,6 +224,7 @@ def read_overlapping_relative(
     conninfo: Union[psycopg.Connection, str],
     *,
     series_id: int,
+    table: str,
     window_length: timedelta,
     issue_offset: timedelta,
     start_window: datetime,
@@ -277,7 +279,7 @@ def read_overlapping_relative(
             )
             + make_interval(secs => %(issue_offset_secs)s)
             AS cutoff_time
-        FROM all_overlapping_raw v
+        FROM {table} v
         {where_clause}
     )
     SELECT DISTINCT ON (valid_time)
@@ -295,6 +297,7 @@ def read_overlapping(
     conninfo: Union[psycopg.Connection, str],
     *,
     series_id: int,
+    table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -329,7 +332,7 @@ def read_overlapping(
     sql = f"""
     SELECT DISTINCT ON (v.knowledge_time, v.valid_time)
         v.knowledge_time, v.valid_time, v.value
-    FROM all_overlapping_raw v
+    FROM {table} v
     {where_clause}
     ORDER BY v.knowledge_time, v.valid_time, v.change_time DESC;
     """
@@ -342,6 +345,7 @@ def read_overlapping_latest_with_updates(
     conninfo: Union[psycopg.Connection, str],
     *,
     series_id: int,
+    table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -378,12 +382,12 @@ def read_overlapping_latest_with_updates(
     WITH winning AS (
         SELECT DISTINCT ON (v.valid_time)
             v.valid_time, v.knowledge_time
-        FROM all_overlapping_raw v
+        FROM {table} v
         {where_clause}
         ORDER BY v.valid_time, v.knowledge_time DESC
     )
     SELECT v.valid_time, v.change_time, v.value, v.changed_by, v.annotation
-    FROM all_overlapping_raw v
+    FROM {table} v
     JOIN winning w ON w.valid_time = v.valid_time AND w.knowledge_time = v.knowledge_time
     WHERE v.series_id = %(series_id)s
     ORDER BY v.valid_time, v.change_time;
@@ -448,6 +452,7 @@ def read_overlapping_with_updates(
     conninfo: Union[psycopg.Connection, str],
     *,
     series_id: int,
+    table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
@@ -481,7 +486,7 @@ def read_overlapping_with_updates(
 
     sql = f"""
     SELECT v.knowledge_time, v.change_time, v.valid_time, v.value, v.changed_by, v.annotation
-    FROM all_overlapping_raw v
+    FROM {table} v
     {where_clause}
     ORDER BY v.knowledge_time, v.change_time, v.valid_time;
     """

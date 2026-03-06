@@ -116,24 +116,21 @@ def test_insert_flat_interval(td, clean_db, sample_datetime):
 
 
 def test_insert_flat_upsert(td, clean_db, sample_datetime):
-    """Test that inserting the same flat data twice upserts (updates value)."""
+    """Test that inserting the same flat valid_time twice updates the value."""
     td.create_series(name="meter", unit="dimensionless", overlapping=False)
 
-    # First insert
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
     td.get_series("meter").insert(df=df1)
 
-    # Second insert with different value for same valid_time
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [150.0],
     })
     td.get_series("meter").insert(df=df2)
 
-    # Should still have only 1 row (upsert), with updated value
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM flat")

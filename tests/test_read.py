@@ -182,6 +182,7 @@ def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
     result = read.read_overlapping(
         clean_db,
         series_id=series_id,
+        table="overlapping_medium",
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=1),
     )
@@ -405,6 +406,7 @@ def test_read_relative_db_layer(td, clean_db, sample_datetime):
     result = read.read_overlapping_relative(
         clean_db,
         series_id=series_id,
+        table="overlapping_medium",
         window_length=timedelta(hours=24),
         issue_offset=timedelta(hours=-12),
         start_window=sample_datetime,
