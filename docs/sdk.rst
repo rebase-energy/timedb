@@ -26,6 +26,7 @@ Import the package and start using it directly:
    import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
+   from timedatamodel.timeseries_arrow import TimeSeries
 
 Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.get_series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
 
@@ -141,34 +142,65 @@ Then insert data:
 
 .. code-block:: python
 
-   df = pd.DataFrame({
-       "valid_time": [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)],
-       "value": [100.0 + i * 2 for i in range(24)]
-   })
+   from timedatamodel.timeseries_arrow import TimeSeries
 
-   result = td.get_series("wind_power").where(site="offshore_1").insert(df)
+   ts = TimeSeries.from_pandas(
+       pd.DataFrame({
+           "valid_time": [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)],
+           "value": [100.0 + i * 2 for i in range(24)]
+       }),
+       unit="MW",
+   )
+
+   result = td.get_series("wind_power").where(site="offshore_1").insert(ts)
    # result.series_id, result.batch_id
 
-For overlapping (versioned) series, use ``knowledge_time`` to indicate when the data was created:
+.. note::
+
+   A plain ``pd.DataFrame`` is also accepted directly (backward-compatible) — the SDK
+   converts it internally. ``TimeSeries`` is preferred because it carries unit metadata
+   that the SDK can validate.
+
+For overlapping (versioned) series, pass ``knowledge_time`` as a keyword argument:
 
 .. code-block:: python
 
    result = td.get_series("wind_power").where(site="offshore_1").insert(
-       df=df,
-       knowledge_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+       ts,
+       knowledge_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc),
    )
+
+Alternatively, include a ``knowledge_time`` column in the DataFrame / ``TimeSeries`` to
+insert multiple forecast runs in a single call — each unique ``knowledge_time`` becomes
+its own batch:
+
+.. code-block:: python
+
+   import pandas as pd
+   from timedatamodel.timeseries_arrow import TimeSeries
+
+   ts_versioned = TimeSeries.from_pandas(
+       pd.DataFrame({
+           "knowledge_time": [kt1] * 24 + [kt2] * 24,
+           "valid_time":     times1 + times2,
+           "value":          values1 + values2,
+       }),
+       unit="MW",
+   )
+   result = td.get_series("wind_power").where(site="offshore_1").insert(ts_versioned)
+   print(result.batch_ids)  # list of created batch IDs
 
 Full insert signature:
 
 .. code-block:: python
 
    result = td.get_series("name").where(...).insert(
-       df=pd.DataFrame(...),  # Columns: [valid_time, value] or [valid_time, valid_time_end, value]
-       workflow_id=None,  # Optional, defaults to "sdk-workflow"
+       ts,                  # TimeSeries or pd.DataFrame
+       workflow_id=None,    # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
        batch_finish_time=None,  # Optional
-       knowledge_time=None,  # Time of knowledge (overlapping only)
-       batch_params=None,  # Optional dict of metadata
+       knowledge_time=None,    # Time of knowledge (SIMPLE overlapping inserts)
+       batch_params=None,      # Optional dict of metadata
    )
 
 Using pint Units
@@ -187,7 +219,14 @@ Install the optional pint dependencies first: ``pip install timedb[pint]``
    })
 
    # kW is automatically converted to MW (the series' canonical unit)
-   td.get_series("power").insert(df=df)
+   td.get_series("power").insert(df)
+
+.. note::
+
+   Pass pint-typed DataFrames **directly** to ``insert()`` — not through
+   ``TimeSeries.from_pandas()``. PyArrow does not support pint dtypes, so
+   ``TimeSeries.from_pandas()`` would strip the unit information before
+   the SDK can validate it. The plain-DataFrame path keeps pint handling intact.
 
 Rules:
 
@@ -204,20 +243,25 @@ For interval-based data (e.g., energy over a time period):
 
 .. code-block:: python
 
+   from timedatamodel.timeseries_arrow import TimeSeries
+
    start_times = pd.date_range(
        start=datetime.now(timezone.utc),
        periods=24,
-       freq='H'
+       freq='h'
    )
    end_times = start_times + timedelta(hours=1)
 
-   df_intervals = pd.DataFrame({
-       "valid_time": start_times,
-       "valid_time_end": end_times,
-       "value": [100.0, 105.0, 110.0] * 8
-   })
+   ts_intervals = TimeSeries.from_pandas(
+       pd.DataFrame({
+           "valid_time": start_times,
+           "valid_time_end": end_times,
+           "value": [100.0, 105.0, 110.0] * 8,
+       }),
+       unit="MWh",
+   )
 
-   td.get_series("energy").where(...).insert(df=df_intervals)
+   td.get_series("energy").where(...).insert(ts_intervals)
 
 Reading Data
 ------------
@@ -226,68 +270,76 @@ Use the fluent API to read data. Start by selecting a series:
 
 .. code-block:: python
 
-   # Select series by name
-   df = td.get_series("temperature").read()
+   # Select series by name — returns a TimeSeries
+   ts = td.get_series("temperature").read()
+   df = ts.to_pandas()  # pd.DataFrame with valid_time index, value column
 
    # Select by name and filter by labels
-   df = td.get_series("temperature").where(location="room_1").read()
+   ts = td.get_series("temperature").where(location="room_1").read()
 
    # Multiple filters
-   df = td.get_series("wind_power").where(site="Gotland", turbine="T01").read()
+   ts = td.get_series("wind_power").where(site="Gotland", turbine="T01").read()
 
    # Time range filtering
-   df = td.get_series("power").read(
+   ts = td.get_series("power").read(
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
 
-The returned DataFrame has:
+``read()`` returns a :class:`~timedatamodel.timeseries_arrow.TimeSeries`. Inspect
+metadata directly (``ts.name``, ``ts.unit``, ``ts.shape``, ``ts.labels``, ``len(ts)``),
+then call ``.to_pandas()`` to get a ``pd.DataFrame``:
 
-- **Index**: ``valid_time`` (with UTC timezone)
-- **Column**: ``value`` (float64, or pint dtype if ``as_pint=True``)
+- **Index**: ``valid_time`` (with UTC timezone) for ``SIMPLE`` shape; MultiIndex for other shapes
+- **Column**: ``value`` (float64)
 
 Full read signature:
 
 .. code-block:: python
 
-   df = td.get_series("name").read(
-       start_valid=None,  # Optional, start of valid time range
-       end_valid=None,  # Optional, end of valid time range
-       start_known=None,  # Optional, start of knowledge_time (overlapping only)
-       end_known=None,  # Optional, end of knowledge_time (overlapping only)
-       overlapping=False,  # If True, return per-knowledge_time rows (overlapping only)
-       include_updates=False,  # If True, expose correction chain with change_time index
-       as_pint=False,  # If True, return value column with pint dtype
+   ts = td.get_series("name").read(
+       start_valid=None,     # Optional, start of valid time range
+       end_valid=None,       # Optional, end of valid time range
+       start_known=None,     # Optional, start of knowledge_time (overlapping only)
+       end_known=None,       # Optional, end of knowledge_time (overlapping only)
+       overlapping=False,    # If True, return VERSIONED shape (overlapping only)
+       include_updates=False,  # If True, include correction chain (CORRECTED/AUDIT shape)
+       as_pint=False,        # Deprecated; use ts.to_pandas() instead
    )
+   df = ts.to_pandas()       # pd.DataFrame; index depends on shape (see DataShape)
 
 Reading with Units
 ~~~~~~~~~~~~~~~~~~
 
-Use ``as_pint=True`` to get the value column as a pint-pandas dtype with the series' canonical unit:
+The ``TimeSeries`` returned by ``read()`` carries the series' canonical unit in ``ts.unit``.
+To work with pint quantities, convert to pandas first and apply pint manually:
 
 .. code-block:: python
 
-   df = td.get_series("power").read(as_pint=True)
-   print(df["value"].dtype)  # pint[MW]
+   import pint
+   ts = td.get_series("power").read()
+   df = ts.to_pandas()
+   # ts.unit == "MW"
+   ureg = pint.UnitRegistry()
+   qty = df["value"].values * ureg(ts.unit)  # pint Quantity array
 
-   # Unit-aware arithmetic works naturally
-   df["value"] * 2  # still in MW
-   df["value"].pint.to("kW")  # convert to kW
-
+``as_pint=True`` is deprecated but still works for backward compatibility.
 Requires ``pip install timedb[pint]``.
 
 Reading Latest Values (Default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-By default, ``read()`` returns the latest version for overlapping series:
+By default, ``read()`` returns the latest version for overlapping series as a
+``SIMPLE``-shape ``TimeSeries``:
 
 .. code-block:: python
 
-   # Read latest forecast values
-   df_latest = td.get_series("wind_forecast").read(
+   # Read latest forecast values — returns a TimeSeries (SIMPLE shape)
+   ts_latest = td.get_series("wind_forecast").read(
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
+   df_latest = ts_latest.to_pandas()  # index: valid_time
 
 Reading Forecast History and Audit Log
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -296,66 +348,76 @@ Two boolean flags control what ``read()`` returns. They are orthogonal — each 
 a distinct question:
 
 - **``overlapping``** (*False* by default): *"Which forecast run is each value from?"*
-  When ``True``, the index becomes ``(knowledge_time, valid_time)`` — one row per
+  When ``True``, returns a ``VERSIONED``-shape ``TimeSeries`` with one row per
   forecast-run × valid_time. Only valid for overlapping series.
 - **``include_updates``** (*False* by default): *"Who edited these numbers, and when?"*
-  When ``True``, ``change_time`` is added to the index and ``changed_by`` / ``annotation``
-  columns are included. Works for both flat and overlapping series.
+  When ``True``, returns a ``CORRECTED`` or ``AUDIT``-shape ``TimeSeries`` with
+  ``change_time``, ``changed_by``, and ``annotation`` columns. Works for both flat
+  and overlapping series.
 
 The four combinations:
 
 .. list-table::
    :header-rows: 1
-   :widths: 18 18 42 22
+   :widths: 18 18 30 20 14
 
    * - ``overlapping``
      - ``include_updates``
-     - Returned index
+     - Returned ``DataShape``
+     - ``.to_pandas()`` index
      - Works for
    * - ``False`` (default)
      - ``False`` (default)
+     - ``SIMPLE``
      - ``valid_time``
      - flat + overlapping
    * - ``False``
      - ``True``
+     - ``CORRECTED``
      - ``valid_time, change_time``
      - flat + overlapping
    * - ``True``
      - ``False``
+     - ``VERSIONED``
      - ``knowledge_time, valid_time``
      - overlapping only
    * - ``True``
      - ``True``
+     - ``AUDIT``
      - ``knowledge_time, change_time, valid_time``
      - overlapping only
 
 .. code-block:: python
 
-   # Latest value per valid_time (default)
-   df_latest = td.get_series("wind_forecast").read()
+   # Latest value per valid_time (default) — SIMPLE shape
+   ts_latest = td.get_series("wind_forecast").read()
+   df_latest = ts_latest.to_pandas()
 
-   # History: one row per forecast run × valid_time
-   df_history = td.get_series("wind_forecast").read(
+   # History: one row per forecast run × valid_time — VERSIONED shape
+   ts_history = td.get_series("wind_forecast").read(
        overlapping=True,
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
-   # Index: (knowledge_time, valid_time)
+   df_history = ts_history.to_pandas()
+   # df_history.index: (knowledge_time, valid_time)
 
    # Filter by knowledge_time range (when forecasts were made)
-   df_history = td.get_series("wind_forecast").read(
+   ts_history = td.get_series("wind_forecast").read(
        overlapping=True,
        start_known=datetime(2024, 12, 1, tzinfo=timezone.utc),
        end_known=datetime(2025, 1, 15, tzinfo=timezone.utc),
    )
 
-   # Corrections for the currently-winning forecast run only
-   df_latest_audit = td.get_series("wind_forecast").read(include_updates=True)
-   # Index: (valid_time, change_time) — knowledge_time NOT included
+   # Corrections for the currently-winning forecast run only — CORRECTED shape
+   ts_corrected = td.get_series("wind_forecast").read(include_updates=True)
+   df_corrected = ts_corrected.to_pandas()
+   # df_corrected.index: (valid_time, change_time) — knowledge_time NOT included
 
-   # Full audit log — every correction ever written
-   df_audit = td.get_series("wind_forecast").read(overlapping=True, include_updates=True)
-   # Index: (knowledge_time, change_time, valid_time)
+   # Full audit log — every correction ever written — AUDIT shape
+   ts_audit = td.get_series("wind_forecast").read(overlapping=True, include_updates=True)
+   df_audit = ts_audit.to_pandas()
+   # df_audit.index: (knowledge_time, change_time, valid_time)
 
 ``overlapping=True`` on a flat series raises ``ValueError``.
 
@@ -366,27 +428,31 @@ Example: Analyzing forecast revisions:
    import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
+   from timedatamodel.timeseries_arrow import TimeSeries
 
-   # Insert multiple forecast revisions
    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
+   # Insert 4 forecast runs in a single call using a VERSIONED TimeSeries
+   rows = []
    for i in range(4):
-       knowledge_time = base_time + timedelta(days=i)
-       times = [knowledge_time + timedelta(hours=j) for j in range(72)]
+       kt = base_time + timedelta(days=i)
+       for j in range(72):
+           rows.append({"knowledge_time": kt,
+                        "valid_time": kt + timedelta(hours=j),
+                        "value": 100.0 + i * 10})
 
-       df = pd.DataFrame({
-           "valid_time": times,
-           "value": [100.0 + i*10 for _ in range(72)]
-       })
+   ts_versioned = TimeSeries.from_pandas(pd.DataFrame(rows), unit="MW")
+   result = td.get_series("power").insert(ts_versioned)
+   print(result.batch_ids)  # [1, 2, 3, 4]
 
-       td.get_series("power").insert(df, knowledge_time=knowledge_time)
-
-   # Read forecast history (one row per forecast run × valid_time)
-   df_history = td.get_series("power").read(
+   # Read forecast history — VERSIONED shape, one row per (knowledge_time, valid_time)
+   ts_history = td.get_series("power").read(
        start_valid=base_time,
        end_valid=base_time + timedelta(days=5),
        overlapping=True,
    )
+   df_history = ts_history.to_pandas()
+   print(df_history.index.get_level_values("knowledge_time").nunique())  # 4
 
 Reading with Per-Window Cutoffs (Overlapping Only)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -455,7 +521,7 @@ The two parameter sets are mutually exclusive — mixing them raises ``ValueErro
 Example with ``days_ahead=1, time_of_day=time(6, 0)``:
 Window Jan 2 00:00 + (6h − 24h) = **Jan 1 06:00** — only forecasts issued by then qualify.
 
-The returned DataFrame has index ``valid_time`` and column ``value``, identical to ``read()``.
+Returns a ``TimeSeries`` with ``SIMPLE`` shape — identical to ``read()``. Call ``.to_pandas()`` for a DataFrame with ``valid_time`` index and ``value`` column.
 
 Getting Series Metadata
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -631,6 +697,7 @@ A complete workflow from setup to analysis:
    import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
+   from timedatamodel.timeseries_arrow import TimeSeries
 
    # 1. Create schema
    td.delete()  # Clean slate
@@ -645,40 +712,30 @@ A complete workflow from setup to analysis:
        retention="medium"
    )
 
-   # 3. Insert forecast data
    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
    times = [base_time + timedelta(hours=i) for i in range(24)]
 
-   df = pd.DataFrame({
-       "valid_time": times,
-       "value": [100.0 + i * 2 for i in range(24)]
-   })
-
-   result = td.get_series("wind_power").where(site="Gotland").insert(
-       df=df,
-       knowledge_time=base_time,
-       workflow_id="forecast-run-1"
-   )
-
-   # 4. Insert revised forecast (6 hours later)
+   # 3. Insert two forecast runs in a single call (VERSIONED TimeSeries)
    revised_time = base_time + timedelta(hours=6)
-   df_revised = pd.DataFrame({
-       "valid_time": times,
-       "value": [105.0 + i * 2 for i in range(24)]
-   })
-
-   td.get_series("wind_power").where(site="Gotland").insert(
-       df=df_revised,
-       knowledge_time=revised_time,
-       workflow_id="forecast-run-1"
+   rows = (
+       [{"knowledge_time": base_time,    "valid_time": t, "value": 100.0 + i * 2} for i, t in enumerate(times)] +
+       [{"knowledge_time": revised_time, "valid_time": t, "value": 105.0 + i * 2} for i, t in enumerate(times)]
    )
+   ts_versioned = TimeSeries.from_pandas(pd.DataFrame(rows), unit="MW")
+   result = td.get_series("wind_power").where(site="Gotland").insert(
+       ts_versioned, workflow_id="forecast-run-1"
+   )
+   print(result.batch_ids)  # [1, 2]
 
-   # 5. Read latest forecast
-   df_latest = td.get_series("wind_power").where(site="Gotland").read()
+   # 4. Read latest forecast — SIMPLE shape TimeSeries
+   ts_latest = td.get_series("wind_power").where(site="Gotland").read()
+   print(ts_latest)              # rich repr with metadata
+   df_latest = ts_latest.to_pandas()
    print(df_latest.head())
 
-   # 6. Read forecast history for analysis (one row per knowledge_time × valid_time)
-   df_history = td.get_series("wind_power").where(site="Gotland").read(overlapping=True)
+   # 5. Read forecast history — VERSIONED shape
+   ts_history = td.get_series("wind_power").where(site="Gotland").read(overlapping=True)
+   df_history = ts_history.to_pandas()
    print(f"Forecast runs: {df_history.index.get_level_values('knowledge_time').nunique()}")
 
 

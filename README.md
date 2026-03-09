@@ -59,34 +59,39 @@ Requires Python 3.9+ and PostgreSQL 12+ with TimescaleDB.
 import timedb as td
 import pandas as pd
 from datetime import datetime, timezone
+from timedatamodel.timeseries_arrow import TimeSeries
 
 # Create Schema
 td.create()
 
 # 1. Create a forecast series
 td.create_series(
-    name="wind_power", 
+    name="wind_power",
     unit="MW",
-    labels={"site": "offshore_1"}, 
+    labels={"site": "offshore_1"},
     overlapping=True
 )
 
 # 2. Insert forecast with knowledge_time
 knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
-df = pd.DataFrame({
-    'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
-    'value': [100 + i*2 for i in range(24)]
-})
+ts = TimeSeries.from_pandas(
+    pd.DataFrame({
+        'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
+        'value': [100 + i*2 for i in range(24)]
+    }),
+    unit='MW',
+)
 
-td.get_series("wind_power")
-   .where(site="offshore_1")
-   .insert(df=df, knowledge_time=knowledge_time)
+td.get_series("wind_power") \
+   .where(site="offshore_1") \
+   .insert(ts, knowledge_time=knowledge_time)
 
-# 3. Read latest forecast
-df_latest = td.get_series("wind_power").where(site="offshore_1").read()
+# 3. Read latest forecast — returns a TimeSeries
+ts_latest = td.get_series("wind_power").where(site="offshore_1").read()
+df_latest = ts_latest.to_pandas()  # pd.DataFrame with valid_time index
 
 # 4. Read forecast history (one row per knowledge_time × valid_time)
-df_all = td.get_series("wind_power").where(site="offshore_1").read(overlapping=True)
+ts_all = td.get_series("wind_power").where(site="offshore_1").read(overlapping=True)
 ```
 
 ---

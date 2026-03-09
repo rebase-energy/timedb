@@ -725,6 +725,7 @@ class TimeDataClient:
         >>> from timedb import TimeDataClient
         >>> import pandas as pd
         >>> from datetime import datetime, timezone
+        >>> from timedatamodel.timeseries_arrow import TimeSeries
 
         >>> # Create client and schema
         >>> td = TimeDataClient()
@@ -733,13 +734,16 @@ class TimeDataClient:
         >>> # Create a series
         >>> td.create_series('wind_power', unit='MW', labels={'site': 'offshore_1'})
 
-        >>> # Insert and read data using fluent API
-        >>> df = pd.DataFrame({
-        ...     'valid_time': [datetime.now(timezone.utc)],
-        ...     'value': [100.0]
-        ... })
-        >>> td.get_series('wind_power').where(site='offshore_1').insert(df)
-        >>> result = td.get_series('wind_power').where(site='offshore_1').read()
+        >>> # Insert data using TimeSeries
+        >>> ts = TimeSeries.from_pandas(
+        ...     pd.DataFrame({'valid_time': [datetime.now(timezone.utc)], 'value': [100.0]}),
+        ...     unit='MW',
+        ... )
+        >>> td.get_series('wind_power').where(site='offshore_1').insert(ts)
+
+        >>> # Read data — returns a TimeSeries
+        >>> ts_result = td.get_series('wind_power').where(site='offshore_1').read()
+        >>> df = ts_result.to_pandas()  # pd.DataFrame with valid_time index
 
     Environment:
         Requires TIMEDB_DSN or DATABASE_URL environment variable
