@@ -16,6 +16,7 @@ Data model:
 """
 import atexit
 import os
+import uuid
 import warnings
 from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
@@ -33,11 +34,10 @@ from psycopg_pool import ConnectionPool
 
 
 class InsertResult(NamedTuple):
-    """Result from insert containing the IDs that were used."""
-    batch_id: Optional[int]
+    """Result from insert containing the batch_id and series_id."""
+    batch_id: uuid.UUID
     workflow_id: Optional[str]
     series_id: int
-    batch_ids: Optional[List[int]] = None
 
 
 class IncompatibleUnitError(ValueError):
@@ -189,7 +189,7 @@ class SeriesCollection:
 
     def insert(
         self,
-        df: Union[pd.DataFrame, "TimeSeries"],
+        data: Union[pd.DataFrame, "TimeSeries"],
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
@@ -201,48 +201,55 @@ class SeriesCollection:
 
         **Single-series inserts only.**  Accepts either:
 
-        - A :class:`~timedb.timeseries.TimeSeries` with shape ``SIMPLE``.  The
-          series' ``unit`` is compared against the stored unit and a conversion
-          factor is applied automatically when they differ.
-        - A ``pd.DataFrame`` with columns ``[valid_time, value]`` or
-          ``[valid_time, valid_time_end, value]`` (backward-compatible).
+        - A :class:`~timedb.timeseries.TimeSeries` with shape ``SIMPLE`` or
+          ``VERSIONED``.  The series' ``unit`` is compared against the stored
+          unit and a conversion factor is applied automatically when they differ.
+        - A ``pd.DataFrame`` with columns ``[valid_time, value]``,
+          ``[valid_time, valid_time_end, value]``,
+          ``[knowledge_time, valid_time, value]``, or
+          ``[knowledge_time, valid_time, valid_time_end, value]``.
 
         Automatically routes data to the correct table based on the series'
         overlapping flag:
 
-        - flat (``overlapping=False``): inserts into ``flat`` table (upsert on conflict)
-        - overlapping (``overlapping=True``): inserts into ``overlapping_{tier}``
-          table with batch and knowledge_time
+        - flat (``overlapping=False``): inserts into ``flat`` table (upsert on
+          conflict by ``(series_id, valid_time)``).
+        - overlapping (``overlapping=True``): appends into ``overlapping_{tier}``
+          table (no conflict resolution).
 
-        For :attr:`~timedb.timeseries.DataShape.VERSIONED` inputs, each unique
-        ``knowledge_time`` value in the table becomes its own batch.  The
-        ``knowledge_time`` keyword argument is silently ignored in this case
-        (a :class:`UserWarning` is emitted).
+        Both flat and overlapping series support per-row ``knowledge_time``
+        values.  Pass a DataFrame with a ``knowledge_time`` column (or a
+        ``VERSIONED`` :class:`~timedb.timeseries.TimeSeries`) to store a
+        different knowledge_time per row.  The ``knowledge_time`` keyword
+        argument is a convenience shortcut that broadcasts a single value to
+        all rows; passing it together with a ``knowledge_time`` column raises
+        :class:`ValueError`.
 
         Args:
-            df: TimeSeries or DataFrame with time series data
+            data: TimeSeries or DataFrame with time series data
             workflow_id: Workflow identifier (optional)
             batch_start_time: Start time (optional)
             batch_finish_time: Finish time (optional)
-            knowledge_time: Time of knowledge (optional, used for SIMPLE overlapping
-                inserts; ignored for VERSIONED inserts)
+            knowledge_time: Time of knowledge broadcast to all rows (optional).
+                Defaults to ``now()`` when neither this kwarg nor a
+                ``knowledge_time`` column is present in the data.
             batch_params: Batch parameters (optional)
 
         Returns:
-            InsertResult with batch_id, workflow_id, series_id.  For VERSIONED
-            inserts ``batch_ids`` holds the list of created batch IDs and
-            ``batch_id`` is ``None``.
+            InsertResult with batch_id (uuid.UUID), workflow_id, series_id.
+            One batch is always created per insert() call regardless of how
+            many unique knowledge_times are in the data.
 
         Raises:
             ValueError: If collection matches multiple series (use more specific filters)
             ValueError: If input data doesn't have the required columns or shape
-            ValueError: If a VERSIONED TimeSeries is inserted into a flat series
+            ValueError: If knowledge_time kwarg and a knowledge_time column are both provided
         """
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
         series_unit = self._registry.get_cached(series_id)["unit"]
 
-        table, shape = _normalize_insert_input(df, series_unit, knowledge_time=knowledge_time)
+        table, shape = _normalize_insert_input(data, series_unit, knowledge_time=knowledge_time)
 
         return _insert(
             table=table,
@@ -268,7 +275,6 @@ class SeriesCollection:
           and stamping change_time=now().
           Lookup priority:
           - knowledge_time + valid_time: Exact version lookup
-          - batch_id + valid_time: Latest version in that batch
           - valid_time only: Latest version overall
 
         .. note::
@@ -280,8 +286,7 @@ class SeriesCollection:
                 Optional fields are ``value`` (new value, must be in the series'
                 canonical unit), ``annotation`` (text annotation; set to ``None``
                 to clear), ``tags`` (set to ``[]`` to clear), ``changed_by``
-                (user identifier), ``batch_id`` (target specific batch,
-                overlapping only), and ``knowledge_time`` (target specific
+                (user identifier), and ``knowledge_time`` (target specific
                 version, overlapping only).
 
         Returns:
@@ -703,6 +708,38 @@ class SeriesCollection:
                     "retention": meta["retention"],
                 })
         return result
+
+    def list_batches(self) -> List[Dict[str, Any]]:
+        """List all batches that contain data for this series.
+
+        **Single-series only.**  Results are ordered by ``inserted_at`` DESC
+        (most recent batch first).
+
+        Returns:
+            List of dicts, each containing:
+
+            - **batch_id** (uuid.UUID): Unique batch identifier
+            - **workflow_id** (str or None): Workflow tag set at insert time
+            - **batch_start_time** (datetime or None): User-supplied batch start
+            - **batch_finish_time** (datetime or None): User-supplied batch finish
+            - **batch_params** (dict or None): Arbitrary metadata from insert
+            - **inserted_at** (datetime): When the batch was created in the DB
+
+        Example:
+            >>> sc.list_batches()
+            [
+                {'batch_id': UUID('...'), 'workflow_id': 'sdk-workflow',
+                 'batch_start_time': None, 'batch_finish_time': None,
+                 'batch_params': None, 'inserted_at': datetime(...)},
+                ...
+            ]
+
+        Raises:
+            ValueError: If collection matches zero or multiple series.
+        """
+        series_id = self._get_single_id()
+        routing = self._get_series_routing(series_id)
+        return _list_batches(series_id=series_id, routing=routing, _pool=self._pool)
 
     def count(self) -> int:
         """Count how many series match the current filters."""
@@ -1410,15 +1447,11 @@ def _insert(
     Accepts a ``(pa.Table, DataShape)`` produced by :func:`_normalize_insert_input`
     and routes it to the correct Postgres table via :func:`db.insert.insert_table`.
     The table must already contain a ``knowledge_time`` column (guaranteed by
-    :func:`_normalize_insert_input`).
+    :func:`_normalize_insert_input`).  Both flat and overlapping series accept
+    SIMPLE and VERSIONED shapes; per-row knowledge_times are stored directly on
+    each row in the target table.
     """
     conninfo = _get_conninfo()
-
-    if shape == DataShape.VERSIONED and not routing.get("overlapping", False):
-        raise ValueError(
-            "VERSIONED TimeSeries can only be inserted into overlapping series "
-            "(overlapping=True).  The target series is flat."
-        )
 
     if workflow_id is None:
         workflow_id = "sdk-workflow"
@@ -1450,31 +1483,23 @@ def _insert(
             "  td.create()"
         ) from e
 
-    if result is None:
-        # Flat insert
-        return InsertResult(
-            batch_id=None,
-            workflow_id=workflow_id,
-            series_id=series_id,
-        )
-
-    # Overlapping insert (SIMPLE or VERSIONED)
-    if shape == DataShape.VERSIONED:
-        return InsertResult(
-            batch_id=None,
-            workflow_id=workflow_id,
-            series_id=series_id,
-            batch_ids=result,
-        )
-
-    # SIMPLE overlapping: single batch — expose batch_id for backward compat
     return InsertResult(
-        batch_id=result[0] if result else None,
+        batch_id=result,
         workflow_id=workflow_id,
         series_id=series_id,
-        batch_ids=result,
     )
 
+
+
+def _list_batches(
+    series_id: int,
+    routing: Dict[str, Any],
+    _pool: Optional[ConnectionPool] = None,
+) -> List[Dict[str, Any]]:
+    """List batches for a series. Wrapper around db.read.read_batches_for_series."""
+    conninfo = _get_conninfo()
+    with _get_connection(_pool, conninfo) as conn:
+        return db.read.read_batches_for_series(conn, series_id=series_id, routing=routing)
 
 
 def _update_records(

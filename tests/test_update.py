@@ -16,7 +16,7 @@ def _setup_overlapping_series(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    result = td.get_series("forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("forecast").insert(data=df, knowledge_time=sample_datetime)
 
     return td, result, series_id
 
@@ -30,7 +30,7 @@ def test_update_overlapping_value(td, clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     record_update = {
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "value": 150.0,
         "changed_by": "test-user",
@@ -46,11 +46,11 @@ def test_update_overlapping_value(td, clean_db, sample_datetime):
                 """
                 SELECT value, changed_by
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY knowledge_time DESC, change_time DESC
                 LIMIT 1
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             row = cur.fetchone()
             assert row is not None
@@ -63,7 +63,7 @@ def test_update_overlapping_annotation_only(td, clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     record_update = {
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "annotation": "Updated annotation",
         "changed_by": "test-user",
@@ -79,11 +79,11 @@ def test_update_overlapping_annotation_only(td, clean_db, sample_datetime):
                 """
                 SELECT value, annotation
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY knowledge_time DESC, change_time DESC
                 LIMIT 1
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             row = cur.fetchone()
             assert row[0] == 100.0  # Value unchanged
@@ -95,7 +95,7 @@ def test_update_overlapping_tags(td, clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     record_update = {
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "tags": ["reviewed", "validated"],
         "changed_by": "test-user",
@@ -111,11 +111,11 @@ def test_update_overlapping_tags(td, clean_db, sample_datetime):
                 """
                 SELECT tags
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY knowledge_time DESC, change_time DESC
                 LIMIT 1
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             row = cur.fetchone()
             assert row[0] is not None
@@ -128,14 +128,14 @@ def test_update_overlapping_clear_tags(td, clean_db, sample_datetime):
 
     # First add tags
     td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "tags": ["tag1", "tag2"],
     }])
 
     # Then clear tags
     outcome = td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "tags": [],  # Empty list clears tags
     }])
@@ -149,14 +149,26 @@ def test_update_overlapping_clear_tags(td, clean_db, sample_datetime):
                 """
                 SELECT tags
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY knowledge_time DESC, change_time DESC
                 LIMIT 1
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             row = cur.fetchone()
             assert row[0] is None  # Tags cleared
+
+
+def test_update_batch_id_raises(td, sample_datetime):
+    """Test that passing batch_id in update dict raises ValueError."""
+    td, result, series_id = _setup_overlapping_series(td, sample_datetime)
+
+    with pytest.raises(ValueError, match="batch_id targeting has been removed"):
+        td.get_series("forecast").update_records(updates=[{
+            "batch_id": result.batch_id,
+            "valid_time": sample_datetime,
+            "value": 150.0,
+        }])
 
 
 def test_update_nonexistent_record_without_value(td, sample_datetime):
@@ -171,12 +183,12 @@ def test_update_nonexistent_record_without_value(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    result = td.get_series("forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("forecast").insert(data=df, knowledge_time=sample_datetime)
 
     # Try to update a different valid_time that doesn't exist
     non_existent_time = sample_datetime + timedelta(hours=999)
     record_update = {
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": non_existent_time,
         "annotation": "annotation only",  # No value provided
     }
@@ -196,12 +208,12 @@ def test_update_nonexistent_record_with_value(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    result = td.get_series("forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("forecast").insert(data=df, knowledge_time=sample_datetime)
 
     # Update a different valid_time — even with a value this must fail now
     new_time = sample_datetime + timedelta(hours=1)
     record_update = {
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": new_time,
         "value": 200.0,
         "annotation": "new record",
@@ -219,7 +231,7 @@ def test_update_via_collection(td, clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     outcome = td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "value": 999.0,
         "changed_by": "collection-api",
@@ -233,11 +245,11 @@ def test_update_via_collection(td, clean_db, sample_datetime):
                 """
                 SELECT value, changed_by
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY knowledge_time DESC, change_time DESC
                 LIMIT 1
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             row = cur.fetchone()
             assert row[0] == 999.0
@@ -256,14 +268,14 @@ def test_update_creates_new_version(td, clean_db, sample_datetime):
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s AND series_id = %s",
-                (result.batch_id, series_id)
+                "SELECT COUNT(*) FROM overlapping_medium WHERE series_id = %s",
+                (series_id,)
             )
             assert cur.fetchone()[0] == 1
 
     # Update creates a new row
     td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "value": 200.0,
     }])
@@ -272,8 +284,8 @@ def test_update_creates_new_version(td, clean_db, sample_datetime):
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s AND series_id = %s",
-                (result.batch_id, series_id)
+                "SELECT COUNT(*) FROM overlapping_medium WHERE series_id = %s",
+                (series_id,)
             )
             assert cur.fetchone()[0] == 2
 
@@ -281,10 +293,10 @@ def test_update_creates_new_version(td, clean_db, sample_datetime):
             cur.execute(
                 """
                 SELECT value FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY knowledge_time DESC, change_time DESC LIMIT 1
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             assert cur.fetchone()[0] == 200.0
 
@@ -303,7 +315,7 @@ def _setup_flat_series(td, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.get_series("meter_reading").insert(df=df)
+    td.get_series("meter_reading").insert(data=df)
 
     return td, series_id
 
@@ -434,7 +446,7 @@ def test_update_overlapping_by_knowledge_time(td, clean_db, sample_datetime):
     """Test updating overlapping by knowledge_time (precise version lookup)."""
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
-    # Update using knowledge_time instead of batch_id
+    # Update using knowledge_time
     outcome = td.get_series("forecast").update_records(updates=[{
         "valid_time": sample_datetime,
         "knowledge_time": sample_datetime,  # The knowledge_time from insert
@@ -469,7 +481,7 @@ def test_update_overlapping_latest_no_identifiers(td, clean_db, sample_datetime)
     # Update using only valid_time - should find latest version
     outcome = td.get_series("forecast").update_records(updates=[{
         "valid_time": sample_datetime,
-        # No batch_id, no knowledge_time - should find latest
+        # No knowledge_time - should find latest
         "value": 300.0,
         "changed_by": "latest-lookup",
     }])
@@ -494,11 +506,11 @@ def test_update_overlapping_latest_no_identifiers(td, clean_db, sample_datetime)
             assert row[1] == "latest-lookup"
 
 
-def test_update_overlapping_via_collection_no_batch_id(td, clean_db, sample_datetime):
-    """Test updating overlapping via SeriesCollection without batch_id."""
+def test_update_overlapping_via_collection_no_knowledge_time(td, clean_db, sample_datetime):
+    """Test updating overlapping via SeriesCollection without knowledge_time."""
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
-    # Update via collection API without batch_id
+    # Update via collection API without knowledge_time
     outcome = td.get_series("forecast").update_records(updates=[{
         "valid_time": sample_datetime,
         "value": 500.0,
@@ -530,7 +542,7 @@ def test_update_preserves_knowledge_time(td, clean_db, sample_datetime):
     td, result, series_id = _setup_overlapping_series(td, sample_datetime)
 
     td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "value": 150.0,
         "changed_by": "operator",
@@ -542,10 +554,10 @@ def test_update_preserves_knowledge_time(td, clean_db, sample_datetime):
                 """
                 SELECT knowledge_time, change_time
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 ORDER BY change_time ASC
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             rows = cur.fetchall()
 
@@ -565,14 +577,14 @@ def test_update_correction_chain(td, clean_db, sample_datetime):
 
     # First correction
     td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "value": 110.0,
     }])
 
     # Second correction
     td.get_series("forecast").update_records(updates=[{
-        "batch_id": result.batch_id,
+        "knowledge_time": sample_datetime,
         "valid_time": sample_datetime,
         "value": 120.0,
     }])
@@ -584,9 +596,9 @@ def test_update_correction_chain(td, clean_db, sample_datetime):
                 """
                 SELECT COUNT(DISTINCT knowledge_time), COUNT(*)
                 FROM overlapping_medium
-                WHERE batch_id = %s AND series_id = %s
+                WHERE series_id = %s
                 """,
-                (result.batch_id, series_id)
+                (series_id,)
             )
             distinct_kt, total_rows = cur.fetchone()
 

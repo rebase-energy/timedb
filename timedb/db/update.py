@@ -114,7 +114,6 @@ def update_records(
             
             For overlapping series (version identification):
             - knowledge_time (datetime): Exact version by knowledge_time
-            - batch_id (int): Latest version in that batch
             - (none): Latest version overall
 
     Returns:
@@ -266,14 +265,17 @@ def _process_overlapping_update(
 ) -> None:
     """Process an update for an overlapping series (versioned with knowledge_time).
 
-    Flexible lookup priority:
-    1. batch_id + valid_time: Latest version in that batch
-    2. knowledge_time + valid_time: Exact version lookup
-    3. Just valid_time: Latest version overall (latest knowledge_time, most recent batch)
+    Lookup priority:
+    1. knowledge_time + valid_time: Exact version lookup
+    2. Just valid_time: Latest version overall (latest knowledge_time, most recent change)
     """
+    if "batch_id" in u:
+        raise ValueError(
+            "batch_id targeting has been removed; use knowledge_time to target a specific version."
+        )
+
     valid_time = u.get("valid_time")
     series_id = u.get("series_id")
-    batch_id = u.get("batch_id")
     knowledge_time = u.get("knowledge_time")
 
     if valid_time is None or series_id is None:
@@ -285,8 +287,6 @@ def _process_overlapping_update(
     if valid_time.tzinfo is None:
         raise ValueError(f"valid_time must be timezone-aware (timestamptz). Bad update: {u}")
 
-    if batch_id is not None and isinstance(batch_id, str):
-        batch_id = int(batch_id)
     if knowledge_time is not None:
         if isinstance(knowledge_time, str):
             knowledge_time = dt.datetime.fromisoformat(knowledge_time.replace('Z', '+00:00'))
@@ -297,26 +297,8 @@ def _process_overlapping_update(
     if not has_any_update:
         raise ValueError("No updates supplied: provide at least one of 'value', 'annotation', 'tags', 'changed_by'.")
 
-    # Flexible lookup based on what identifiers are provided
-    if batch_id is not None:
-        # Latest correction for the latest version in that batch
-        cur.execute(
-            f"""
-            SELECT overlapping_id, batch_id, value, valid_time_end, annotation, metadata, tags, changed_by, knowledge_time
-            FROM {table}
-            WHERE series_id = %(series_id)s
-              AND valid_time = %(valid_time)s
-              AND batch_id = %(batch_id)s
-            ORDER BY knowledge_time DESC, change_time DESC
-            LIMIT 1
-            """,
-            {
-                "series_id": series_id,
-                "valid_time": valid_time,
-                "batch_id": batch_id,
-            },
-        )
-    elif knowledge_time is not None:
+    # Lookup based on what identifiers are provided
+    if knowledge_time is not None:
         # Exact version lookup by knowledge_time — pick latest correction
         cur.execute(
             f"""
@@ -357,10 +339,7 @@ def _process_overlapping_update(
             f"No current row exists for key in {table}. Use insert() to create new data."
         )
 
-    # Get batch_id and knowledge_time from current row if not provided
-    if batch_id is None:
-        batch_id = current["batch_id"]
-
+    batch_id = current["batch_id"]
     current_knowledge_time = current["knowledge_time"]
     current_value = current["value"]
     valid_time_end = current["valid_time_end"]

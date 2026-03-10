@@ -2,9 +2,10 @@ import os
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import psycopg
+import psycopg.rows
 import pyarrow as pa
 
 from .. import profiling
@@ -79,11 +80,11 @@ def _fetch_arrow(
     if not rows:
         result = pa.table({c: pa.array([], type=_COL_ARROW_TYPE[c]) for c in columns})
     else:
-        # Transpose row-major list-of-tuples → column-major tuple-of-lists.
-        col_data = list(zip(*rows))
+        # Transpose row-major → column-major; zip(*rows) is lazy so pa.array()
+        # consumes each column iterator in one pass without intermediate lists.
         result = pa.table({
-            col: pa.array(data, type=_COL_ARROW_TYPE[col])
-            for col, data in zip(columns, col_data)
+            col: pa.array(col_vals, type=_COL_ARROW_TYPE[col])
+            for col, col_vals in zip(columns, zip(*rows))
         })
     if _prof: profiling._record(profiling.PHASE_READ_BUILD_ARROW, time.perf_counter() - _t0)
 
@@ -259,8 +260,8 @@ def read_overlapping_relative(
     )
     params.update({
         "start_window": start_window,
-        "window_secs": window_length.total_seconds(),
-        "issue_offset_secs": issue_offset.total_seconds(),
+        "window_length": window_length,
+        "issue_offset": issue_offset,
     })
 
     sql = f"""
@@ -270,14 +271,11 @@ def read_overlapping_relative(
             v.value,
             v.knowledge_time,
             v.change_time,
-            -- Cutoff: latest allowed knowledge_time for the window containing this valid_time
-            %(start_window)s
-            + make_interval(secs => floor(
-                extract(epoch from (v.valid_time - %(start_window)s))
-                / %(window_secs)s
-              ) * %(window_secs)s
-            )
-            + make_interval(secs => %(issue_offset_secs)s)
+            -- Cutoff: latest allowed knowledge_time for the window containing this valid_time.
+            -- date_bin snaps valid_time down to the window boundary aligned to start_window,
+            -- then the issue_offset interval is added. Single C-compiled call per row.
+            date_bin(%(window_length)s, v.valid_time, %(start_window)s)
+            + %(issue_offset)s
             AS cutoff_time
         FROM {table} v
         {where_clause}
@@ -496,6 +494,48 @@ def read_overlapping_with_updates(
             conn, sql, params,
             ["knowledge_time", "change_time", "valid_time", "value", "changed_by", "annotation"],
         )
+
+
+def read_batches_for_series(
+    conninfo: Union[psycopg.Connection, str],
+    *,
+    series_id: int,
+    routing: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Return all batches that contain data for a given series.
+
+    Discovers batches by joining batches_table with the series' data table
+    (flat or overlapping_{tier}), since there is no direct FK from batches to
+    series_table.  Results are ordered by inserted_at DESC (most recent first).
+
+    Args:
+        conninfo: Database connection or connection string
+        series_id: Series ID
+        routing: Routing dict with keys overlapping (bool) and table (str)
+
+    Returns:
+        List of dicts with keys: batch_id, workflow_id, batch_start_time,
+        batch_finish_time, batch_params, inserted_at.
+    """
+    data_table = "flat" if not routing["overlapping"] else routing["table"]
+    sql = f"""
+        SELECT DISTINCT
+            b.batch_id,
+            b.workflow_id,
+            b.batch_start_time,
+            b.batch_finish_time,
+            b.batch_params,
+            b.inserted_at
+        FROM batches_table b
+        JOIN {data_table} f ON f.batch_id = b.batch_id
+        WHERE f.series_id = %(series_id)s
+        ORDER BY b.inserted_at DESC
+    """
+    with _ensure_conn(conninfo) as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, {"series_id": series_id})
+            return cur.fetchall()
 
 
 if __name__ == "__main__":

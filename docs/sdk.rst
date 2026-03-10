@@ -153,7 +153,8 @@ Then insert data:
    )
 
    result = td.get_series("wind_power").where(site="offshore_1").insert(ts)
-   # result.series_id, result.batch_id
+   # result.batch_id  — uuid.UUID
+   # result.series_id — int
 
 .. note::
 
@@ -161,7 +162,7 @@ Then insert data:
    converts it internally. ``TimeSeries`` is preferred because it carries unit metadata
    that the SDK can validate.
 
-For overlapping (versioned) series, pass ``knowledge_time`` as a keyword argument:
+To set a single ``knowledge_time`` for all rows, pass it as a keyword argument:
 
 .. code-block:: python
 
@@ -170,9 +171,9 @@ For overlapping (versioned) series, pass ``knowledge_time`` as a keyword argumen
        knowledge_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc),
    )
 
-Alternatively, include a ``knowledge_time`` column in the DataFrame / ``TimeSeries`` to
-insert multiple forecast runs in a single call — each unique ``knowledge_time`` becomes
-its own batch:
+To store a different ``knowledge_time`` per row — for both flat and overlapping series
+— include a ``knowledge_time`` column in the DataFrame / ``TimeSeries`` (VERSIONED
+insert). Passing the kwarg *and* a column simultaneously raises ``ValueError``:
 
 .. code-block:: python
 
@@ -188,7 +189,13 @@ its own batch:
        unit="MW",
    )
    result = td.get_series("wind_power").where(site="offshore_1").insert(ts_versioned)
-   print(result.batch_ids)  # list of created batch IDs
+   print(result.batch_id)  # uuid.UUID — one batch per insert() call
+
+.. note::
+
+   One batch is created per ``insert()`` call regardless of how many unique
+   ``knowledge_time`` values are in the data. The ``knowledge_time`` column is stored
+   per-row in the flat and overlapping tables and does not affect the batch count.
 
 Full insert signature:
 
@@ -199,7 +206,7 @@ Full insert signature:
        workflow_id=None,    # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
        batch_finish_time=None,  # Optional
-       knowledge_time=None,    # Time of knowledge (SIMPLE overlapping inserts)
+       knowledge_time=None,    # Time of knowledge (SIMPLE inserts, flat or overlapping)
        batch_params=None,      # Optional dict of metadata
    )
 
@@ -443,7 +450,7 @@ Example: Analyzing forecast revisions:
 
    ts_versioned = TimeSeries.from_pandas(pd.DataFrame(rows), unit="MW")
    result = td.get_series("power").insert(ts_versioned)
-   print(result.batch_ids)  # [1, 2, 3, 4]
+   print(result.batch_id)  # uuid.UUID — one batch for all 4 forecast runs
 
    # Read forecast history — VERSIONED shape, one row per (knowledge_time, valid_time)
    ts_history = td.get_series("power").read(
@@ -468,11 +475,12 @@ than using the globally latest version.
 
    from datetime import datetime, timedelta, timezone
 
-   df = td.get_series("wind_forecast").where(model="nwp").read_relative(
+   ts = td.get_series("wind_forecast").where(model="nwp").read_relative(
        window_length=timedelta(hours=24),
        issue_offset=timedelta(hours=-12),  # 12h before each window start
        start_window=datetime(2026, 2, 1, tzinfo=timezone.utc),
    )
+   df = ts.to_pandas()
 
 Parameters:
 
@@ -491,12 +499,13 @@ Parameters:
    from datetime import datetime, time, timezone
 
    # Day-ahead: latest forecast issued by 06:00 on the day before each calendar day
-   df = td.get_series("wind_forecast").where(model="nwp").read_relative(
+   ts = td.get_series("wind_forecast").where(model="nwp").read_relative(
        days_ahead=1,
        time_of_day=time(6, 0),
        start_valid=datetime(2026, 2, 1, tzinfo=timezone.utc),
        end_valid=datetime(2026, 2, 28, tzinfo=timezone.utc),
    )
+   df = ts.to_pandas()
 
 Parameters:
 
@@ -550,6 +559,35 @@ List unique label values and count series in a collection:
    # Filter progressively
    t01_collection = collection.where(turbine="T01")
 
+Getting Batch History
+~~~~~~~~~~~~~~~~~~~~~
+
+Use ``list_batches()`` to inspect all batches written for a series.  Each insert
+call creates one batch, so this gives you a full history of data loads ordered
+by most recent first.  Single-series only — use ``.where()`` to narrow down
+to a single series if needed.
+
+.. code-block:: python
+
+   batches = td.get_series("wind_forecast").where(site="offshore_1").list_batches()
+   # [
+   #   {'batch_id': UUID('...'), 'workflow_id': 'forecast-run-v2',
+   #    'batch_start_time': datetime(...), 'batch_finish_time': datetime(...),
+   #    'batch_params': {'model': 'nwp'}, 'inserted_at': datetime(...)},
+   #   {'batch_id': UUID('...'), 'workflow_id': 'forecast-run-v1',
+   #    'batch_start_time': None, 'batch_finish_time': None,
+   #    'batch_params': None, 'inserted_at': datetime(...)},
+   #   ...
+   # ]
+
+Each dict contains:
+
+- **batch_id** (uuid.UUID): Unique batch identifier (UUIDv7, embeds insert timestamp)
+- **workflow_id** (str or None): Workflow tag set at insert time
+- **batch_start_time** / **batch_finish_time** (datetime or None): User-supplied time range
+- **batch_params** (dict or None): Arbitrary metadata from insert
+- **inserted_at** (datetime): When the batch was written to the DB
+
 Updating Records
 ----------------
 
@@ -591,7 +629,6 @@ The function returns a list of updated records:
 For overlapping series, you can target a specific forecast run by including:
 
 - ``knowledge_time``: Target the exact forecast run by knowledge_time
-- ``batch_id``: Target the latest version in a specific batch
 - (neither): Target the globally latest version
 
 Tri-state field semantics:
@@ -669,12 +706,12 @@ Best Practices
           labels={"site": "Gotland", "turbine": "T01"}
       )
 
-5. **Use knowledge_time for versioning**: For overlapping series, always set ``knowledge_time`` to indicate when data was created
+5. **Use knowledge_time for versioning**: Set ``knowledge_time`` to record when data was created or known. Works for both flat and overlapping series
 
    .. code-block:: python
 
       td.get_series("forecast").insert(
-          df=df,
+          data=df,
           knowledge_time=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
       )
 
@@ -683,7 +720,7 @@ Best Practices
    .. code-block:: python
 
       td.get_series("power").insert(
-          df=df,
+          data=df,
           workflow_id="forecast-v2"
       )
 
@@ -725,7 +762,7 @@ A complete workflow from setup to analysis:
    result = td.get_series("wind_power").where(site="Gotland").insert(
        ts_versioned, workflow_id="forecast-run-1"
    )
-   print(result.batch_ids)  # [1, 2]
+   print(result.batch_id)  # uuid.UUID — one batch for both forecast runs
 
    # 4. Read latest forecast — SIMPLE shape TimeSeries
    ts_latest = td.get_series("wind_power").where(site="Gotland").read()

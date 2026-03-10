@@ -1,4 +1,5 @@
 """Tests for inserting flat and overlapping data."""
+import uuid
 import pytest
 import psycopg
 from datetime import datetime, timezone, timedelta
@@ -15,8 +16,8 @@ _TS_TYPE = pa.timestamp("us", tz="UTC")
 # Flat insertion tests
 # =============================================================================
 
-def test_insert_flat_no_batch(td, clean_db, sample_datetime):
-    """Test inserting flat via SDK creates no batch and rows in the flat table."""
+def test_insert_flat_creates_batch(td, clean_db, sample_datetime):
+    """Test inserting flat via SDK creates one batch and rows in the flat table."""
     td.create_series(name="temperature", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
@@ -24,9 +25,9 @@ def test_insert_flat_no_batch(td, clean_db, sample_datetime):
         "value": [20.5, 21.0],
     })
 
-    result = td.get_series("temperature").insert(df=df)
+    result = td.get_series("temperature").insert(data=df)
 
-    assert result.batch_id is None
+    assert isinstance(result.batch_id, uuid.UUID)
     assert result.series_id > 0
 
     # Verify rows in flat table
@@ -35,9 +36,9 @@ def test_insert_flat_no_batch(td, clean_db, sample_datetime):
             cur.execute("SELECT COUNT(*) FROM flat")
             assert cur.fetchone()[0] == 2
 
-            # Verify no batch was created
+            # Verify one batch was created
             cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 0
+            assert cur.fetchone()[0] == 1
 
             # Verify no rows in any overlapping table
             cur.execute("SELECT COUNT(*) FROM overlapping_medium")
@@ -45,7 +46,7 @@ def test_insert_flat_no_batch(td, clean_db, sample_datetime):
 
 
 def test_insert_flat_with_knowledge_time(td, clean_db, sample_datetime):
-    """Test inserting flat with explicit knowledge_time still skips batch."""
+    """Test inserting flat with explicit knowledge_time creates one batch."""
     knowledge_time = sample_datetime - timedelta(hours=1)
 
     td.create_series(name="temperature", unit="dimensionless", overlapping=False)
@@ -56,13 +57,12 @@ def test_insert_flat_with_knowledge_time(td, clean_db, sample_datetime):
     })
 
     result = td.get_series("temperature").insert(
-        df=df,
+        data=df,
         batch_start_time=sample_datetime,
         knowledge_time=knowledge_time,
     )
 
-    # Flat inserts should not create a batch even with knowledge_time
-    assert result.batch_id is None
+    assert isinstance(result.batch_id, uuid.UUID)
 
     # Verify data was inserted
     with psycopg.connect(clean_db) as conn:
@@ -71,7 +71,7 @@ def test_insert_flat_with_knowledge_time(td, clean_db, sample_datetime):
             assert cur.fetchone()[0] == 1
 
             cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 0
+            assert cur.fetchone()[0] == 1
 
 
 def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
@@ -87,7 +87,7 @@ def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
         "value": [100.5, 101.0, 102.5],
     })
 
-    result = td.get_series("power").insert(df=df)
+    result = td.get_series("power").insert(data=df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -105,7 +105,7 @@ def test_insert_flat_interval(td, clean_db, sample_datetime):
         "value": [500.0],
     })
 
-    result = td.get_series("energy").insert(df=df)
+    result = td.get_series("energy").insert(data=df)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -123,13 +123,13 @@ def test_insert_flat_upsert(td, clean_db, sample_datetime):
         "valid_time": [sample_datetime],
         "value": [100.0],
     })
-    td.get_series("meter").insert(df=df1)
+    td.get_series("meter").insert(data=df1)
 
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime],
         "value": [150.0],
     })
-    td.get_series("meter").insert(df=df2)
+    td.get_series("meter").insert(data=df2)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -156,9 +156,9 @@ def test_insert_overlapping_creates_batch(td, clean_db, sample_datetime):
         "value": [50.0, 55.0],
     })
 
-    result = td.get_series("wind_forecast").insert(df=df, knowledge_time=sample_datetime)
+    result = td.get_series("wind_forecast").insert(data=df, knowledge_time=sample_datetime)
 
-    assert result.batch_id is not None
+    assert isinstance(result.batch_id, uuid.UUID)
     assert result.series_id > 0
 
     # Verify rows in overlapping_medium
@@ -166,7 +166,7 @@ def test_insert_overlapping_creates_batch(td, clean_db, sample_datetime):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s",
-                (result.batch_id,)
+                (str(result.batch_id),)
             )
             assert cur.fetchone()[0] == 2
 
@@ -190,7 +190,7 @@ def test_insert_overlapping_short_tier(td, clean_db):
         "value": [42.0],
     })
 
-    td.get_series("price_forecast").insert(df=df, knowledge_time=recent_time)
+    td.get_series("price_forecast").insert(data=df, knowledge_time=recent_time)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -216,7 +216,7 @@ def test_insert_overlapping_long_tier(td, clean_db, sample_datetime):
         "value": [15.0],
     })
 
-    td.get_series("climate_forecast").insert(df=df, knowledge_time=sample_datetime)
+    td.get_series("climate_forecast").insert(data=df, knowledge_time=sample_datetime)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -238,7 +238,7 @@ def test_insert_overlapping_interval(td, clean_db, sample_datetime):
     })
 
     td.get_series("energy_forecast").insert(
-        df=df, knowledge_time=sample_datetime,
+        data=df, knowledge_time=sample_datetime,
     )
 
     with psycopg.connect(clean_db) as conn:
@@ -263,7 +263,7 @@ def test_insert_timezone_aware_required(td):
     })
 
     with pytest.raises(ValueError, match="timezone-aware"):
-        td.get_series("temp").insert(df=df)
+        td.get_series("temp").insert(data=df)
 
 
 # =============================================================================
@@ -288,9 +288,9 @@ def test_insert_timeseries_flat(td, clean_db, sample_datetime):
         [10.0, 20.0],
     )
 
-    result = td.get_series("ts_flat").insert(df=ts)
+    result = td.get_series("ts_flat").insert(data=ts)
 
-    assert result.batch_id is None
+    assert isinstance(result.batch_id, uuid.UUID)
     assert result.series_id > 0
 
     with psycopg.connect(clean_db) as conn:
@@ -309,15 +309,15 @@ def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
         timeseries_type=TimeSeriesType.OVERLAPPING,
     )
 
-    result = td.get_series("ts_ovlp").insert(df=ts, knowledge_time=sample_datetime)
+    result = td.get_series("ts_ovlp").insert(data=ts, knowledge_time=sample_datetime)
 
-    assert result.batch_id is not None
+    assert isinstance(result.batch_id, uuid.UUID)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s",
-                (result.batch_id,),
+                (str(result.batch_id),),
             )
             assert cur.fetchone()[0] == 2
 
@@ -329,7 +329,7 @@ def test_insert_timeseries_unit_conversion(td, clean_db, sample_datetime):
 
     ts = _make_simple_ts([sample_datetime], [1000.0], unit="kW")
 
-    td.get_series("power_mw").insert(df=ts)
+    td.get_series("power_mw").insert(data=ts)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -349,7 +349,7 @@ def test_insert_timeseries_interval(td, clean_db, sample_datetime):
     })
     ts = TimeSeries.from_arrow(table)
 
-    td.get_series("energy_ts").insert(df=ts)
+    td.get_series("energy_ts").insert(data=ts)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -374,7 +374,7 @@ def test_insert_timeseries_wrong_shape(td, sample_datetime):
     assert ts.shape == DataShape.AUDIT
 
     with pytest.raises(ValueError, match="AUDIT"):
-        td.get_series("audit_reject").insert(df=ts)
+        td.get_series("audit_reject").insert(data=ts)
 
 
 def _make_versioned_ts(knowledge_times, valid_times, values, unit="dimensionless"):
@@ -405,11 +405,9 @@ def test_insert_versioned_single_kt(td, clean_db, sample_datetime):
         valid_times=[sample_datetime, sample_datetime + timedelta(hours=1)],
         values=[10.0, 20.0],
     )
-    result = td.get_series("v_single").insert(df=ts)
+    result = td.get_series("v_single").insert(data=ts)
 
-    assert result.batch_id is None
-    assert result.batch_ids is not None
-    assert len(result.batch_ids) == 1
+    assert isinstance(result.batch_id, uuid.UUID)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
@@ -420,7 +418,7 @@ def test_insert_versioned_single_kt(td, clean_db, sample_datetime):
 
 
 def test_insert_versioned_multi_kt(td, clean_db, sample_datetime):
-    """VERSIONED TimeSeries with 3 unique knowledge_times creates 3 batches."""
+    """VERSIONED TimeSeries with multiple unique knowledge_times creates exactly one batch."""
     td.create_series(
         name="v_multi", unit="dimensionless",
         overlapping=True, retention="medium",
@@ -440,32 +438,42 @@ def test_insert_versioned_multi_kt(td, clean_db, sample_datetime):
         ],
         values=[1.0, 2.0, 1.5, 2.5, 1.2],
     )
-    result = td.get_series("v_multi").insert(df=ts)
+    result = td.get_series("v_multi").insert(data=ts)
 
-    assert result.batch_ids is not None
-    assert len(result.batch_ids) == 3
-    assert result.batch_ids == sorted(result.batch_ids)
+    assert isinstance(result.batch_id, uuid.UUID)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
+            # One batch per insert() call regardless of unique knowledge_time count
             cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 3
+            assert cur.fetchone()[0] == 1
             cur.execute("SELECT COUNT(*) FROM overlapping_medium")
             assert cur.fetchone()[0] == 5
 
 
-def test_insert_versioned_into_flat_raises(td, sample_datetime):
-    """VERSIONED TimeSeries inserted into a flat series raises ValueError."""
-    td.create_series(name="v_flat_fail", unit="dimensionless", overlapping=False)
+def test_insert_versioned_into_flat(td, clean_db, sample_datetime):
+    """VERSIONED TimeSeries inserted into a flat series stores per-row knowledge_times."""
+    td.create_series(name="v_flat_ok", unit="dimensionless", overlapping=False)
 
+    kt1 = sample_datetime
+    kt2 = sample_datetime + timedelta(hours=1)
     ts = _make_versioned_ts(
-        knowledge_times=[sample_datetime],
-        valid_times=[sample_datetime],
-        values=[1.0],
+        knowledge_times=[kt1, kt2],
+        valid_times=[sample_datetime, sample_datetime + timedelta(hours=1)],
+        values=[1.0, 2.0],
     )
 
-    with pytest.raises(ValueError, match="overlapping"):
-        td.get_series("v_flat_fail").insert(df=ts)
+    result = td.get_series("v_flat_ok").insert(data=ts)
+    assert isinstance(result.batch_id, uuid.UUID)
+
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT knowledge_time FROM flat WHERE series_id = %s ORDER BY valid_time",
+                (result.series_id,),
+            )
+            rows = cur.fetchall()
+    assert len(rows) == 2
 
 
 def test_insert_versioned_kt_kwarg_ambiguity_raises(td, clean_db, sample_datetime):
@@ -482,7 +490,7 @@ def test_insert_versioned_kt_kwarg_ambiguity_raises(td, clean_db, sample_datetim
 
     with pytest.raises(ValueError, match="Ambiguous"):
         td.get_series("v_ambiguous").insert(
-            df=ts,
+            data=ts,
             knowledge_time=sample_datetime,
         )
 
@@ -511,15 +519,15 @@ def test_insert_df_with_kt_column_overlapping(td, clean_db, sample_datetime):
         "value": [10.0, 20.0, 11.0],
     })
 
-    result = td.get_series("df_kt_col").insert(df=df)
+    result = td.get_series("df_kt_col").insert(data=df)
 
-    assert result.batch_ids is not None
-    assert len(result.batch_ids) == 2  # two distinct knowledge_times
+    assert isinstance(result.batch_id, uuid.UUID)
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
+            # One batch per insert() call
             cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 2
+            assert cur.fetchone()[0] == 1
             cur.execute("SELECT COUNT(*) FROM overlapping_medium")
             assert cur.fetchone()[0] == 3
 
@@ -539,7 +547,7 @@ def test_insert_df_kt_ambiguity_raises(td, sample_datetime):
 
     with pytest.raises(ValueError, match="Ambiguous"):
         td.get_series("df_kt_ambig").insert(
-            df=df,
+            data=df,
             knowledge_time=sample_datetime,
         )
 
@@ -555,7 +563,7 @@ def test_insert_df_without_kt_defaults_to_now(td, clean_db, sample_datetime):
         "value": [99.0],
     })
 
-    td.get_series("df_no_kt").insert(df=df)
+    td.get_series("df_no_kt").insert(data=df)
 
     after = datetime.now(timezone.utc)
 

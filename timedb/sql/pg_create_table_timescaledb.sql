@@ -12,11 +12,10 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- A. BATCHES
 CREATE TABLE IF NOT EXISTS batches_table (
-  batch_id          bigserial PRIMARY KEY,
+  batch_id          uuid PRIMARY KEY,            -- UUIDv7, client-generated
   workflow_id       text,
   batch_start_time  timestamptz,
   batch_finish_time timestamptz,
-  knowledge_time        timestamptz NOT NULL DEFAULT now(),
   batch_params      jsonb,
   inserted_at       timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT batch_params_is_object
@@ -47,6 +46,7 @@ CREATE INDEX IF NOT EXISTS series_labels_gin_idx ON series_table USING GIN (labe
 
 CREATE TABLE IF NOT EXISTS flat (
   flat_id         bigserial,
+  batch_id        uuid REFERENCES batches_table(batch_id) ON DELETE SET NULL,
   series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS flat (
 -- TIER 1: SHORT (6 Months retention)
 CREATE TABLE IF NOT EXISTS overlapping_short (
   overlapping_id  bigserial,
-  batch_id        bigint NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
   series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS overlapping_short (
 -- TIER 2: MEDIUM (3 Years retention)
 CREATE TABLE IF NOT EXISTS overlapping_medium (
   overlapping_id  bigserial,
-  batch_id        bigint NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
   series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS overlapping_medium (
 -- TIER 3: LONG (5 Years retention)
 CREATE TABLE IF NOT EXISTS overlapping_long (
   overlapping_id  bigserial,
-  batch_id        bigint NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
+  batch_id        uuid NOT NULL REFERENCES batches_table(batch_id) ON DELETE CASCADE,
   series_id       bigint NOT NULL REFERENCES series_table(series_id) ON DELETE CASCADE,
   valid_time      timestamptz NOT NULL,
   valid_time_end  timestamptz,

@@ -21,11 +21,11 @@ from typing import Dict
 
 # ── Insert phase constants ────────────────────────────────────────────────────
 
-PHASE_INSERT_CSV_SERIALIZE = "insert.csv_serialize"  # Build Arrow staging table + pa_csv.write_csv
-PHASE_INSERT_STAGE_DDL     = "insert.stage_ddl"      # CREATE TEMP TABLE DDL
-PHASE_INSERT_COPY          = "insert.copy"            # COPY FROM STDIN write
-PHASE_INSERT_UPSERT        = "insert.upsert"          # INSERT...ON CONFLICT (flat) or CTE (overlapping, incl. batch creation)
-PHASE_INSERT_TOTAL         = "insert.total"           # Full insert_table() wall time
+PHASE_INSERT_CSV_SERIALIZE = "insert.csv_serialize"  # Arrow → CSV bytes (C++ writer)
+PHASE_INSERT_STAGE_DDL     = "insert.stage_ddl"      # CREATE TEMP TABLE (flat only)
+PHASE_INSERT_COPY          = "insert.copy"           # COPY FROM STDIN (bulk transfer)
+PHASE_INSERT_UPSERT        = "insert.upsert"         # CTE + upsert merge (flat only)
+PHASE_INSERT_TOTAL         = "insert.total"          # Full insert_table() wall time
 
 # ── Read phase constants ──────────────────────────────────────────────────────
 
