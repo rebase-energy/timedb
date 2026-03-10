@@ -37,6 +37,7 @@ dependencies = [
   "pyarrow>=14.0",
   "requests>=2.32.5",
   "timedatamodel>=0.1.2",
+  "uuid6>=2024.1",
 ]
 
 [project.optional-dependencies]

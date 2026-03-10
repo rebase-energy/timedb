@@ -50,7 +50,7 @@ Quick Start
    })
 
    td.get_series("wind_power").where(site="offshore_1").insert(
-       df=df,
+       data=df,
        knowledge_time=knowledge_time,
    )
 

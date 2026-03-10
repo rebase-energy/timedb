@@ -20,6 +20,7 @@ Environment:
 """
 import json
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -120,7 +121,7 @@ class InsertRequest(BaseModel):
 
 class InsertResponse(BaseModel):
     """Response after inserting data."""
-    batch_id: Optional[int] = Field(None, description="Batch ID (None for flat series)")
+    batch_id: Optional[uuid.UUID] = Field(None, description="Batch UUID")
     series_id: int
     rows_inserted: int
 
@@ -135,8 +136,7 @@ class RecordUpdateRequest(BaseModel):
 
     Identify the series by series_id OR by name(+labels).
 
-    For overlapping series, three lookup methods (all optional):
-    - batch_id + valid_time: latest version in that batch
+    For overlapping series, two lookup methods (all optional):
     - knowledge_time + valid_time: exact version lookup
     - just valid_time: latest version overall
 
@@ -151,7 +151,6 @@ class RecordUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, description="Series name (alternative to series_id)")
     labels: Dict[str, str] = Field(default_factory=dict, description="Labels for series resolution")
     # Overlapping version lookup (all optional)
-    batch_id: Optional[int] = Field(default=None, description="For overlapping: target specific batch")
     knowledge_time: Optional[datetime] = Field(default=None, description="For overlapping: target specific version")
     # Tri-state update fields
     value: Optional[float] = Field(default=None, description="Omit to leave unchanged, null to clear")
@@ -385,8 +384,7 @@ async def update_records(request_body: UpdateRecordsRequest, request: Request):
     Identify the series by series_id OR by name(+labels).
 
     **Flat series**: In-place update by (series_id, valid_time).
-    **Overlapping series**: Creates new version. Three lookup methods:
-    - batch_id + valid_time: latest version in that batch
+    **Overlapping series**: Creates new version. Two lookup methods:
     - knowledge_time + valid_time: exact version lookup
     - just valid_time: latest version overall
 
@@ -424,8 +422,6 @@ async def update_records(request_body: UpdateRecordsRequest, request: Request):
 
             update_dict: Dict[str, Any] = {"valid_time": valid_time}
 
-            if req_update.batch_id is not None:
-                update_dict["batch_id"] = req_update.batch_id
             if knowledge_time is not None:
                 update_dict["knowledge_time"] = knowledge_time
 
