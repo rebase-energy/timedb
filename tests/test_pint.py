@@ -5,7 +5,8 @@ import pint
 import pint_pandas
 from datetime import datetime, timezone, timedelta
 
-from timedb.sdk import IncompatibleUnitError, _resolve_pint_values
+import pyarrow as pa
+from timedb.sdk import IncompatibleUnitError, _resolve_pint_values, _resolve_arrow_units
 from timedb import TimeSeries
 
 
@@ -40,7 +41,15 @@ class TestResolvePintValues:
     def test_dimensionless_treated_as_series_unit(self):
         """Pint dimensionless is treated as series unit, stripped to float64."""
         s = pd.Series(pd.array([42.0], dtype="pint[dimensionless]"), name="value")
-        result = _resolve_pint_values(s, "MW")
+        with pytest.warns(UserWarning, match="dimensionless"):
+            result = _resolve_pint_values(s, "MW")
+        assert not hasattr(result.dtype, 'units')
+        assert result.iloc[0] == 42.0
+
+    def test_dimensionless_into_dimensionless_no_warning(self):
+        """Pint dimensionless into dimensionless series — no warning."""
+        s = pd.Series(pd.array([42.0], dtype="pint[dimensionless]"), name="value")
+        result = _resolve_pint_values(s, "dimensionless")
         assert not hasattr(result.dtype, 'units')
         assert result.iloc[0] == 42.0
 
@@ -56,6 +65,26 @@ class TestResolvePintValues:
         s = pd.Series(pd.array([500.0, 1000.0, 1500.0], dtype="pint[kW]"), index=idx, name="value")
         result = _resolve_pint_values(s, "MW")
         assert list(result.index) == list(idx)
+
+
+class TestResolveArrowUnits:
+    """Test the _resolve_arrow_units function in isolation."""
+
+    def test_dimensionless_into_non_dimensionless_warns(self):
+        table = pa.table({"value": [1.0, 2.0]})
+        with pytest.warns(UserWarning, match="dimensionless"):
+            result = _resolve_arrow_units(table, "dimensionless", "MW")
+        assert result == table
+
+    def test_dimensionless_into_dimensionless_no_warning(self):
+        table = pa.table({"value": [1.0, 2.0]})
+        result = _resolve_arrow_units(table, "dimensionless", "dimensionless")
+        assert result == table
+
+    def test_same_unit_no_warning(self):
+        table = pa.table({"value": [1.0, 2.0]})
+        result = _resolve_arrow_units(table, "MW", "MW")
+        assert result == table
 
 
 # =============================================================================
