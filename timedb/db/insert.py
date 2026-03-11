@@ -142,6 +142,16 @@ def _insert_flat(
     has_vte = "valid_time_end" in table.schema.names
     _prof = profiling._enabled
 
+    # Flat series require unique valid_times — one value per timestamp.
+    n_unique = len(table.column("valid_time").unique())
+    if n_unique < len(table):
+        dupes = len(table) - n_unique
+        raise ValueError(
+            f"Cannot insert {dupes} duplicate valid_time value(s) into a flat series. "
+            f"A flat series stores exactly one value per valid_time. "
+            f"Deduplicate your data before calling insert()."
+        )
+
     # Sort for TimescaleDB chunk routing; omit valid_time_end column if absent
     table = table.sort_by([("valid_time", "ascending")])
     cols = ["valid_time", "valid_time_end", "value", "knowledge_time"] if has_vte \
