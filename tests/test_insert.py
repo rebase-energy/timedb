@@ -115,6 +115,19 @@ def test_insert_flat_interval(td, clean_db, sample_datetime):
             assert row[0] is not None
 
 
+def test_insert_flat_duplicate_valid_time_raises(td, clean_db, sample_datetime):
+    """Flat insert with duplicate valid_times raises ValueError before hitting the DB."""
+    td.create_series(name="dedup_err", unit="dimensionless")
+    vt = sample_datetime
+    ts = TimeSeries.from_pandas(pd.DataFrame([
+        {"knowledge_time": sample_datetime,                      "valid_time": vt, "value": 1.0},
+        {"knowledge_time": sample_datetime + timedelta(hours=1), "valid_time": vt, "value": 2.0},
+    ]), unit="dimensionless")
+
+    with pytest.raises(ValueError, match="duplicate valid_time"):
+        td.get_series("dedup_err").insert(data=ts)
+
+
 def test_insert_flat_upsert(td, clean_db, sample_datetime):
     """Test that inserting the same flat valid_time twice updates the value."""
     td.create_series(name="meter", unit="dimensionless", overlapping=False)
