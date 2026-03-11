@@ -1,4 +1,4 @@
-"""Tests for pint unit support: insert conversion and read as_pint."""
+"""Tests for pint unit support: insert conversion."""
 import pytest
 import pandas as pd
 import pint
@@ -118,25 +118,8 @@ def test_insert_plain_float_no_unit_check(td, sample_datetime):
     assert df_read["value"].iloc[0] == pytest.approx(999.0)
 
 
-def test_read_as_pint(td, sample_datetime):
-    """Read with as_pint=True returns pint dtype column (deprecated path)."""
-    td.create_series(name="power", unit="MW")
-
-    df = pd.DataFrame({
-        "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
-        "value": [1.5, 2.5],
-    })
-    td.get_series("power").insert(df)
-
-    with pytest.warns(DeprecationWarning, match="as_pint=True is deprecated"):
-        df_pint = td.get_series("power").read(as_pint=True)
-    assert hasattr(df_pint["value"].dtype, 'units')
-    assert str(df_pint["value"].dtype.units) == "megawatt"
-    assert df_pint["value"].values.quantity.magnitude[0] == pytest.approx(1.5)
-
-
-def test_read_as_pint_false_default(td, sample_datetime):
-    """Read without as_pint returns a TimeSeries (default)."""
+def test_read_returns_timeseries(td, sample_datetime):
+    """Read returns a TimeSeries."""
     td.create_series(name="power", unit="MW")
 
     df = pd.DataFrame({
