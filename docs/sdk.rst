@@ -311,7 +311,6 @@ Full read signature:
        end_known=None,       # Optional, end of knowledge_time (overlapping only)
        overlapping=False,    # If True, return VERSIONED shape (overlapping only)
        include_updates=False,  # If True, include correction chain (CORRECTED/AUDIT shape)
-       as_pint=False,        # Deprecated; use ts.to_pandas() instead
    )
    df = ts.to_pandas()       # pd.DataFrame; index depends on shape (see DataShape)
 
@@ -329,9 +328,6 @@ To work with pint quantities, convert to pandas first and apply pint manually:
    # ts.unit == "MW"
    ureg = pint.UnitRegistry()
    qty = df["value"].values * ureg(ts.unit)  # pint Quantity array
-
-``as_pint=True`` is deprecated but still works for backward compatibility.
-Requires ``pip install timedb[pint]``.
 
 Reading Latest Values (Default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
