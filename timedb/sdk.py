@@ -872,6 +872,7 @@ class TimeDataClient:
             else:
                 retention_medium = str(retention)
         _create(
+            conninfo=self._conninfo,
             retention_short=retention_short,
             retention_medium=retention_medium,
             retention_long=retention_long,
@@ -879,7 +880,7 @@ class TimeDataClient:
 
     def delete(self) -> None:
         """Delete database schema."""
-        _delete()
+        _delete(conninfo=self._conninfo)
 
     def create_series(
         self,
@@ -957,6 +958,7 @@ class TimeDataClient:
             ... )
         """
         return _create_series(
+            conninfo=self._conninfo,
             name=name,
             unit=unit,
             labels=labels,
@@ -1188,12 +1190,14 @@ def _normalize_insert_input(
 
 
 def _create(
+    conninfo: Optional[str] = None,
     retention_short: str = "6 months",
     retention_medium: str = "3 years",
     retention_long: str = "5 years",
 ) -> None:
     """Create or update the database schema (TimescaleDB version)."""
-    conninfo = _get_conninfo()
+    if conninfo is None:
+        conninfo = _get_conninfo()
     db.create.create_schema(
         conninfo,
         retention_short=retention_short,
@@ -1209,6 +1213,7 @@ def _create_series(
     description: Optional[str] = None,
     overlapping: bool = False,
     retention: str = "medium",
+    conninfo: Optional[str] = None,
 ) -> int:
     """
     Create a new time series.
@@ -1220,11 +1225,13 @@ def _create_series(
         description: Optional description
         overlapping: Whether this series stores versioned data (default: False)
         retention: 'short', 'medium', or 'long' (default: 'medium')
+        conninfo: Optional connection string (falls back to env vars if not provided)
 
     Returns:
         The series_id (int) for the newly created series
     """
-    conninfo = _get_conninfo()
+    if conninfo is None:
+        conninfo = _get_conninfo()
 
     try:
         with psycopg.connect(conninfo) as conn:
@@ -1244,9 +1251,10 @@ def _create_series(
         ) from e
 
 
-def _delete() -> None:
+def _delete(conninfo: Optional[str] = None) -> None:
     """Delete all TimeDB tables and views."""
-    conninfo = _get_conninfo()
+    if conninfo is None:
+        conninfo = _get_conninfo()
     db.delete.delete_schema(conninfo)
 
 
