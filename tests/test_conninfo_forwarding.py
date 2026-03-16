@@ -6,7 +6,7 @@ and create_series() methods use that conninfo instead of reading from
 environment variables.
 """
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from timedb.sdk import TimeDataClient
 
 
