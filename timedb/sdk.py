@@ -17,7 +17,6 @@ Data model:
 import atexit
 import os
 import uuid
-import warnings
 from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timedelta, timezone, time
@@ -323,8 +322,7 @@ class SeriesCollection:
         end_known: Optional[datetime] = None,
         overlapping: bool = False,
         include_updates: bool = False,
-        as_pint: bool = False,
-    ) -> Union["TimeSeries", pd.DataFrame]:
+    ) -> "TimeSeries":
         """
         Read time series data for this collection.
 
@@ -359,9 +357,6 @@ class SeriesCollection:
                   every model run and every correction ever made. Raises ValueError for flat.
                   Index: ``[knowledge_time, change_time, valid_time]``
 
-            as_pint: If True, return value column as pint dtype with series unit (default: False).
-                Requires pint and pint-pandas: pip install pint pint-pandas
-
         Returns:
             DataFrame with an index and columns that depend on the flag combination:
 
@@ -381,7 +376,6 @@ class SeriesCollection:
         Raises:
             ValueError: If collection matches multiple series, no series, or
                 ``overlapping=True`` is used with a flat series
-            ImportError: If as_pint=True but pint/pint-pandas not installed
 
         Example:
             >>> # Latest forecast — the single best value per timestamp
@@ -503,30 +497,6 @@ class SeriesCollection:
             description=meta.get("description"),
             timeseries_type=ts_type,
         )
-
-        if as_pint:
-            warnings.warn(
-                "as_pint=True is deprecated. "
-                "Call .to_pandas() on the returned TimeSeries instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if ts.num_rows > 0:
-                try:
-                    import pint
-                    import pint_pandas  # noqa: F401
-                except ImportError:
-                    raise ImportError(
-                        "as_pint=True requires pint and pint-pandas. "
-                        "Install with: pip install pint pint-pandas"
-                    )
-                ureg = pint.application_registry.get()
-                pdf = ts.to_pandas()
-                pint_arr = pint_pandas.PintArray.from_1darray_quantity(
-                    pint.Quantity(pdf["value"].values, ureg(meta["unit"]))
-                )
-                pdf["value"] = pint_arr
-                return pdf
 
         return ts
 
