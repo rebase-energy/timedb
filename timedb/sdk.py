@@ -1190,10 +1190,11 @@ def _normalize_insert_input(
 
 
 def _create(
-    conninfo: Optional[str] = None,
     retention_short: str = "6 months",
     retention_medium: str = "3 years",
     retention_long: str = "5 years",
+    *,
+    conninfo: Optional[str] = None,
 ) -> None:
     """Create or update the database schema (TimescaleDB version)."""
     if conninfo is None:
