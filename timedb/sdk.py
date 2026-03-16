@@ -1009,9 +1009,19 @@ def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series
     # Extract magnitudes (numpy array, no copy if already float64)
     magnitudes = value_series.values.quantity.magnitude
 
-    # Dimensionless or same unit → no conversion needed
+    # Same unit → no conversion needed
     ureg = pint.application_registry.get()
-    if ureg.dimensionless == ureg.Unit(source_unit) or source_unit == series_unit:
+    if source_unit == series_unit:
+        return pd.Series(magnitudes, index=value_series.index, name=value_series.name)
+    if ureg.dimensionless == ureg.Unit(source_unit):
+        if series_unit != "dimensionless":
+            warnings.warn(
+                f"Inserting a pint dimensionless array into series with unit "
+                f"'{series_unit}'. Values will be stored as-is without conversion. "
+                f"Use a pint array with the correct unit to enable automatic conversion.",
+                UserWarning,
+                stacklevel=4,
+            )
         return pd.Series(magnitudes, index=value_series.index, name=value_series.name)
 
     # Check compatibility and convert
@@ -1074,11 +1084,22 @@ def _resolve_arrow_units(table: pa.Table, ts_unit: str, series_unit: str) -> pa.
     """Scale the ``value`` column when *ts_unit* and *series_unit* differ.
 
     Rules:
-    - Same unit or ``ts_unit == "dimensionless"`` → return unchanged.
+    - Same unit → return unchanged.
+    - ``ts_unit == "dimensionless"`` → return unchanged, warn if *series_unit* is not dimensionless.
     - Compatible units → multiply ``value`` by the pint conversion factor.
     - Incompatible units → raise :class:`IncompatibleUnitError`.
     """
-    if ts_unit == series_unit or ts_unit == "dimensionless":
+    if ts_unit == series_unit:
+        return table
+    if ts_unit == "dimensionless":
+        if series_unit != "dimensionless":
+            warnings.warn(
+                f"Inserting a dimensionless TimeSeries into series with unit "
+                f"'{series_unit}'. Values will be stored as-is without conversion. "
+                f"Set the unit on your TimeSeries to enable automatic conversion.",
+                UserWarning,
+                stacklevel=4,
+            )
         return table
     try:
         import pint
