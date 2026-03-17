@@ -5,9 +5,9 @@ import pint
 import pint_pandas
 from datetime import datetime, timezone, timedelta
 
-import pyarrow as pa
-from timedb.sdk import IncompatibleUnitError, _resolve_pint_values, _resolve_arrow_units
-from timedb import TimeSeries
+import polars as pl
+from timedb.sdk import IncompatibleUnitError, _resolve_pint_values, _resolve_polars_units
+from timedb import TimeSeriesPolars
 
 
 # =============================================================================
@@ -67,24 +67,24 @@ class TestResolvePintValues:
         assert list(result.index) == list(idx)
 
 
-class TestResolveArrowUnits:
-    """Test the _resolve_arrow_units function in isolation."""
+class TestResolvePolarsUnits:
+    """Test the _resolve_polars_units function in isolation."""
 
     def test_dimensionless_into_non_dimensionless_warns(self):
-        table = pa.table({"value": [1.0, 2.0]})
+        df = pl.DataFrame({"value": [1.0, 2.0]})
         with pytest.warns(UserWarning, match="dimensionless"):
-            result = _resolve_arrow_units(table, "dimensionless", "MW")
-        assert result == table
+            result = _resolve_polars_units(df, "dimensionless", "MW")
+        assert result.equals(df)
 
     def test_dimensionless_into_dimensionless_no_warning(self):
-        table = pa.table({"value": [1.0, 2.0]})
-        result = _resolve_arrow_units(table, "dimensionless", "dimensionless")
-        assert result == table
+        df = pl.DataFrame({"value": [1.0, 2.0]})
+        result = _resolve_polars_units(df, "dimensionless", "dimensionless")
+        assert result.equals(df)
 
     def test_same_unit_no_warning(self):
-        table = pa.table({"value": [1.0, 2.0]})
-        result = _resolve_arrow_units(table, "MW", "MW")
-        assert result == table
+        df = pl.DataFrame({"value": [1.0, 2.0]})
+        result = _resolve_polars_units(df, "MW", "MW")
+        assert result.equals(df)
 
 
 # =============================================================================
@@ -158,5 +158,5 @@ def test_read_returns_timeseries(td, sample_datetime):
     td.get_series("power").insert(df)
 
     ts = td.get_series("power").read()
-    assert isinstance(ts, TimeSeries)
+    assert isinstance(ts, TimeSeriesPolars)
     assert ts.to_pandas()["value"].dtype == "float64"

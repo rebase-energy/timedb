@@ -26,7 +26,7 @@ Import the package and start using it directly:
    import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
-   from timedatamodel.timeseries_arrow import TimeSeries
+   from timedb import TimeSeriesPolars
 
 Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.get_series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
 
@@ -142,9 +142,9 @@ Then insert data:
 
 .. code-block:: python
 
-   from timedatamodel.timeseries_arrow import TimeSeries
+   from timedb import TimeSeriesPolars
 
-   ts = TimeSeries.from_pandas(
+   ts = TimeSeriesPolars.from_pandas(
        pd.DataFrame({
            "valid_time": [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)],
            "value": [100.0 + i * 2 for i in range(24)]
@@ -159,7 +159,7 @@ Then insert data:
 .. note::
 
    A plain ``pd.DataFrame`` is also accepted directly (backward-compatible) — the SDK
-   converts it internally. ``TimeSeries`` is preferred because it carries unit metadata
+   converts it internally. ``TimeSeriesPolars`` is preferred because it carries unit metadata
    that the SDK can validate.
 
 To set a single ``knowledge_time`` for all rows, pass it as a keyword argument:
@@ -172,15 +172,15 @@ To set a single ``knowledge_time`` for all rows, pass it as a keyword argument:
    )
 
 To store a different ``knowledge_time`` per row — for both flat and overlapping series
-— include a ``knowledge_time`` column in the DataFrame / ``TimeSeries`` (VERSIONED
+— include a ``knowledge_time`` column in the DataFrame / ``TimeSeriesPolars`` (VERSIONED
 insert). Passing the kwarg *and* a column simultaneously raises ``ValueError``:
 
 .. code-block:: python
 
    import pandas as pd
-   from timedatamodel.timeseries_arrow import TimeSeries
+   from timedb import TimeSeriesPolars
 
-   ts_versioned = TimeSeries.from_pandas(
+   ts_versioned = TimeSeriesPolars.from_pandas(
        pd.DataFrame({
            "knowledge_time": [kt1] * 24 + [kt2] * 24,
            "valid_time":     times1 + times2,
@@ -202,7 +202,7 @@ Full insert signature:
 .. code-block:: python
 
    result = td.get_series("name").where(...).insert(
-       ts,                  # TimeSeries or pd.DataFrame
+       ts,                  # TimeSeriesPolars or pd.DataFrame
        workflow_id=None,    # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
        batch_finish_time=None,  # Optional
@@ -231,8 +231,8 @@ Install the optional pint dependencies first: ``pip install timedb[pint]``
 .. note::
 
    Pass pint-typed DataFrames **directly** to ``insert()`` — not through
-   ``TimeSeries.from_pandas()``. PyArrow does not support pint dtypes, so
-   ``TimeSeries.from_pandas()`` would strip the unit information before
+   ``TimeSeriesPolars.from_pandas()``. PyArrow does not support pint dtypes, so
+   ``TimeSeriesPolars.from_pandas()`` would strip the unit information before
    the SDK can validate it. The plain-DataFrame path keeps pint handling intact.
 
 Rules:
@@ -250,7 +250,7 @@ For interval-based data (e.g., energy over a time period):
 
 .. code-block:: python
 
-   from timedatamodel.timeseries_arrow import TimeSeries
+   from timedb import TimeSeriesPolars
 
    start_times = pd.date_range(
        start=datetime.now(timezone.utc),
@@ -259,7 +259,7 @@ For interval-based data (e.g., energy over a time period):
    )
    end_times = start_times + timedelta(hours=1)
 
-   ts_intervals = TimeSeries.from_pandas(
+   ts_intervals = TimeSeriesPolars.from_pandas(
        pd.DataFrame({
            "valid_time": start_times,
            "valid_time_end": end_times,
@@ -277,7 +277,7 @@ Use the fluent API to read data. Start by selecting a series:
 
 .. code-block:: python
 
-   # Select series by name — returns a TimeSeries
+   # Select series by name — returns a TimeSeriesPolars
    ts = td.get_series("temperature").read()
    df = ts.to_pandas()  # pd.DataFrame with valid_time index, value column
 
@@ -293,7 +293,7 @@ Use the fluent API to read data. Start by selecting a series:
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
    )
 
-``read()`` returns a :class:`~timedatamodel.timeseries_arrow.TimeSeries`. Inspect
+``read()`` returns a :class:`~timedatamodel.timeseries_polars.TimeSeriesPolars`. Inspect
 metadata directly (``ts.name``, ``ts.unit``, ``ts.shape``, ``ts.labels``, ``len(ts)``),
 then call ``.to_pandas()`` to get a ``pd.DataFrame``:
 
@@ -317,7 +317,7 @@ Full read signature:
 Reading with Units
 ~~~~~~~~~~~~~~~~~~
 
-The ``TimeSeries`` returned by ``read()`` carries the series' canonical unit in ``ts.unit``.
+The ``TimeSeriesPolars`` returned by ``read()`` carries the series' canonical unit in ``ts.unit``.
 To work with pint quantities, convert to pandas first and apply pint manually:
 
 .. code-block:: python
@@ -333,11 +333,11 @@ Reading Latest Values (Default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 By default, ``read()`` returns the latest version for overlapping series as a
-``SIMPLE``-shape ``TimeSeries``:
+``SIMPLE``-shape ``TimeSeriesPolars``:
 
 .. code-block:: python
 
-   # Read latest forecast values — returns a TimeSeries (SIMPLE shape)
+   # Read latest forecast values — returns a TimeSeriesPolars (SIMPLE shape)
    ts_latest = td.get_series("wind_forecast").read(
        start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
        end_valid=datetime(2025, 1, 2, tzinfo=timezone.utc),
@@ -351,10 +351,10 @@ Two boolean flags control what ``read()`` returns. They are orthogonal — each 
 a distinct question:
 
 - **``overlapping``** (*False* by default): *"Which forecast run is each value from?"*
-  When ``True``, returns a ``VERSIONED``-shape ``TimeSeries`` with one row per
+  When ``True``, returns a ``VERSIONED``-shape ``TimeSeriesPolars`` with one row per
   forecast-run × valid_time. Only valid for overlapping series.
 - **``include_updates``** (*False* by default): *"Who edited these numbers, and when?"*
-  When ``True``, returns a ``CORRECTED`` or ``AUDIT``-shape ``TimeSeries`` with
+  When ``True``, returns a ``CORRECTED`` or ``AUDIT``-shape ``TimeSeriesPolars`` with
   ``change_time``, ``changed_by``, and ``annotation`` columns. Works for both flat
   and overlapping series.
 
@@ -431,11 +431,11 @@ Example: Analyzing forecast revisions:
    import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
-   from timedatamodel.timeseries_arrow import TimeSeries
+   from timedb import TimeSeriesPolars
 
    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
-   # Insert 4 forecast runs in a single call using a VERSIONED TimeSeries
+   # Insert 4 forecast runs in a single call using a VERSIONED TimeSeriesPolars
    rows = []
    for i in range(4):
        kt = base_time + timedelta(days=i)
@@ -444,7 +444,7 @@ Example: Analyzing forecast revisions:
                         "valid_time": kt + timedelta(hours=j),
                         "value": 100.0 + i * 10})
 
-   ts_versioned = TimeSeries.from_pandas(pd.DataFrame(rows), unit="MW")
+   ts_versioned = TimeSeriesPolars.from_pandas(pd.DataFrame(rows), unit="MW")
    result = td.get_series("power").insert(ts_versioned)
    print(result.batch_id)  # uuid.UUID — one batch for all 4 forecast runs
 
@@ -526,7 +526,7 @@ The two parameter sets are mutually exclusive — mixing them raises ``ValueErro
 Example with ``days_ahead=1, time_of_day=time(6, 0)``:
 Window Jan 2 00:00 + (6h − 24h) = **Jan 1 06:00** — only forecasts issued by then qualify.
 
-Returns a ``TimeSeries`` with ``SIMPLE`` shape — identical to ``read()``. Call ``.to_pandas()`` for a DataFrame with ``valid_time`` index and ``value`` column.
+Returns a ``TimeSeriesPolars`` with ``SIMPLE`` shape — identical to ``read()``. Call ``.to_pandas()`` for a DataFrame with ``valid_time`` index and ``value`` column.
 
 Getting Series Metadata
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -730,7 +730,7 @@ A complete workflow from setup to analysis:
    import timedb as td
    import pandas as pd
    from datetime import datetime, timezone, timedelta
-   from timedatamodel.timeseries_arrow import TimeSeries
+   from timedb import TimeSeriesPolars
 
    # 1. Create schema
    td.delete()  # Clean slate
@@ -748,13 +748,13 @@ A complete workflow from setup to analysis:
    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
    times = [base_time + timedelta(hours=i) for i in range(24)]
 
-   # 3. Insert two forecast runs in a single call (VERSIONED TimeSeries)
+   # 3. Insert two forecast runs in a single call (VERSIONED TimeSeriesPolars)
    revised_time = base_time + timedelta(hours=6)
    rows = (
        [{"knowledge_time": base_time,    "valid_time": t, "value": 100.0 + i * 2} for i, t in enumerate(times)] +
        [{"knowledge_time": revised_time, "valid_time": t, "value": 105.0 + i * 2} for i, t in enumerate(times)]
    )
-   ts_versioned = TimeSeries.from_pandas(pd.DataFrame(rows), unit="MW")
+   ts_versioned = TimeSeriesPolars.from_pandas(pd.DataFrame(rows), unit="MW")
    result = td.get_series("wind_power").where(site="Gotland").insert(
        ts_versioned, workflow_id="forecast-run-1"
    )

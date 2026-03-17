@@ -2,11 +2,9 @@
 import pytest
 from datetime import datetime, timezone, timedelta
 import pandas as pd
-import pyarrow as pa
+import polars as pl
 
-from timedb import TimeSeries, DataShape
-
-_TS_TYPE = pa.timestamp("us", tz="UTC")
+from timedb import TimeSeriesPolars, DataShape
 
 _UTC = timezone.utc
 _T0 = datetime(2025, 1, 1, tzinfo=_UTC)
@@ -22,7 +20,7 @@ def test_from_pandas_simple():
         "valid_time": [_T0, _T0 + timedelta(hours=1)],
         "value": [1.0, 2.0],
     })
-    ts = TimeSeries.from_pandas(df)
+    ts = TimeSeriesPolars.from_pandas(df)
     assert ts.shape == DataShape.SIMPLE
 
 
@@ -33,7 +31,7 @@ def test_from_pandas_versioned():
         "valid_time": [_T0 + timedelta(hours=1)],
         "value": [1.0],
     })
-    ts = TimeSeries.from_pandas(df)
+    ts = TimeSeriesPolars.from_pandas(df)
     assert ts.shape == DataShape.VERSIONED
 
 
@@ -46,7 +44,7 @@ def test_from_pandas_rejects_audit():
         "value":          [1.0],
     })
     with pytest.raises(ValueError, match="AUDIT"):
-        TimeSeries.from_pandas(df)
+        TimeSeriesPolars.from_pandas(df)
 
 
 def test_from_pandas_rejects_corrected():
@@ -57,27 +55,27 @@ def test_from_pandas_rejects_corrected():
         "value":       [1.0],
     })
     with pytest.raises(ValueError, match="CORRECTED"):
-        TimeSeries.from_pandas(df)
+        TimeSeriesPolars.from_pandas(df)
 
 
-def test_from_pandas_error_mentions_from_arrow():
-    """The ValueError message directs users to from_arrow."""
+def test_from_pandas_error_mentions_from_polars():
+    """The ValueError message directs users to from_polars."""
     df = pd.DataFrame({
         "valid_time":  [_T0],
         "change_time": [_T0],
         "value":       [1.0],
     })
-    with pytest.raises(ValueError, match="from_arrow"):
-        TimeSeries.from_pandas(df)
+    with pytest.raises(ValueError, match="from_polars"):
+        TimeSeriesPolars.from_pandas(df)
 
 
-def test_from_arrow_still_accepts_audit():
-    """from_arrow remains unrestricted and can wrap AUDIT read results."""
-    table = pa.table({
-        "knowledge_time": pa.array([_T0], type=_TS_TYPE),
-        "change_time":    pa.array([_T0], type=_TS_TYPE),
-        "valid_time":     pa.array([_T0 + timedelta(hours=1)], type=_TS_TYPE),
-        "value":          pa.array([1.0], type=pa.float64()),
+def test_from_polars_still_accepts_audit():
+    """from_polars remains unrestricted and can wrap AUDIT read results."""
+    df = pl.DataFrame({
+        "knowledge_time": pl.Series([_T0]).cast(pl.Datetime("us", "UTC")),
+        "change_time":    pl.Series([_T0]).cast(pl.Datetime("us", "UTC")),
+        "valid_time":     pl.Series([_T0 + timedelta(hours=1)]).cast(pl.Datetime("us", "UTC")),
+        "value":          pl.Series([1.0]),
     })
-    ts = TimeSeries.from_arrow(table)
+    ts = TimeSeriesPolars.from_polars(df)
     assert ts.shape == DataShape.AUDIT
