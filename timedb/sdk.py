@@ -323,11 +323,11 @@ class SeriesCollection:
         end_known: Optional[datetime] = None,
         overlapping: bool = False,
         include_updates: bool = False,
-    ) -> "TimeSeries":
+    ) -> "TimeSeriesPolars":
         """
         Read time series data for this collection.
 
-        Returns a :class:`~timedb.timeseries.TimeSeries` instance.
+        Returns a :class:`~timedatamodel.timeseries_polars.TimeSeriesPolars` instance.
         Call ``.to_pandas()`` on it to get a ``pd.DataFrame`` with the
         conventional index.
 
@@ -511,7 +511,7 @@ class SeriesCollection:
         *,
         days_ahead: Optional[int] = None,
         time_of_day: Optional[time] = None,
-    ) -> "TimeSeries":
+    ) -> "TimeSeriesPolars":
         """
         Read overlapping series using a per-window knowledge_time cutoff.
 
@@ -545,7 +545,7 @@ class SeriesCollection:
             end_valid: End of valid time range (optional)
 
         Returns:
-            TimeSeries with columns (valid_time, value).
+            TimeSeriesPolars with columns (valid_time, value).
 
         Raises:
             ValueError: If collection matches no series, multiple series,
@@ -738,7 +738,7 @@ class TimeDataClient:
         >>> from timedb import TimeDataClient
         >>> import pandas as pd
         >>> from datetime import datetime, timezone
-        >>> from timedatamodel import TimeSeriesPolars
+        >>> from timedb import TimeSeriesPolars
 
         >>> # Create client and schema
         >>> td = TimeDataClient()
