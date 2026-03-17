@@ -59,7 +59,7 @@ Requires Python 3.9+ and PostgreSQL 14+ with TimescaleDB.
 import timedb as td
 import pandas as pd
 from datetime import datetime, timezone
-from timedatamodel.timeseries_arrow import TimeSeries
+from timedb import TimeSeriesPolars
 
 # Create Schema
 td.create()
@@ -74,7 +74,7 @@ td.create_series(
 
 # 2. Insert forecast with knowledge_time
 knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
-ts = TimeSeries.from_pandas(
+ts = TimeSeriesPolars.from_pandas(
     pd.DataFrame({
         'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
         'value': [100 + i*2 for i in range(24)]

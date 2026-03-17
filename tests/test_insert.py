@@ -4,12 +4,10 @@ import pytest
 import psycopg
 from datetime import datetime, timezone, timedelta
 import pandas as pd
-import pyarrow as pa
+import polars as pl
 
-from timedb import TimeSeries, DataShape
+from timedb import TimeSeriesPolars, DataShape
 from timedatamodel.enums import TimeSeriesType
-
-_TS_TYPE = pa.timestamp("us", tz="UTC")
 
 
 # =============================================================================
@@ -119,7 +117,7 @@ def test_insert_flat_duplicate_valid_time_raises(td, clean_db, sample_datetime):
     """Flat insert with duplicate valid_times raises ValueError before hitting the DB."""
     td.create_series(name="dedup_err", unit="dimensionless")
     vt = sample_datetime
-    ts = TimeSeries.from_pandas(pd.DataFrame([
+    ts = TimeSeriesPolars.from_pandas(pd.DataFrame([
         {"knowledge_time": sample_datetime,                      "valid_time": vt, "value": 1.0},
         {"knowledge_time": sample_datetime + timedelta(hours=1), "valid_time": vt, "value": 2.0},
     ]), unit="dimensionless")
@@ -285,11 +283,11 @@ def test_insert_timezone_aware_required(td):
 
 def _make_simple_ts(datetimes, values, unit="dimensionless", timeseries_type=TimeSeriesType.FLAT):
     """Helper: build a SIMPLE TimeSeries from lists."""
-    table = pa.table({
-        "valid_time": pa.array(datetimes, type=_TS_TYPE),
-        "value": pa.array(values, type=pa.float64()),
+    df = pl.DataFrame({
+        "valid_time": pl.Series(datetimes).cast(pl.Datetime("us", "UTC")),
+        "value": pl.Series(values, dtype=pl.Float64),
     })
-    return TimeSeries.from_arrow(table, unit=unit, timeseries_type=timeseries_type)
+    return TimeSeriesPolars.from_polars(df, unit=unit, timeseries_type=timeseries_type)
 
 
 def test_insert_timeseries_flat(td, clean_db, sample_datetime):
@@ -355,12 +353,12 @@ def test_insert_timeseries_interval(td, clean_db, sample_datetime):
     """TimeSeries with valid_time_end column inserts interval data correctly."""
     td.create_series(name="energy_ts", unit="dimensionless", overlapping=False)
 
-    table = pa.table({
-        "valid_time":     pa.array([sample_datetime], type=_TS_TYPE),
-        "valid_time_end": pa.array([sample_datetime + timedelta(hours=1)], type=_TS_TYPE),
-        "value":          pa.array([500.0], type=pa.float64()),
+    df = pl.DataFrame({
+        "valid_time":     pl.Series([sample_datetime]).cast(pl.Datetime("us", "UTC")),
+        "valid_time_end": pl.Series([sample_datetime + timedelta(hours=1)]).cast(pl.Datetime("us", "UTC")),
+        "value":          pl.Series([500.0], dtype=pl.Float64),
     })
-    ts = TimeSeries.from_arrow(table)
+    ts = TimeSeriesPolars.from_polars(df)
 
     td.get_series("energy_ts").insert(data=ts)
 
@@ -376,14 +374,14 @@ def test_insert_timeseries_wrong_shape(td, sample_datetime):
     """TimeSeries with AUDIT or CORRECTED shape raises ValueError."""
     td.create_series(name="audit_reject", unit="dimensionless", overlapping=True)
 
-    # Build an AUDIT table (has knowledge_time + change_time columns)
-    table = pa.table({
-        "knowledge_time": pa.array([sample_datetime], type=_TS_TYPE),
-        "change_time":    pa.array([sample_datetime], type=_TS_TYPE),
-        "valid_time":     pa.array([sample_datetime], type=_TS_TYPE),
-        "value":          pa.array([1.0], type=pa.float64()),
+    # Build an AUDIT DataFrame (has knowledge_time + change_time columns)
+    df = pl.DataFrame({
+        "knowledge_time": pl.Series([sample_datetime]).cast(pl.Datetime("us", "UTC")),
+        "change_time":    pl.Series([sample_datetime]).cast(pl.Datetime("us", "UTC")),
+        "valid_time":     pl.Series([sample_datetime]).cast(pl.Datetime("us", "UTC")),
+        "value":          pl.Series([1.0], dtype=pl.Float64),
     })
-    ts = TimeSeries.from_arrow(table, timeseries_type=TimeSeriesType.OVERLAPPING)
+    ts = TimeSeriesPolars.from_polars(df, timeseries_type=TimeSeriesType.OVERLAPPING)
     assert ts.shape == DataShape.AUDIT
 
     with pytest.raises(ValueError, match="AUDIT"):
@@ -392,12 +390,12 @@ def test_insert_timeseries_wrong_shape(td, sample_datetime):
 
 def _make_versioned_ts(knowledge_times, valid_times, values, unit="dimensionless"):
     """Helper: build a VERSIONED TimeSeries from lists."""
-    table = pa.table({
-        "knowledge_time": pa.array(knowledge_times, type=_TS_TYPE),
-        "valid_time":     pa.array(valid_times,     type=_TS_TYPE),
-        "value":          pa.array(values,          type=pa.float64()),
+    df = pl.DataFrame({
+        "knowledge_time": pl.Series(knowledge_times).cast(pl.Datetime("us", "UTC")),
+        "valid_time":     pl.Series(valid_times).cast(pl.Datetime("us", "UTC")),
+        "value":          pl.Series(values, dtype=pl.Float64),
     })
-    ts = TimeSeries.from_arrow(table, unit=unit, timeseries_type=TimeSeriesType.OVERLAPPING)
+    ts = TimeSeriesPolars.from_polars(df, unit=unit, timeseries_type=TimeSeriesType.OVERLAPPING)
     assert ts.shape == DataShape.VERSIONED
     return ts
 

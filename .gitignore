@@ -75,3 +75,17 @@ loc_graph.py
 architecture/
 benchmarks/
 benchmark2.0/
+clickhouse/
+
+# ClickHouse server data dirs (created when clickhouse-server runs from repo root)
+data/
+flags/
+format_schemas/
+metadata/
+metadata_dropped/
+preprocessed_configs/
+status/
+store/
+tmp/
+user_files/
+uuid

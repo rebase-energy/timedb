@@ -22,12 +22,12 @@ from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timedelta, timezone, time
 import pandas as pd
+import polars as pl
 import pyarrow as pa
 
 from . import db
 from .db.series import SeriesRegistry
-from timedatamodel.timeseries_arrow import TimeSeries, DataShape
-from timedatamodel.enums import TimeSeriesType
+from timedatamodel import TimeSeriesPolars, DataShape, TimeSeriesType
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
@@ -490,8 +490,8 @@ class SeriesCollection:
                 )
 
         ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
-        ts = TimeSeries.from_arrow(
-            table,
+        ts = TimeSeriesPolars.from_polars(
+            pl.from_arrow(table),
             name=meta.get("name"),
             unit=meta.get("unit", "dimensionless"),
             labels=meta.get("labels") or {},
@@ -620,8 +620,8 @@ class SeriesCollection:
             end_valid=end_valid,
             _pool=self._pool,
         )
-        return TimeSeries.from_arrow(
-            table,
+        return TimeSeriesPolars.from_polars(
+            pl.from_arrow(table),
             name=meta.get("name"),
             unit=meta.get("unit", "dimensionless"),
             labels=meta.get("labels") or {},
@@ -738,7 +738,7 @@ class TimeDataClient:
         >>> from timedb import TimeDataClient
         >>> import pandas as pd
         >>> from datetime import datetime, timezone
-        >>> from timedatamodel.timeseries_arrow import TimeSeries
+        >>> from timedatamodel import TimeSeriesPolars
 
         >>> # Create client and schema
         >>> td = TimeDataClient()
@@ -748,7 +748,7 @@ class TimeDataClient:
         >>> td.create_series('wind_power', unit='MW', labels={'site': 'offshore_1'})
 
         >>> # Insert data using TimeSeries
-        >>> ts = TimeSeries.from_pandas(
+        >>> ts = TimeSeriesPolars.from_pandas(
         ...     pd.DataFrame({'valid_time': [datetime.now(timezone.utc)], 'value': [100.0]}),
         ...     unit='MW',
         ... )
@@ -1083,7 +1083,7 @@ def _check_df_timezone(df: pd.DataFrame) -> None:
                 )
 
 
-def _resolve_arrow_units(table: pa.Table, ts_unit: str, series_unit: str) -> pa.Table:
+def _resolve_polars_units(df: pl.DataFrame, ts_unit: str, series_unit: str) -> pl.DataFrame:
     """Scale the ``value`` column when *ts_unit* and *series_unit* differ.
 
     Rules:
@@ -1093,7 +1093,7 @@ def _resolve_arrow_units(table: pa.Table, ts_unit: str, series_unit: str) -> pa.
     - Incompatible units → raise :class:`IncompatibleUnitError`.
     """
     if ts_unit == series_unit:
-        return table
+        return df
     if ts_unit == "dimensionless":
         if series_unit != "dimensionless":
             warnings.warn(
@@ -1103,7 +1103,7 @@ def _resolve_arrow_units(table: pa.Table, ts_unit: str, series_unit: str) -> pa.
                 UserWarning,
                 stacklevel=4,
             )
-        return table
+        return df
     try:
         import pint
     except ImportError:
@@ -1119,12 +1119,7 @@ def _resolve_arrow_units(table: pa.Table, ts_unit: str, series_unit: str) -> pa.
             f"Cannot convert '{ts_unit}' to '{series_unit}'. "
             f"Units are not dimensionally compatible."
         )
-    scaled = pa.array(
-        table.column("value").to_numpy(zero_copy_only=False) * factor,
-        type=pa.float64(),
-    )
-    idx = table.schema.get_field_index("value")
-    return table.set_column(idx, "value", scaled)
+    return df.with_columns(pl.col("value") * factor)
 
 
 def _normalize_insert_input(
@@ -1147,9 +1142,10 @@ def _normalize_insert_input(
     Returns:
         ``(pa.Table, DataShape)`` tuple ready to pass to :func:`_insert`.
     """
-    if isinstance(data, TimeSeries):
-        table, shape = data.validate_for_insert()
-        table = _resolve_arrow_units(table, ts_unit=data.unit, series_unit=series_unit)
+    if isinstance(data, TimeSeriesPolars):
+        df, shape = data.validate_for_insert()
+        df = _resolve_polars_units(df, ts_unit=data.unit, series_unit=series_unit)
+        table = df.to_arrow()
     else:
         # --- pd.DataFrame path ---
         _validate_df_columns(data)
@@ -1161,8 +1157,9 @@ def _normalize_insert_input(
             data['value'] = resolved
 
         # from_pandas infers VERSIONED when knowledge_time column is present
-        ts = TimeSeries.from_pandas(data)
-        table, shape = ts.table, ts.shape
+        ts = TimeSeriesPolars.from_pandas(data)
+        table = ts.df.to_arrow()
+        shape = ts.shape
 
     # Ambiguity check: KT in data AND as kwarg is not allowed
     if "knowledge_time" in table.schema.names and knowledge_time is not None:
