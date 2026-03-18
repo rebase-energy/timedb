@@ -76,6 +76,7 @@ architecture/
 benchmarks/
 benchmark2.0/
 clickhouse/
+benchmark_many_series/
 
 # ClickHouse server data dirs (created when clickhouse-server runs from repo root)
 data/

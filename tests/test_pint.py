@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 import polars as pl
 from timedb.sdk import IncompatibleUnitError, _resolve_pint_values, _resolve_polars_units
-from timedb import TimeSeriesPolars
+from timedb import TimeSeries
 
 
 # =============================================================================
@@ -158,5 +158,5 @@ def test_read_returns_timeseries(td, sample_datetime):
     td.get_series("power").insert(df)
 
     ts = td.get_series("power").read()
-    assert isinstance(ts, TimeSeriesPolars)
+    assert isinstance(ts, TimeSeries)
     assert ts.to_pandas()["value"].dtype == "float64"

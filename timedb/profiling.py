@@ -33,7 +33,8 @@ PHASE_READ_SQL_EXEC         = "read.sql_exec"          # cursor.execute() — SQ
 PHASE_READ_FETCH_ROWS       = "read.fetch_rows"        # cursor.fetchall() — transfer rows to Python
 PHASE_READ_BUILD_ARROW      = "read.build_arrow"       # Build pa.Table from fetched rows
 PHASE_READ_BUILD_TIMESERIES = "read.build_timeseries"  # TimeSeries.__init__: shape inference + validation + metadata
-PHASE_READ_TO_PANDAS        = "read.to_pandas"         # TimeSeries.to_pandas(): pa.Table.to_pandas() + set_index()
+PHASE_READ_TO_PANDAS        = "read.to_pandas"         # (legacy, no longer emitted) pa.Table.to_pandas() + set_index()
+PHASE_READ_TO_POLARS        = "read.to_polars"         # pl.from_arrow() + TimeSeries.from_polars() at SDK boundary
 PHASE_READ_TOTAL            = "read.total"             # Full _fetch_arrow() wall time (DB portion only)
 
 # ── Internal state ────────────────────────────────────────────────────────────

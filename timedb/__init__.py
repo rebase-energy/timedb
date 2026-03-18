@@ -29,7 +29,7 @@ from .sdk import (
     IncompatibleUnitError,
 )
 
-from timedatamodel import TimeSeriesPolars, DataShape, DataType, TimeSeriesType, GeoLocation
+from timedatamodel import TimeSeries, DataShape, DataType, TimeSeriesType, GeoLocation
 
 from . import profiling
 
@@ -89,7 +89,7 @@ __all__ = [
     # Profiling
     'profiling',
     # TimeSeries container
-    'TimeSeriesPolars',
+    'TimeSeries',
     'DataShape',
     'DataType',
     'TimeSeriesType',
