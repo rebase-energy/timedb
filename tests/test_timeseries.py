@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import polars as pl
 
-from timedb import TimeSeriesPolars, DataShape
+from timedb import TimeSeries, DataShape
 
 _UTC = timezone.utc
 _T0 = datetime(2025, 1, 1, tzinfo=_UTC)
@@ -20,7 +20,7 @@ def test_from_pandas_simple():
         "valid_time": [_T0, _T0 + timedelta(hours=1)],
         "value": [1.0, 2.0],
     })
-    ts = TimeSeriesPolars.from_pandas(df)
+    ts = TimeSeries.from_pandas(df)
     assert ts.shape == DataShape.SIMPLE
 
 
@@ -31,7 +31,7 @@ def test_from_pandas_versioned():
         "valid_time": [_T0 + timedelta(hours=1)],
         "value": [1.0],
     })
-    ts = TimeSeriesPolars.from_pandas(df)
+    ts = TimeSeries.from_pandas(df)
     assert ts.shape == DataShape.VERSIONED
 
 
@@ -44,7 +44,7 @@ def test_from_pandas_rejects_audit():
         "value":          [1.0],
     })
     with pytest.raises(ValueError, match="AUDIT"):
-        TimeSeriesPolars.from_pandas(df)
+        TimeSeries.from_pandas(df)
 
 
 def test_from_pandas_rejects_corrected():
@@ -55,7 +55,7 @@ def test_from_pandas_rejects_corrected():
         "value":       [1.0],
     })
     with pytest.raises(ValueError, match="CORRECTED"):
-        TimeSeriesPolars.from_pandas(df)
+        TimeSeries.from_pandas(df)
 
 
 def test_from_pandas_error_mentions_from_polars():
@@ -66,7 +66,7 @@ def test_from_pandas_error_mentions_from_polars():
         "value":       [1.0],
     })
     with pytest.raises(ValueError, match="from_polars"):
-        TimeSeriesPolars.from_pandas(df)
+        TimeSeries.from_pandas(df)
 
 
 def test_from_polars_still_accepts_audit():
@@ -77,5 +77,5 @@ def test_from_polars_still_accepts_audit():
         "valid_time":     pl.Series([_T0 + timedelta(hours=1)]).cast(pl.Datetime("us", "UTC")),
         "value":          pl.Series([1.0]),
     })
-    ts = TimeSeriesPolars.from_polars(df)
+    ts = TimeSeries.from_polars(df)
     assert ts.shape == DataShape.AUDIT

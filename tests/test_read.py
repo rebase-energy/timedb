@@ -5,7 +5,7 @@ import pyarrow as pa
 import numpy as np
 from datetime import datetime, timezone, timedelta, time
 from timedb.db import read
-from timedb import TimeSeriesPolars, DataShape
+from timedb import TimeSeries, DataShape
 
 
 # =============================================================================
@@ -35,7 +35,7 @@ def test_read_flat_via_sdk(td, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(df, TimeSeriesPolars)
+    assert isinstance(df, TimeSeries)
     assert len(df) == 2
     assert df.shape == DataShape.SIMPLE
 
@@ -118,7 +118,7 @@ def test_read_overlapping_latest_via_sdk(td, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(result, TimeSeriesPolars)
+    assert isinstance(result, TimeSeries)
     assert len(result) == 2
 
 
@@ -152,7 +152,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
         end_valid=sample_datetime + timedelta(hours=2),
     )
 
-    assert isinstance(result, TimeSeriesPolars)
+    assert isinstance(result, TimeSeries)
     # Should have 4 rows (2 valid_times x 2 knowledge_times)
     assert len(result) == 4
     assert result.shape == DataShape.VERSIONED
@@ -257,7 +257,7 @@ def test_read_relative_basic_via_sdk(td, sample_datetime):
         issue_offset=timedelta(hours=-12),
     )
 
-    assert isinstance(result, TimeSeriesPolars)
+    assert isinstance(result, TimeSeries)
     assert len(result) == 3
     assert result.shape == DataShape.SIMPLE
     # Values should come from the early batch (10, 11, 12), not the late batch (99)
@@ -370,7 +370,7 @@ def test_read_relative_empty_when_no_qualifying_forecasts(td, sample_datetime):
         issue_offset=timedelta(hours=-12),
     )
 
-    assert isinstance(result, TimeSeriesPolars)
+    assert isinstance(result, TimeSeries)
     assert len(result) == 0
 
 

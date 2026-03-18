@@ -18,6 +18,7 @@ import atexit
 import os
 import uuid
 import warnings
+from time import perf_counter
 from contextlib import contextmanager
 from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
 from datetime import datetime, timedelta, timezone, time
@@ -25,9 +26,9 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 
-from . import db
+from . import db, profiling
 from .db.series import SeriesRegistry
-from timedatamodel import TimeSeriesPolars, DataShape, TimeSeriesType
+from timedatamodel import TimeSeries, DataShape, TimeSeriesType
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
@@ -323,11 +324,11 @@ class SeriesCollection:
         end_known: Optional[datetime] = None,
         overlapping: bool = False,
         include_updates: bool = False,
-    ) -> "TimeSeriesPolars":
+    ) -> "TimeSeries":
         """
         Read time series data for this collection.
 
-        Returns a :class:`~timedatamodel.timeseries_polars.TimeSeriesPolars` instance.
+        Returns a :class:`~timedatamodel.timeseries_polars.TimeSeries` instance.
         Call ``.to_pandas()`` on it to get a ``pd.DataFrame`` with the
         conventional index.
 
@@ -490,7 +491,9 @@ class SeriesCollection:
                 )
 
         ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
-        ts = TimeSeriesPolars.from_polars(
+        _prof = profiling.is_enabled()
+        _t0 = perf_counter() if _prof else 0.0
+        ts = TimeSeries.from_polars(
             pl.from_arrow(table),
             name=meta.get("name"),
             unit=meta.get("unit", "dimensionless"),
@@ -498,6 +501,7 @@ class SeriesCollection:
             description=meta.get("description"),
             timeseries_type=ts_type,
         )
+        if _prof: profiling._record(profiling.PHASE_READ_TO_POLARS, perf_counter() - _t0)
 
         return ts
 
@@ -511,7 +515,7 @@ class SeriesCollection:
         *,
         days_ahead: Optional[int] = None,
         time_of_day: Optional[time] = None,
-    ) -> "TimeSeriesPolars":
+    ) -> "TimeSeries":
         """
         Read overlapping series using a per-window knowledge_time cutoff.
 
@@ -545,7 +549,7 @@ class SeriesCollection:
             end_valid: End of valid time range (optional)
 
         Returns:
-            TimeSeriesPolars with columns (valid_time, value).
+            TimeSeries with columns (valid_time, value).
 
         Raises:
             ValueError: If collection matches no series, multiple series,
@@ -620,7 +624,9 @@ class SeriesCollection:
             end_valid=end_valid,
             _pool=self._pool,
         )
-        return TimeSeriesPolars.from_polars(
+        _prof = profiling.is_enabled()
+        _t0 = perf_counter() if _prof else 0.0
+        ts = TimeSeries.from_polars(
             pl.from_arrow(table),
             name=meta.get("name"),
             unit=meta.get("unit", "dimensionless"),
@@ -628,6 +634,8 @@ class SeriesCollection:
             description=meta.get("description"),
             timeseries_type=TimeSeriesType.OVERLAPPING,
         )
+        if _prof: profiling._record(profiling.PHASE_READ_TO_POLARS, perf_counter() - _t0)
+        return ts
 
     def list_labels(self, label_key: str) -> List[str]:
         """List all unique values for a specific label key in this collection."""
@@ -738,7 +746,7 @@ class TimeDataClient:
         >>> from timedb import TimeDataClient
         >>> import pandas as pd
         >>> from datetime import datetime, timezone
-        >>> from timedb import TimeSeriesPolars
+        >>> from timedb import TimeSeries
 
         >>> # Create client and schema
         >>> td = TimeDataClient()
@@ -748,7 +756,7 @@ class TimeDataClient:
         >>> td.create_series('wind_power', unit='MW', labels={'site': 'offshore_1'})
 
         >>> # Insert data using TimeSeries
-        >>> ts = TimeSeriesPolars.from_pandas(
+        >>> ts = TimeSeries.from_pandas(
         ...     pd.DataFrame({'valid_time': [datetime.now(timezone.utc)], 'value': [100.0]}),
         ...     unit='MW',
         ... )
@@ -1142,7 +1150,7 @@ def _normalize_insert_input(
     Returns:
         ``(pa.Table, DataShape)`` tuple ready to pass to :func:`_insert`.
     """
-    if isinstance(data, TimeSeriesPolars):
+    if isinstance(data, TimeSeries):
         df, shape = data.validate_for_insert()
         df = _resolve_polars_units(df, ts_unit=data.unit, series_unit=series_unit)
         table = df.to_arrow()
@@ -1157,7 +1165,7 @@ def _normalize_insert_input(
             data['value'] = resolved
 
         # from_pandas infers VERSIONED when knowledge_time column is present
-        ts = TimeSeriesPolars.from_pandas(data)
+        ts = TimeSeries.from_pandas(data)
         table = ts.df.to_arrow()
         shape = ts.shape
 

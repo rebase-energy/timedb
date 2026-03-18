@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import polars as pl
 
-from timedb import TimeSeriesPolars, DataShape
+from timedb import TimeSeries, DataShape
 from timedatamodel.enums import TimeSeriesType
 
 
@@ -117,7 +117,7 @@ def test_insert_flat_duplicate_valid_time_raises(td, clean_db, sample_datetime):
     """Flat insert with duplicate valid_times raises ValueError before hitting the DB."""
     td.create_series(name="dedup_err", unit="dimensionless")
     vt = sample_datetime
-    ts = TimeSeriesPolars.from_pandas(pd.DataFrame([
+    ts = TimeSeries.from_pandas(pd.DataFrame([
         {"knowledge_time": sample_datetime,                      "valid_time": vt, "value": 1.0},
         {"knowledge_time": sample_datetime + timedelta(hours=1), "valid_time": vt, "value": 2.0},
     ]), unit="dimensionless")
@@ -287,7 +287,7 @@ def _make_simple_ts(datetimes, values, unit="dimensionless", timeseries_type=Tim
         "valid_time": pl.Series(datetimes).cast(pl.Datetime("us", "UTC")),
         "value": pl.Series(values, dtype=pl.Float64),
     })
-    return TimeSeriesPolars.from_polars(df, unit=unit, timeseries_type=timeseries_type)
+    return TimeSeries.from_polars(df, unit=unit, timeseries_type=timeseries_type)
 
 
 def test_insert_timeseries_flat(td, clean_db, sample_datetime):
@@ -358,7 +358,7 @@ def test_insert_timeseries_interval(td, clean_db, sample_datetime):
         "valid_time_end": pl.Series([sample_datetime + timedelta(hours=1)]).cast(pl.Datetime("us", "UTC")),
         "value":          pl.Series([500.0], dtype=pl.Float64),
     })
-    ts = TimeSeriesPolars.from_polars(df)
+    ts = TimeSeries.from_polars(df)
 
     td.get_series("energy_ts").insert(data=ts)
 
@@ -381,7 +381,7 @@ def test_insert_timeseries_wrong_shape(td, sample_datetime):
         "valid_time":     pl.Series([sample_datetime]).cast(pl.Datetime("us", "UTC")),
         "value":          pl.Series([1.0], dtype=pl.Float64),
     })
-    ts = TimeSeriesPolars.from_polars(df, timeseries_type=TimeSeriesType.OVERLAPPING)
+    ts = TimeSeries.from_polars(df, timeseries_type=TimeSeriesType.OVERLAPPING)
     assert ts.shape == DataShape.AUDIT
 
     with pytest.raises(ValueError, match="AUDIT"):
@@ -395,7 +395,7 @@ def _make_versioned_ts(knowledge_times, valid_times, values, unit="dimensionless
         "valid_time":     pl.Series(valid_times).cast(pl.Datetime("us", "UTC")),
         "value":          pl.Series(values, dtype=pl.Float64),
     })
-    ts = TimeSeriesPolars.from_polars(df, unit=unit, timeseries_type=TimeSeriesType.OVERLAPPING)
+    ts = TimeSeries.from_polars(df, unit=unit, timeseries_type=TimeSeriesType.OVERLAPPING)
     assert ts.shape == DataShape.VERSIONED
     return ts
 
