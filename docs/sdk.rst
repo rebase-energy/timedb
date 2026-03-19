@@ -28,7 +28,7 @@ Import the package and start using it directly:
    from datetime import datetime, timezone, timedelta
    from timedb import TimeSeries
 
-Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.get_series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
+Module-level functions (``td.create()``, ``td.delete()``, ``td.create_series()``, ``td.create_series_many()``, ``td.get_series()``) use a lazy default client that reads the database connection from environment variables automatically. This is the recommended approach for most use cases.
 
 Explicit Client (Advanced)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -105,7 +105,7 @@ Before inserting data, create a series with ``create_series()``:
 .. code-block:: python
 
    series_id = td.create_series(
-       name="wind_power",
+       "wind_power",
        unit="MW",
        labels={"site": "offshore_1", "type": "forecast"},
        overlapping=True  # False (default) for facts
@@ -113,19 +113,69 @@ Before inserting data, create a series with ``create_series()``:
 
 Parameters:
 
-- **name**: Series identifier (e.g., "wind_power", "temperature")
-- **unit**: Canonical unit (e.g., "MW", "degC", "dimensionless")
+- **name**: Series name string (e.g., ``"wind_power"``).
+- **unit**: Canonical unit (e.g., ``"MW"``, ``"degC"``, ``"dimensionless"``)
 - **labels**: Optional dict of labels for filtering (e.g., ``{"site": "A", "type": "forecast"}``)
 - **description**: Optional text description
 - **overlapping**: ``False`` (default) for immutable facts, ``True`` for versioned forecasts
 - **retention**: ``"short"``, ``"medium"`` (default), or ``"long"`` (only for overlapping)
 
-The function returns the ``series_id`` (integer) which can be used directly if needed, but the fluent API handles this automatically via the ``.where()`` filter.
+Returns the ``series_id`` integer. The fluent API handles series resolution automatically
+via ``.where()``.
 
-Inserting Data
---------------
+Batch Series Creation
+~~~~~~~~~~~~~~~~~~~~~
 
-Use the fluent ``SeriesCollection`` API to insert data. First, select a series by name (and optionally by unit):
+Use ``create_series_many()`` to create many series in a single database round-trip:
+
+.. code-block:: python
+
+   series_ids = td.create_series_many([
+       {"name": "wind_power", "unit": "MW",
+        "labels": {"turbine": f"T{i:02d}"}, "overlapping": True}
+       for i in range(10)
+   ])
+   print(series_ids)  # [1, 2, 3, ..., 10]
+
+Each dict supports the same keys as ``create_series()``. ``name`` is required; all
+other keys are optional with the same defaults. The function is idempotent: calling
+it again with the same ``(name, labels)`` pairs returns the existing ``series_id``
+values without error.
+
+Returns a list of ``series_id`` integers in the same order as the input list.
+
+Targeted Ingestion
+------------------
+
+Use ``SeriesCollection.insert()`` when you need to write to a single, known series —
+patching a bad data segment, backfilling a gap, running a one-off correction, or
+exploring data interactively. The series is resolved exactly once via ``.where()``
+filters before any data reaches the database.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 36 36
+
+   * -
+     - Targeted Ingestion (``insert``)
+     - Production Ingestion (``write*``)
+   * - **Targets**
+     - One specific series
+     - Many series at once
+   * - **Typical use**
+     - Patch bad data, backfill, explore
+     - ETL pipelines, scheduled loads
+   * - **Data shape**
+     - ``TimeSeries`` or ``pd.DataFrame``
+     - Long / wide / MultiIndex DataFrame
+   * - **Routing**
+     - Explicit ``.where()`` filters
+     - Inferred from columns (vectorized join)
+   * - **Transaction**
+     - One per ``insert()`` call
+     - One for all series combined
+
+First, select a series by name (and optionally filter by unit or labels):
 
 .. code-block:: python
 
@@ -202,46 +252,232 @@ Full insert signature:
 .. code-block:: python
 
    result = td.get_series("name").where(...).insert(
-       ts,                  # TimeSeries or pd.DataFrame
-       workflow_id=None,    # Optional, defaults to "sdk-workflow"
+       ts,                     # TimeSeries or pd.DataFrame
+       knowledge_time=None,    # Broadcast knowledge_time; mutually exclusive with column
+       unit=None,              # Incoming unit for DataFrame path (pint conversion applied)
+       workflow_id=None,       # Optional, defaults to "sdk-workflow"
        batch_start_time=None,  # Optional, defaults to now()
-       batch_finish_time=None,  # Optional
-       knowledge_time=None,    # Time of knowledge (SIMPLE inserts, flat or overlapping)
+       batch_finish_time=None, # Optional
        batch_params=None,      # Optional dict of metadata
    )
 
-Using pint Units
-~~~~~~~~~~~~~~~~
+Production Ingestion
+--------------------
 
-If your DataFrame has pint-pandas dtypes, timedb automatically validates and converts units on insert.
-Install the optional pint dependencies first: ``pip install timedb[pint]``
+For scheduled pipelines and bulk data loads that cover many series at once, use the
+global ``write()`` method. It routes through the same engine as targeted ingestion
+and shares the same guarantees:
+
+Multi-Series Write Methods
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+TimeDB provides a single multi-series write method. It:
+
+- Accepts **Pandas or Polars** DataFrames
+- Resolves all series in **one database round-trip**
+- Writes all partitions in **one transaction**
+- Raises ``ValueError`` or ``IncompatibleUnitError`` **before** any DB write
+
+``write()`` — long / tidy format
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+One row per value. Every row encodes its full series identity in columns.
+
+**Required structure:**
+
+.. code-block:: text
+
+   name        | site    | turbine | valid_time               | value
+   ------------|---------|---------|--------------------------|------
+   wind_power  | Gotland | T01     | 2025-01-01 00:00:00+00:00 |  4.2
+   wind_power  | Gotland | T02     | 2025-01-01 00:00:00+00:00 |  3.8
+   wind_speed  | Gotland | T01     | 2025-01-01 00:00:00+00:00 |  9.1
+   wind_speed  | Gotland | T02     | 2025-01-01 00:00:00+00:00 |  8.7
+   ...
+
+**Auto-detection rules** for ``label_cols`` when omitted: every column not in the
+reserved set and not ``name_col`` becomes a label. The reserved set is:
+``valid_time``, ``value``, ``knowledge_time``, ``valid_time_end``, ``change_time``,
+``changed_by``, ``annotation``, ``series_id``, ``batch_id``, ``unit``.
+
+**Pattern 1 — broadcast** ``knowledge_time`` **(kwarg):** same timestamp for every row:
 
 .. code-block:: python
 
-   import pint_pandas  # noqa
+   import pandas as pd
+   from datetime import datetime, timezone
 
-   df = pd.DataFrame({
-       "valid_time": [datetime(2025, 1, 1, i, tzinfo=timezone.utc) for i in range(24)],
-       "value": pd.Series([500.0] * 24, dtype="pint[kW]"),
-   })
+   t = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
-   # kW is automatically converted to MW (the series' canonical unit)
-   td.get_series("power").insert(df)
+   df = pd.DataFrame([
+       {"name": "wind_power", "site": "Gotland", "turbine": "T01", "valid_time": t, "value": 4.2},
+       {"name": "wind_power", "site": "Gotland", "turbine": "T02", "valid_time": t, "value": 3.8},
+       {"name": "wind_speed", "site": "Gotland", "turbine": "T01", "valid_time": t, "value": 9.1},
+       {"name": "wind_speed", "site": "Gotland", "turbine": "T02", "valid_time": t, "value": 8.7},
+   ])
+   results = td.write(df, knowledge_time=datetime(2025, 1, 1, 6, tzinfo=timezone.utc))
 
-.. note::
+**Pattern 2 — per-row** ``knowledge_time`` **(column):** include it in the DataFrame to
+assign a different ``knowledge_time`` to each row (e.g. two forecast runs in one call).
+The ``knowledge_time=`` kwarg must be omitted when the column is present.
 
-   Pass pint-typed DataFrames **directly** to ``insert()`` — not through
-   ``TimeSeries.from_pandas()``. PyArrow does not support pint dtypes, so
-   ``TimeSeries.from_pandas()`` would strip the unit information before
-   the SDK can validate it. The plain-DataFrame path keeps pint handling intact.
+.. code-block:: text
 
-Rules:
+   name        | site    | turbine | valid_time                | knowledge_time            | value
+   ------------|---------|---------|---------------------------|---------------------------|------
+   wind_power  | Gotland | T01     | 2025-01-01 00:00:00+00:00 | 2025-01-01 06:00:00+00:00 |  4.2
+   wind_power  | Gotland | T01     | 2025-01-01 01:00:00+00:00 | 2025-01-01 18:00:00+00:00 |  4.5
+   ...
 
-- **Plain float64**: passed through unchanged, no unit check
-- **Pint with same unit**: stripped to float64, no conversion
-- **Pint with compatible unit**: converted to series unit (e.g., kW → MW)
-- **Pint dimensionless**: treated as series unit
-- **Pint with incompatible unit**: raises ``IncompatibleUnitError`` (e.g., kg into MW series)
+**Pattern 3 — per-row** ``knowledge_time`` **+** ``change_time`` **(corrections):**
+include ``change_time`` to stamp the exact moment a correction was applied. On upserts
+(``series_id + valid_time`` already exists) PostgreSQL's ``DEFAULT now()`` only fires on
+INSERT; TimeDB forces ``change_time = now()`` in the UPDATE clause unless you supply the
+column yourself.
+
+.. code-block:: text
+
+   name        | site    | turbine | valid_time                | knowledge_time            | change_time               | value
+   ------------|---------|---------|---------------------------|---------------------------|---------------------------|------
+   wind_power  | Gotland | T01     | 2025-01-01 00:00:00+00:00 | 2025-03-02 10:00:00+00:00 | 2025-03-02 09:00:00+00:00 |  4.8
+   wind_power  | Gotland | T01     | 2025-01-01 00:15:00+00:00 | 2025-03-02 10:00:00+00:00 | 2025-03-02 09:00:00+00:00 |  5.1
+   ...
+
+**Pattern 4 — multiple batches per call** ``(batch_cols)``**:** pass ``batch_cols`` to
+commit multiple provenance batches in one atomic transaction. Every unique combination of
+values in those columns becomes a distinct batch record.
+
+*With unreserved columns* (e.g. ``model``) — values are packed into ``batch_params`` JSON
+on each batch record:
+
+.. code-block:: text
+
+   name        | site    | turbine | model   | valid_time                | value
+   ------------|---------|---------|---------|---------------------------|------
+   wind_power  | Gotland | T01     | ECMWF   | 2025-01-01 00:00:00+00:00 |  4.2
+   wind_power  | Gotland | T01     | GFS     | 2025-01-01 00:00:00+00:00 |  3.9
+   wind_power  | Gotland | T02     | ECMWF   | 2025-01-01 00:00:00+00:00 |  3.8
+   wind_power  | Gotland | T02     | GFS     | 2025-01-01 00:00:00+00:00 |  3.5
+   ...
+
+.. code-block:: python
+
+   results = td.write(
+       df,
+       batch_cols=["model"],          # one batch per unique model value
+       knowledge_time=datetime(2025, 1, 1, 6, tzinfo=timezone.utc),
+       workflow_id="nightly-forecast",
+   )
+   # batch_params = {"model": "ECMWF"} stored for the ECMWF batch, etc.
+   # len(results) == num_series × num_models
+
+*With reserved columns* (``workflow_id``, ``batch_start_time``, ``batch_finish_time``) —
+values are written directly to the native ``batches_table`` fields, not packed into
+``batch_params``:
+
+.. code-block:: text
+
+   name        | site    | turbine | workflow_id       | valid_time                | value
+   ------------|---------|---------|-------------------|---------------------------|------
+   wind_power  | Gotland | T01     | run-2025-01-01-06 | 2025-01-01 00:00:00+00:00 |  4.2
+   wind_power  | Gotland | T01     | run-2025-01-01-18 | 2025-01-01 12:00:00+00:00 |  4.5
+   ...
+
+.. code-block:: python
+
+   results = td.write(df, batch_cols=["workflow_id"])
+   # Two distinct batches, each with its own workflow_id stored natively in batches_table.
+
+**Pattern 5 — per-row unit conversion** ``(unit column)``**:** include a ``"unit"``
+column to apply different conversion factors to individual rows in the same payload.
+Every row declares its own incoming unit; TimeDB resolves the factor for each unique
+``(series, unit)`` combination via a vectorized join — pint is only invoked O(unique
+combos) times regardless of DataFrame size.
+
+.. code-block:: text
+
+   name        | site    | turbine | valid_time                | unit | value
+   ------------|---------|---------|---------------------------|------|------
+   wind_power  | Gotland | T01     | 2025-01-01 00:00:00+00:00 | MW   |  4.2
+   wind_power  | Gotland | T01     | 2025-01-01 01:00:00+00:00 | kW   | 4200
+   wind_power  | Gotland | T02     | 2025-01-01 00:00:00+00:00 | MW   |  3.8
+   ...
+
+.. code-block:: python
+
+   results = td.write(df, knowledge_time=datetime(2025, 1, 1, 6, tzinfo=timezone.utc))
+   # Series registered as "MW" — kW rows are multiplied by 0.001 automatically.
+   # Passing unit= kwarg at the same time as a unit column raises ValueError.
+
+Full signature:
+
+.. code-block:: python
+
+   results = td.write(
+       df,                       # pd.DataFrame or pl.DataFrame
+       name_col="name",          # defaults to "name"
+       label_cols=None,          # None → inferred; [] → no labels
+       batch_cols=None,          # columns that define batch identity (provenance)
+       *,
+       knowledge_time=None,      # broadcast; mutually exclusive with column
+       unit=None,                # broadcast unit; mutually exclusive with unit column
+       workflow_id=None,         # default workflow_id (overridden by batch_cols)
+       batch_start_time=None,
+       batch_finish_time=None,
+       batch_params=None,        # base dict; per-batch unreserved cols merged on top
+   )  # -> List[InsertResult], one per unique (series_id, batch_id)
+
+Also available as a ``TimeDataClient`` method: ``td_client.write(...)``.
+
+Returns a list of :class:`~timedb.InsertResult` objects, one per unique
+``(series_id, batch_id)`` pair. Without ``batch_cols`` this is one per series;
+with ``batch_cols`` it is N×M (N unique batch combinations × M series).
+
+Raises:
+
+- ``ValueError``: if ``name_col`` is not found in the DataFrame
+- ``ValueError``: if any ``(name, labels)`` combination has no matching series
+- ``ValueError``: if ``valid_time`` or ``value`` columns are missing
+- ``ValueError``: if ``batch_cols`` contains columns not present in the DataFrame
+- ``ValueError``: if ``batch_cols`` overlaps with ``label_cols``
+- ``ValueError``: if both a ``"unit"`` column and the ``unit=`` kwarg are provided
+- ``IncompatibleUnitError``: if any incoming unit is incompatible with a series unit
+
+Passthrough Columns
+^^^^^^^^^^^^^^^^^^^
+
+Optional audit columns present in the input DataFrame are forwarded to the database
+unchanged. Supported passthrough columns: ``knowledge_time``, ``change_time``,
+``changed_by``, ``annotation``, ``valid_time_end``.
+
+``change_time`` is particularly important for corrections: on an upsert
+(``series_id + valid_time`` already exists), PostgreSQL's ``DEFAULT now()`` only fires
+on INSERT — not on ``ON CONFLICT DO UPDATE``. TimeDB forces ``change_time = now()``
+in the UPDATE clause unless you supply the column yourself. See Example 3 in the
+``write()`` section above for full usage.
+
+Unit Conversion
+~~~~~~~~~~~~~~~
+
+Pass ``unit=`` to ``insert()`` to declare the unit of the incoming DataFrame values.
+TimeDB uses pint to compute a scalar conversion factor from your unit to the series'
+canonical unit before writing:
+
+.. code-block:: python
+
+   # Series registered as "MW" — values in kW are multiplied by 0.001 automatically
+   td.get_series("wind_power").where(site="Gotland").insert(df, unit="kW")
+
+If the units are dimensionally incompatible (e.g., ``"kg"`` into an ``"MW"`` series),
+:class:`~timedb.IncompatibleUnitError` is raised before any data is written.
+
+``TimeSeries`` objects carry their own unit; pass them directly to ``insert()``
+and conversion is applied automatically — no ``unit=`` kwarg needed:
+
+.. code-block:: python
+
+   ts = TimeSeries.from_pandas(df, unit="kW")
+   td.get_series("wind_power").where(site="Gotland").insert(ts)  # converts kW → MW
 
 Interval-Based Time Series
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -327,7 +563,7 @@ To work with pint quantities, convert to pandas first and apply pint manually:
    df = ts.to_pandas()
    # ts.unit == "MW"
    ureg = pint.UnitRegistry()
-   qty = df["value"].values * ureg(ts.unit)  # pint Quantity array
+   qty = df["value"].values * ureg(ts.unit)  # pint Quantity (numpy array * unit)
 
 Reading Latest Values (Default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -690,14 +926,14 @@ Best Practices
 
 2. **Create schema first**: Always run ``td.create()`` before inserting data
 
-3. **Create series before inserting**: Use ``td.create_series()`` before ``td.get_series().insert()``
+3. **Create series before inserting**: Use ``td.create_series()`` before any insert or write call
 
 4. **Use labels for filtering**: Organize data with meaningful labels for easy retrieval
 
    .. code-block:: python
 
       td.create_series(
-          name="wind_power",
+          "wind_power",
           unit="MW",
           labels={"site": "Gotland", "turbine": "T01"}
       )
@@ -715,10 +951,12 @@ Best Practices
 
    .. code-block:: python
 
-      td.get_series("power").insert(
-          data=df,
-          workflow_id="forecast-v2"
-      )
+      td.get_series("power").insert(data=df, workflow_id="forecast-v2")
+      td.write(long_df, knowledge_time=kt, workflow_id="nwp-pipeline-v3")
+
+7. **Choose the right ingestion path**: use ``insert()`` for targeted writes to one
+   known series (patches, corrections, exploration); use ``write()`` for production
+   bulk loads across many series.
 
 Complete Example
 ----------------
@@ -738,7 +976,7 @@ A complete workflow from setup to analysis:
 
    # 2. Create series with metadata
    td.create_series(
-       name="wind_power",
+       "wind_power",
        unit="MW",
        labels={"site": "Gotland", "type": "offshore"},
        overlapping=True,  # Versioned forecasts
@@ -771,8 +1009,23 @@ A complete workflow from setup to analysis:
    df_history = ts_history.to_pandas()
    print(f"Forecast runs: {df_history.index.get_level_values('knowledge_time').nunique()}")
 
+   # ── Production ingestion: write many series at once ───────────────────────
+   # Create 5 turbines × 2 metrics = 10 series in one call
+   TURBINES = [f"T{i:02d}" for i in range(1, 6)]
+   td.create_series_many([
+       {"name": metric, "unit": "dimensionless",
+        "labels": {"turbine": t, "site": "Gotland"}, "overlapping": True}
+       for t in TURBINES for metric in ["wind_power", "wind_speed"]
+   ])
 
-.. toctree::
-    :hidden:
+   # Long DataFrame: one row per value, routing info in columns
+   long_df = pd.DataFrame(...)  # columns: name, site, turbine, valid_time, value
 
-    api_reference
+   # Write all 10 series in one round-trip, one transaction
+   results = td.write(
+       long_df,
+       knowledge_time=datetime(2025, 1, 1, 6, tzinfo=timezone.utc),
+   )
+   print(f"{len(results)} series written, batch_id={results[0].batch_id}")
+
+

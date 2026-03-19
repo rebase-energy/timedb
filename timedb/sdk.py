@@ -2,8 +2,9 @@
 High-level SDK for TimeDB (TimescaleDB version).
 
 Provides a simple interface for working with TimeDB, including automatic
-DataFrame conversion for time series data. All numeric values are treated as
-dimensionless floats - unit conversion is the user's responsibility.
+DataFrame conversion for time series data. Optional unit conversion via pint
+is applied automatically when a ``unit=`` kwarg or TimeSeries unit differs
+from the series' canonical unit.
 
 The SDK exposes two main classes:
 - TimeDataClient: Main entry point for database operations
@@ -20,30 +21,24 @@ import uuid
 import warnings
 from time import perf_counter
 from contextlib import contextmanager
-from typing import Optional, List, Tuple, NamedTuple, Dict, Union, Any
-from datetime import datetime, timedelta, timezone, time
+from typing import Optional, List, Tuple, Dict, Union, Any
+from datetime import datetime, timedelta, timezone, time as dt_time
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 
-from . import db, profiling
+from . import db, profiling, insert_pipeline
 from .db.series import SeriesRegistry
-from timedatamodel import TimeSeries, DataShape, TimeSeriesType
+from .types import BatchContext, InsertResult, IncompatibleUnitError
+from timedatamodel import TimeSeries, TimeSeriesType
+
+try:
+    from uuid import uuid7
+except ImportError:
+    from uuid6 import uuid7
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
-
-
-class InsertResult(NamedTuple):
-    """Result from insert containing the batch_id and series_id."""
-    batch_id: uuid.UUID
-    workflow_id: Optional[str]
-    series_id: int
-
-
-class IncompatibleUnitError(ValueError):
-    """Raised when units cannot be converted to each other."""
-    pass
 
 
 class SeriesCollection:
@@ -196,6 +191,7 @@ class SeriesCollection:
         batch_finish_time: Optional[datetime] = None,
         knowledge_time: Optional[datetime] = None,
         batch_params: Optional[dict] = None,
+        unit: Optional[str] = None,
     ) -> InsertResult:
         """
         Insert time series data for this collection.
@@ -235,6 +231,10 @@ class SeriesCollection:
                 Defaults to ``now()`` when neither this kwarg nor a
                 ``knowledge_time`` column is present in the data.
             batch_params: Batch parameters (optional)
+            unit: Unit of the incoming ``pd.DataFrame`` values (optional).
+                When provided, values are converted from this unit to the
+                series' canonical unit before insert.  Ignored for
+                :class:`~timedatamodel.TimeSeries` (which carries its own unit).
 
         Returns:
             InsertResult with batch_id (uuid.UUID), workflow_id, series_id.
@@ -250,17 +250,17 @@ class SeriesCollection:
         routing = self._get_series_routing(series_id)
         series_unit = self._registry.get_cached(series_id)["unit"]
 
-        table, shape = _normalize_insert_input(data, series_unit, knowledge_time=knowledge_time)
-
         return _insert(
-            table=table,
-            shape=shape,
+            data=data,
+            series_unit=series_unit,
             series_id=series_id,
             routing=routing,
+            knowledge_time=knowledge_time,
             workflow_id=workflow_id,
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
             batch_params=batch_params,
+            data_unit=unit,
             _pool=self._pool,
         )
 
@@ -271,10 +271,11 @@ class SeriesCollection:
         **Single-series only.** Collection must resolve to exactly one series.
 
         Supports both flat and overlapping series:
+
         - **Flat**: In-place update (no versioning) by (series_id, valid_time)
-        - **Overlapping**: Appends a correction row, preserving the original knowledge_time
-          and stamping change_time=now().
-          Lookup priority:
+        - **Overlapping**: Appends a correction row, preserving the original
+          knowledge_time and stamping change_time=now(). Lookup priority:
+
           - knowledge_time + valid_time: Exact version lookup
           - valid_time only: Latest version overall
 
@@ -514,7 +515,7 @@ class SeriesCollection:
         end_valid: Optional[datetime] = None,
         *,
         days_ahead: Optional[int] = None,
-        time_of_day: Optional[time] = None,
+        time_of_day: Optional[dt_time] = None,
     ) -> "TimeSeries":
         """
         Read overlapping series using a per-window knowledge_time cutoff.
@@ -543,7 +544,7 @@ class SeriesCollection:
             days_ahead: Calendar days before the window the forecast must be issued.
                         0 = same-day cutoff, 1 = day-ahead, 2 = two-days-ahead, etc.
             time_of_day: Latest time of day on the issue day (datetime.time, UTC).
-                         E.g., time(6, 0) means "by 06:00 on the issue day".
+                         E.g., dt_time(6, 0) means "by 06:00 on the issue day".
             start_valid: Start of valid time range. Also sets window alignment
                          (midnight of this date). Required in daily mode.
             end_valid: End of valid time range (optional)
@@ -566,7 +567,7 @@ class SeriesCollection:
             >>> # Daily shorthand: day-ahead, issued by 06:00
             >>> df = td.get_series("wind_forecast").read_relative(
             ...     days_ahead=1,
-            ...     time_of_day=time(6, 0),
+            ...     time_of_day=dt_time(6, 0),
             ...     start_valid=datetime(2026, 2, 1, tzinfo=timezone.utc),
             ...     end_valid=datetime(2026, 2, 28, tzinfo=timezone.utc),
             ... )
@@ -731,6 +732,25 @@ class SeriesCollection:
         )
 
 
+_WRITE_BATCH_RESERVED_COLS = frozenset({
+    # Columns that map to native batches_table fields when used in batch_cols
+    "workflow_id", "batch_start_time", "batch_finish_time",
+})
+
+_WRITE_RESERVED_COLS = frozenset({
+    # Required data columns
+    "valid_time", "value",
+    # Optional passthrough columns (forwarded to DB)
+    "knowledge_time", "valid_time_end", "change_time", "changed_by", "annotation",
+    # TimeDB-internal columns that appear in round-trip DataFrames (read → write)
+    "series_id", "batch_id",
+    # Series metadata — not a label dimension
+    "unit",
+    # Batch metadata columns — never auto-inferred as label dimensions
+    *_WRITE_BATCH_RESERVED_COLS,
+})
+
+
 class TimeDataClient:
     """
     High-level client for TimeDB with fluent API for series selection.
@@ -871,80 +891,212 @@ class TimeDataClient:
         retention: str = "medium",
     ) -> int:
         """
-        Create a new time series with metadata and labels.
-
-        Creates a new series in the database with the specified configuration.
-        Each series has a unique name+labels combination.
+        Get-or-create a single time series.
 
         Args:
-            name (str):
-                Series name/identifier (e.g., 'wind_power', 'solar_irradiance').
-                Human-readable identifier for the measurement.
+            name (str): Series name/identifier (e.g., ``'wind_power'``).
 
             unit (str, default="dimensionless"):
-                Canonical unit for the series. Examples:
-
-                - 'MW' - megawatts (power)
-                - 'kWh' - kilowatt-hours (energy)
-                - 'C' - celsius (temperature)
-                - 'dimensionless' - unitless values
+                Canonical unit. Examples: ``'MW'``, ``'kWh'``, ``'degC'``,
+                ``'dimensionless'``.
 
             labels (dict, optional):
-                Dictionary of key-value labels to differentiate series with same
-                name. Example: {"site": "Gotland", "turbine": "T01"}
-                Enables filtering and organization of related series.
+                Key-value labels to differentiate series with the same name.
+                Example: ``{"site": "Gotland", "turbine": "T01"}``
 
-            description (str, optional):
-                Human-readable description of the series and its contents.
+            description (str, optional): Human-readable description.
 
             overlapping (bool, default=False):
-                Whether this series stores versioned/revised data:
-
-                - False: Flat/immutable facts (e.g., meter readings, historical data)
-                - True: Versioned/revised data (e.g., forecasts, estimates)
-                  with knowledge_time tracking for changes over time
+                ``False`` for immutable facts; ``True`` for versioned forecasts
+                with ``knowledge_time`` tracking.
 
             retention (str, default="medium"):
-                Data retention policy (overlapping series only):
-
-                - 'short': 6 months (fast queries on recent data)
-                - 'medium': 3 years (balanced for forecasts)
-                - 'long': 5 years (historical archival)
+                Data retention policy: ``'short'`` (6 months),
+                ``'medium'`` (3 years), or ``'long'`` (5 years).
+                Only applies to overlapping series.
 
         Returns:
-            int: The series_id for this series. If a series with the same name+labels
-                already exists, the existing series_id is returned (get-or-create semantics).
+            int: The ``series_id``. If a series with the same name+labels already
+            exists, its existing id is returned (get-or-create semantics).
 
         Raises:
-            ValueError: If the timedb schema has not been created yet (run td.create() first)
+            ValueError: If the timedb schema has not been created yet.
 
         Example:
             >>> client = TimeDataClient()
-            >>> # Create a flat series for meter readings
             >>> series_id = client.create_series(
-            ...     name='power_consumption',
-            ...     unit='kWh',
-            ...     labels={'building': 'main', 'floor': '3'},
-            ...     description='Power consumption for floor 3 of main building',
-            ... )
-            >>> # Create an overlapping series for weather forecasts
-            >>> series_id = client.create_series(
-            ...     name='wind_speed',
-            ...     unit='m/s',
-            ...     labels={'site': 'offshore_1'},
-            ...     overlapping=True,
-            ...     retention='medium'
+            ...     'wind_power', unit='MW',
+            ...     labels={'site': 'Gotland'}, overlapping=True,
             ... )
         """
         return _create_series(
-            conninfo=self._conninfo,
             name=name,
             unit=unit,
             labels=labels,
             description=description,
             overlapping=overlapping,
             retention=retention,
+            conninfo=self._conninfo,
         )
+
+    def create_series_many(self, series: List[Dict[str, Any]]) -> List[int]:
+        """
+        Batch get-or-create multiple series in one round-trip.
+
+        Args:
+            series (list[dict]): Each dict may contain:
+
+                - **name** (str, required): Series name.
+                - **unit** (str, default ``"dimensionless"``): Canonical unit.
+                - **labels** (dict, optional): Key-value label dict.
+                - **description** (str, optional): Human-readable description.
+                - **overlapping** (bool, default ``False``): Versioned data flag.
+                - **retention** (str, default ``"medium"``): ``'short'``,
+                  ``'medium'``, or ``'long'``.
+
+        Returns:
+            List[int]: series_ids in the same order as the input.
+
+        Example:
+            >>> ids = client.create_series_many([
+            ...     {"name": "wind_power", "unit": "MW", "labels": {"turbine": "T01"}},
+            ...     {"name": "wind_power", "unit": "MW", "labels": {"turbine": "T02"}},
+            ... ])
+        """
+        return _create_series_many(series, conninfo=self._conninfo)
+
+    def write(
+        self,
+        df: Union[pd.DataFrame, pl.DataFrame],
+        name_col: str = "name",
+        label_cols: Optional[List[str]] = None,
+        batch_cols: Optional[List[str]] = None,
+        *,
+        knowledge_time: Optional[datetime] = None,
+        unit: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        batch_start_time: Optional[datetime] = None,
+        batch_finish_time: Optional[datetime] = None,
+        batch_params: Optional[dict] = None,
+    ) -> List[InsertResult]:
+        """
+        Insert multi-series data in long/tidy format.
+
+        All routing information is encoded in the DataFrame itself.  *name_col*
+        identifies which column becomes ``series_table.name``; *label_cols*
+        identifies which columns become ``series_table.labels``.  All series
+        must already exist — unknown (name, labels) combinations raise a
+        :class:`ValueError` before any data is written.
+
+        The DataFrame must contain ``valid_time`` and ``value`` columns in
+        addition to *name_col* and *label_cols*.  Optional passthrough columns
+        (``valid_time_end``, ``change_time``, ``changed_by``, ``annotation``)
+        are forwarded to the database unchanged if present.
+
+        Args:
+            df: Long-format DataFrame (Pandas or Polars) containing routing
+                and data columns.
+            name_col: Column whose values map to ``series_table.name``.
+                Defaults to ``"name"``.
+            label_cols: Columns whose values map to ``series_table.labels``.
+                If ``None`` (default), inferred as all columns not in
+                :data:`_WRITE_RESERVED_COLS`, not *name_col*, and not
+                *batch_cols*.  Pass ``[]`` explicitly for series with no labels.
+            batch_cols: Columns that define batch identity (provenance).  Each
+                unique combination of values becomes a distinct batch in the
+                database.  Three routing rules apply:
+
+                - Columns named ``workflow_id``, ``batch_start_time``, or
+                  ``batch_finish_time`` map to the corresponding native
+                  ``batches_table`` fields, overriding the same-named kwargs.
+                - All other columns are packed into ``batch_params`` JSON,
+                  merged on top of any global *batch_params* kwarg.
+                - Any field absent from *batch_cols* falls back to the
+                  corresponding kwarg (or its default).
+
+                Example — one batch per model run::
+
+                    td.write(df, batch_cols=["model"], workflow_id="nightly")
+            knowledge_time: Broadcast knowledge_time for all rows (mutually
+                exclusive with a ``knowledge_time`` column in *df*).
+            unit: Unit of the incoming values.  When provided, values are
+                converted from this unit to each series' canonical unit via pint.
+            workflow_id: Global batch workflow identifier (default for all
+                batches when *batch_cols* does not include ``workflow_id``).
+            batch_start_time: Global batch start time.
+            batch_finish_time: Global batch finish time.
+            batch_params: Global batch params dict — base for any per-batch
+                merge when *batch_cols* contains unreserved columns.
+
+        Returns:
+            List of :class:`InsertResult`, one per unique (series_id, batch_id)
+            combination.  Without *batch_cols* this is one per series; with
+            *batch_cols* it is N×M where N is the number of unique batch
+            combinations and M is the number of series.
+
+        Raises:
+            ValueError: If any (name, labels) combination has no matching series.
+            ValueError: If ``valid_time`` or ``value`` columns are missing.
+            ValueError: If *batch_cols* contains columns not present in *df*.
+            ValueError: If *batch_cols* overlaps with *label_cols*.
+            IncompatibleUnitError: If *unit* is incompatible with any series unit.
+
+        Example:
+            >>> # df columns: ['site', 'turbine_id', 'metric', 'valid_time', 'value']
+            >>> td.write(df, name_col="metric", label_cols=["site", "turbine_id"])
+        """
+        all_cols = list(df.columns)
+        if name_col not in all_cols:
+            raise ValueError(
+                f"Name column {name_col!r} not found in DataFrame. "
+                f"Rename your column to 'name' or pass name_col='your_column'."
+            )
+
+        # Validate unit column / kwarg mutual exclusion
+        if "unit" in all_cols and unit is not None:
+            raise ValueError(
+                "Cannot pass both a 'unit' column in the DataFrame and the unit= kwarg. "
+                "Use the column for per-row units, or the kwarg to broadcast a single unit."
+            )
+
+        # Validate batch_cols exist in the DataFrame
+        if batch_cols is not None:
+            missing_batch_cols = [c for c in batch_cols if c not in all_cols]
+            if missing_batch_cols:
+                raise ValueError(
+                    f"batch_cols column(s) not found in DataFrame: {missing_batch_cols}. "
+                    f"Available columns: {all_cols}"
+                )
+
+        if label_cols is None:
+            exclude = _WRITE_RESERVED_COLS | set(batch_cols or [])
+            label_cols = [c for c in all_cols if c not in exclude and c != name_col]
+
+        # Validate no overlap between batch_cols and label_cols
+        if batch_cols is not None:
+            overlap = set(batch_cols) & set(label_cols)
+            if overlap:
+                raise ValueError(
+                    f"batch_cols and label_cols cannot overlap. "
+                    f"Column(s) {sorted(overlap)} appear in both. "
+                    f"Columns cannot serve dual roles as batch dimension and series label."
+                )
+
+        return _write(
+            df,
+            name_col=name_col,
+            label_cols=label_cols,
+            batch_cols=batch_cols,
+            knowledge_time=knowledge_time,
+            data_unit=unit,
+            workflow_id=workflow_id,
+            batch_start_time=batch_start_time,
+            batch_finish_time=batch_finish_time,
+            batch_params=batch_params,
+            _pool=self._pool,
+        )
+
+
 
 # =============================================================================
 # Internal helper functions (not part of public API)
@@ -984,206 +1136,6 @@ def _get_connection(_pool: Optional[ConnectionPool] = None, conninfo: Optional[s
             yield conn
 
 
-def _resolve_pint_values(value_series: pd.Series, series_unit: str) -> pd.Series:
-    """Strip pint dtype from value series, converting units if needed.
-
-    Rules:
-    - Plain float64 (no pint dtype): pass through unchanged, no unit check
-    - Pint dimensionless: treat as series unit, strip to plain float64
-    - Pint with unit: convert to series_unit if compatible, error if not
-    - Same unit: strip to plain float64 (no conversion needed)
-
-    Returns:
-        Plain float64 Series (no pint dtype)
-
-    Raises:
-        IncompatibleUnitError: if units are not convertible
-        ImportError: if pint array detected but pint not installed
-    """
-    dtype = value_series.dtype
-
-    # No pint dtype → pass through (backward compatible, no unit check)
-    if not hasattr(dtype, 'units'):
-        return value_series
-
-    # Pint dtype detected — need pint for conversion
-    try:
-        import pint
-    except ImportError:
-        raise ImportError(
-            "Pint array detected but 'pint' is not installed. "
-            "Install with: pip install pint"
-        )
-
-    source_unit = str(dtype.units)
-
-    # Extract magnitudes (numpy array, no copy if already float64)
-    magnitudes = value_series.values.quantity.magnitude
-
-    # Same unit → no conversion needed
-    ureg = pint.application_registry.get()
-    if source_unit == series_unit:
-        return pd.Series(magnitudes, index=value_series.index, name=value_series.name)
-    if ureg.dimensionless == ureg.Unit(source_unit):
-        if series_unit != "dimensionless":
-            warnings.warn(
-                f"Inserting a pint dimensionless array into series with unit "
-                f"'{series_unit}'. Values will be stored as-is without conversion. "
-                f"Use a pint array with the correct unit to enable automatic conversion.",
-                UserWarning,
-                stacklevel=4,
-            )
-        return pd.Series(magnitudes, index=value_series.index, name=value_series.name)
-
-    # Check compatibility and convert
-    try:
-        factor = ureg.Quantity(1, source_unit).to(series_unit).magnitude
-    except pint.DimensionalityError:
-        raise IncompatibleUnitError(
-            f"Cannot convert '{source_unit}' to series unit '{series_unit}'. "
-            f"Units are not dimensionally compatible."
-        )
-
-    converted = magnitudes * factor
-    return pd.Series(converted, index=value_series.index, name=value_series.name)
-
-
-def _validate_df_columns(df: pd.DataFrame) -> None:
-    """Validate DataFrame column structure.
-
-    Accepted column sets:
-
-    - ``[valid_time, value]``
-    - ``[valid_time, valid_time_end, value]``
-    - ``[knowledge_time, valid_time, value]``
-    - ``[knowledge_time, valid_time, valid_time_end, value]``
-    """
-    cols = list(df.columns)
-    valid_sets = [
-        ['valid_time', 'value'],
-        ['valid_time', 'valid_time_end', 'value'],
-        ['knowledge_time', 'valid_time', 'value'],
-        ['knowledge_time', 'valid_time', 'valid_time_end', 'value'],
-    ]
-    if cols not in valid_sets:
-        raise ValueError(
-            f"DataFrame columns must be one of: {valid_sets}. "
-            f"Found {len(cols)} columns: {cols}"
-        )
-
-
-def _check_df_timezone(df: pd.DataFrame) -> None:
-    """Raise ValueError if any timestamp column contains timezone-naive datetimes."""
-    for col in ['knowledge_time', 'valid_time', 'valid_time_end']:
-        if col not in df.columns:
-            continue
-        s = df[col]
-        if hasattr(s.dtype, 'tz'):
-            if s.dtype.tz is None:
-                raise ValueError(
-                    f"{col} must be timezone-aware. Found timezone-naive datetime."
-                )
-        elif len(s) > 0:
-            first = s.iloc[0]
-            if isinstance(first, (pd.Timestamp, datetime)) and first.tzinfo is None:
-                raise ValueError(
-                    f"{col} must be timezone-aware. Found timezone-naive datetime."
-                )
-
-
-def _resolve_polars_units(df: pl.DataFrame, ts_unit: str, series_unit: str) -> pl.DataFrame:
-    """Scale the ``value`` column when *ts_unit* and *series_unit* differ.
-
-    Rules:
-    - Same unit → return unchanged.
-    - ``ts_unit == "dimensionless"`` → return unchanged, warn if *series_unit* is not dimensionless.
-    - Compatible units → multiply ``value`` by the pint conversion factor.
-    - Incompatible units → raise :class:`IncompatibleUnitError`.
-    """
-    if ts_unit == series_unit:
-        return df
-    if ts_unit == "dimensionless":
-        if series_unit != "dimensionless":
-            warnings.warn(
-                f"Inserting a dimensionless TimeSeries into series with unit "
-                f"'{series_unit}'. Values will be stored as-is without conversion. "
-                f"Set the unit on your TimeSeries to enable automatic conversion.",
-                UserWarning,
-                stacklevel=4,
-            )
-        return df
-    try:
-        import pint
-    except ImportError:
-        raise ImportError(
-            "pint is required for automatic unit conversion. "
-            "Install with: pip install pint"
-        )
-    ureg = pint.application_registry.get()
-    try:
-        factor = float(ureg.Quantity(1, ts_unit).to(series_unit).magnitude)
-    except pint.DimensionalityError:
-        raise IncompatibleUnitError(
-            f"Cannot convert '{ts_unit}' to '{series_unit}'. "
-            f"Units are not dimensionally compatible."
-        )
-    return df.with_columns(pl.col("value") * factor)
-
-
-def _normalize_insert_input(
-    data: Union[pd.DataFrame, "TimeSeries"],
-    series_unit: str,
-    knowledge_time: Optional[datetime] = None,
-) -> Tuple[pa.Table, DataShape]:
-    """Convert DataFrame or TimeSeries insert input to a validated ``(pa.Table, DataShape)``.
-
-    For :class:`~timedb.timeseries.TimeSeries` inputs, calls
-    :meth:`~timedb.timeseries.TimeSeries.validate_for_insert` and applies unit
-    conversion if needed.  For ``pd.DataFrame`` inputs, performs column
-    validation, timezone checks, pint stripping, and Arrow conversion.
-
-    After conversion the table is guaranteed to contain a ``knowledge_time``
-    column (baked in Python, never NULL).  If ``knowledge_time`` is provided
-    as a keyword argument *and* the data already contains a ``knowledge_time``
-    column a :class:`ValueError` is raised to prevent ambiguity.
-
-    Returns:
-        ``(pa.Table, DataShape)`` tuple ready to pass to :func:`_insert`.
-    """
-    if isinstance(data, TimeSeries):
-        df, shape = data.validate_for_insert()
-        df = _resolve_polars_units(df, ts_unit=data.unit, series_unit=series_unit)
-        table = df.to_arrow()
-    else:
-        # --- pd.DataFrame path ---
-        _validate_df_columns(data)
-        _check_df_timezone(data)
-
-        resolved = _resolve_pint_values(data['value'], series_unit)
-        if resolved is not data['value']:
-            data = data.copy()
-            data['value'] = resolved
-
-        # from_pandas infers VERSIONED when knowledge_time column is present
-        ts = TimeSeries.from_pandas(data)
-        table = ts.df.to_arrow()
-        shape = ts.shape
-
-    # Ambiguity check: KT in data AND as kwarg is not allowed
-    if "knowledge_time" in table.schema.names and knowledge_time is not None:
-        raise ValueError(
-            "Ambiguous knowledge_time: the data already contains a 'knowledge_time' column "
-            "and knowledge_time was also passed as a keyword argument. "
-            "Remove the kwarg or the column."
-        )
-
-    # Bake knowledge_time into the table if not already present
-    if "knowledge_time" not in table.schema.names:
-        kt = knowledge_time if knowledge_time is not None else datetime.now(timezone.utc)
-        kt_arr = pa.array([kt] * len(table), type=pa.timestamp("us", tz="UTC"))
-        table = table.append_column("knowledge_time", kt_arr)
-
-    return table, shape
 
 
 def _create(
@@ -1204,6 +1156,23 @@ def _create(
     )
 
 
+def _create_series_many(
+    series_specs: List[Dict[str, Any]],
+    conninfo: Optional[str] = None,
+) -> List[int]:
+    """Core batch get-or-create. Single DB round-trip."""
+    if conninfo is None:
+        conninfo = _get_conninfo()
+    try:
+        with psycopg.connect(conninfo) as conn:
+            return db.series.create_series(conn, series_specs)
+    except (errors.UndefinedTable, errors.UndefinedObject) as e:
+        raise ValueError(
+            "TimeDB tables do not exist. Please create the schema first by running:\n"
+            "  td.create()"
+        ) from e
+
+
 def _create_series(
     name: str,
     unit: str = "dimensionless",
@@ -1213,40 +1182,13 @@ def _create_series(
     retention: str = "medium",
     conninfo: Optional[str] = None,
 ) -> int:
-    """
-    Create a new time series.
-
-    Args:
-        name: Parameter name (e.g., 'wind_power', 'temperature')
-        unit: Canonical unit for the series
-        labels: Dictionary of labels
-        description: Optional description
-        overlapping: Whether this series stores versioned data (default: False)
-        retention: 'short', 'medium', or 'long' (default: 'medium')
-        conninfo: Optional connection string (falls back to env vars if not provided)
-
-    Returns:
-        The series_id (int) for the newly created series
-    """
-    if conninfo is None:
-        conninfo = _get_conninfo()
-
-    try:
-        with psycopg.connect(conninfo) as conn:
-            return db.series.create_series(
-                conn,
-                name=name,
-                unit=unit,
-                labels=labels,
-                description=description,
-                overlapping=overlapping,
-                retention=retention,
-            )
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        raise ValueError(
-            "TimeDB tables do not exist. Please create the schema first by running:\n"
-            "  td.create()"
-        ) from e
+    """Single-series convenience wrapper around _create_series_many."""
+    return _create_series_many(
+        [{"name": name, "unit": unit, "labels": labels,
+          "description": description, "overlapping": overlapping,
+          "retention": retention}],
+        conninfo=conninfo,
+    )[0]
 
 
 def _delete(conninfo: Optional[str] = None) -> None:
@@ -1437,52 +1379,56 @@ def _read_overlapping_relative(
 
 
 def _insert(
-    table: pa.Table,
-    shape: DataShape,
+    data: Union[pd.DataFrame, "TimeSeries"],
+    series_unit: str,
     series_id: int,
     routing: Dict[str, Any],
+    knowledge_time: Optional[datetime] = None,
     workflow_id: Optional[str] = None,
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
+    data_unit: Optional[str] = None,
     _pool: Optional[ConnectionPool] = None,
 ) -> InsertResult:
     """
-    Insert an Arrow table of time series data into the database.
+    Normalize, decorate, and insert time series data into the database.
 
-    Accepts a ``(pa.Table, DataShape)`` produced by :func:`_normalize_insert_input`
-    and routes it to the correct Postgres table via :func:`db.insert.insert_table`.
-    The table must already contain a ``knowledge_time`` column (guaranteed by
-    :func:`_normalize_insert_input`).  Both flat and overlapping series accept
-    SIMPLE and VERSIONED shapes; per-row knowledge_times are stored directly on
-    each row in the target table.
+    Generates a UUIDv7 ``batch_id`` here (SDK layer owns the ID), then delegates
+    to :func:`insert_pipeline.normalize_insert_input` which stamps ``batch_id``,
+    ``series_id``, and ``knowledge_time`` into the Polars DataFrame in a single
+    Rust pass before converting to Arrow.  The resulting ``pa.Table`` contains
+    all columns and is passed directly to :func:`db.insert.insert_table`.
     """
-    conninfo = _get_conninfo()
-
-    if workflow_id is None:
-        workflow_id = "sdk-workflow"
-    if batch_start_time is None:
-        batch_start_time = datetime.now(timezone.utc)
-    elif batch_start_time.tzinfo is None:
-        raise ValueError("batch_start_time must be timezone-aware")
-
     if series_id is None:
         raise ValueError("series_id must be provided")
     if routing is None:
         raise ValueError("routing must be provided")
 
+    batch_id = uuid7()
+
+    batch_ctx = BatchContext(
+        batch_id=str(batch_id),
+        workflow_id=workflow_id if workflow_id is not None else "sdk-workflow",
+        batch_start_time=batch_start_time if batch_start_time is not None else datetime.now(timezone.utc),
+        batch_finish_time=batch_finish_time,
+        batch_params=batch_params,
+    )
+    if batch_ctx.batch_start_time.tzinfo is None:
+        raise ValueError("batch_start_time must be timezone-aware")
+
+    table, _shape = insert_pipeline.normalize_insert_input(
+        data,
+        series_unit,
+        series_id=series_id,
+        batch_id=batch_ctx.batch_id,
+        knowledge_time=knowledge_time,
+        data_unit=data_unit,
+    )
+
     try:
-        with _get_connection(_pool, conninfo) as conn:
-            result = db.insert.insert_table(
-                conn,
-                table=table,
-                workflow_id=workflow_id,
-                batch_start_time=batch_start_time,
-                batch_finish_time=batch_finish_time,
-                batch_params=batch_params,
-                series_id=series_id,
-                routing=routing,
-            )
+        with _get_connection(_pool, _get_conninfo()) as conn:
+            db.insert.insert_table(conn, table=table, routing=routing, batch_ctx=batch_ctx)
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         raise ValueError(
             "TimeDB tables do not exist. Please create the schema first by running:\n"
@@ -1490,11 +1436,244 @@ def _insert(
         ) from e
 
     return InsertResult(
-        batch_id=result,
-        workflow_id=workflow_id,
+        batch_id=batch_id,
+        workflow_id=batch_ctx.workflow_id,
         series_id=series_id,
     )
 
+
+def _build_multi_batch_contexts(
+    pl_df: pl.DataFrame,
+    batch_cols: List[str],
+    *,
+    global_workflow_id: Optional[str],
+    global_batch_start_time: Optional[datetime],
+    global_batch_finish_time: Optional[datetime],
+    global_batch_params: Optional[dict],
+) -> Tuple[Dict[str, BatchContext], pl.DataFrame]:
+    batch_ctx_map: Dict[str, BatchContext] = {}
+    batch_rows: List[dict] = []
+    for row in pl_df.select(batch_cols).unique().rows(named=True):
+        bid = str(uuid7())
+        b_start = row.get("batch_start_time", global_batch_start_time) or datetime.now(timezone.utc)
+        if b_start.tzinfo is None:
+            raise ValueError("batch_start_time must be timezone-aware")
+        unreserved = {k: v for k, v in row.items() if k not in _WRITE_BATCH_RESERVED_COLS}
+        batch_ctx_map[bid] = BatchContext(
+            batch_id=bid,
+            workflow_id=row.get("workflow_id", global_workflow_id) or "sdk-workflow",
+            batch_start_time=b_start,
+            batch_finish_time=row.get("batch_finish_time", global_batch_finish_time),
+            batch_params={**(global_batch_params or {}), **unreserved} or None,
+        )
+        batch_rows.append({**row, "_batch_id": bid})
+    schema = {**{col: pl_df.schema[col] for col in batch_cols}, "_batch_id": pl.String}
+    return batch_ctx_map, pl.DataFrame(batch_rows, schema=schema)
+
+
+def _write(
+    df: Union[pd.DataFrame, pl.DataFrame],
+    name_col: str,
+    label_cols: List[str],
+    batch_cols: Optional[List[str]] = None,
+    *,
+    knowledge_time: Optional[datetime] = None,
+    data_unit: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    batch_start_time: Optional[datetime] = None,
+    batch_finish_time: Optional[datetime] = None,
+    batch_params: Optional[dict] = None,
+    _pool: Optional[ConnectionPool] = None,
+) -> List[InsertResult]:
+    """
+    Core multi-series write implementation.
+
+    Accepts long-format data (all routing info in columns), resolves series
+    identities, builds a vectorized Polars mapping, and inserts all partitions
+    in one atomic transaction.
+
+    Args:
+        df: Long-format DataFrame with *name_col*, *label_cols*, ``valid_time``,
+            ``value``, and optional audit columns.
+        name_col: Column whose values map to ``series_table.name``.
+        label_cols: Columns whose values map to ``series_table.labels``.
+        batch_cols: Columns that define batch identity (provenance).
+        knowledge_time: Broadcast knowledge_time (mutually exclusive with a
+            ``knowledge_time`` column in *df*).
+        data_unit: Unit of the incoming values for pint conversion.
+        workflow_id, batch_start_time, batch_finish_time, batch_params:
+            Global batch metadata (defaults for each batch).
+        _pool: Optional connection pool.
+
+    Returns:
+        List of :class:`InsertResult`, one per unique (series_id, batch_id) pair.
+
+    Raises:
+        ValueError: If any (name, labels) combination has no matching series.
+        IncompatibleUnitError: If *data_unit* is incompatible with any series unit.
+    """
+
+    t_write_start = perf_counter()
+
+    if batch_start_time is not None and batch_start_time.tzinfo is None:
+        raise ValueError("batch_start_time must be timezone-aware")
+
+    # ── Normalize to Polars immediately ──────────────────────────────────────
+    pl_df = pl.from_pandas(df) if isinstance(df, pd.DataFrame) else df
+
+    # ── Detect per-row unit column ────────────────────────────────────────────
+    has_unit_col = "unit" in pl_df.columns
+    if has_unit_col and pl_df["unit"].null_count() > 0:
+        raise ValueError(
+            "The 'unit' column contains null values. "
+            "Every row must specify a unit. Use 'dimensionless' for unit-free values."
+        )
+
+    # ── Extract unique routing combos + identities ────────────────────────────
+    identity_cols = [name_col] + label_cols
+    mapping_keys_cols = identity_cols + (["unit"] if has_unit_col else [])
+    unique_df = pl_df.select(mapping_keys_cols).unique()
+    mapping_combos = unique_df.to_dicts()
+    identity_df = unique_df.select(identity_cols).unique() if has_unit_col else unique_df
+    identities = [(row[0], dict(zip(label_cols, row[1:]))) for row in identity_df.iter_rows()]
+
+    # ── Resolve series in one DB round-trip ───────────────────────────────────
+    t_resolve_start = perf_counter()
+    registry = SeriesRegistry()
+    with _get_connection(_pool, _get_conninfo()) as conn:
+        found = db.series.resolve_series(conn, identities, registry)
+    profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
+
+    if missing := [
+        f"name={n!r}, labels={l!r}"
+        for n, l in identities
+        if db.series._make_series_key(n.strip(), l) not in found
+    ]:
+        raise ValueError(
+            f"No series found for {len(missing)} identity combination(s):\n"
+            + "\n".join(f"  {m}" for m in missing)
+        )
+
+    # ── Build mapping DataFrame (unit factors + routing metadata) ─────────────
+    # One row per unique (name, labels[, unit]) combo.  pint is only invoked
+    # O(unique combos) times regardless of DataFrame size.
+    mapping_rows: Dict[str, list] = {
+        name_col: [], **{lc: [] for lc in label_cols},
+        "_series_id": [], "_unit": [], "_factor": [],
+        "_target_table": [], "_overlapping": [], "_retention": [],
+    }
+    if has_unit_col:
+        mapping_rows["unit"] = []
+
+    for row in mapping_combos:
+        name = row[name_col]
+        labels = {k: row[k] for k in label_cols}
+        sid = found[db.series._make_series_key(name.strip(), labels)]
+        meta = registry.get_cached(sid)
+        series_unit = meta["unit"]
+        incoming_unit = row["unit"] if has_unit_col else (data_unit or "dimensionless")
+
+        factor = insert_pipeline._compute_unit_factor(incoming_unit, series_unit)
+        if factor is None and incoming_unit == "dimensionless" and series_unit != "dimensionless":
+            warnings.warn(
+                f"Inserting dimensionless values into series with unit '{series_unit}' "
+                f"(name={name!r}, labels={labels!r}). Values stored as-is without conversion.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        mapping_rows[name_col].append(name)
+        for lc in label_cols:
+            mapping_rows[lc].append(labels.get(lc))
+        if has_unit_col:
+            mapping_rows["unit"].append(row["unit"])
+        mapping_rows["_series_id"].append(sid)
+        mapping_rows["_unit"].append(series_unit)
+        mapping_rows["_factor"].append(factor if factor is not None else 1.0)
+        mapping_rows["_target_table"].append(meta["table"])
+        mapping_rows["_overlapping"].append(meta["overlapping"])
+        mapping_rows["_retention"].append(meta["retention"])
+
+    # Derive routing col types from pl_df.schema (labels can be any type).
+    _mapping_schema = {col: pl_df.schema[col] for col in mapping_keys_cols}
+    _mapping_schema.update({
+        "_series_id": pl.Int64,
+        "_unit": pl.String,
+        "_factor": pl.Float64,
+        "_target_table": pl.String,
+        "_overlapping": pl.Boolean,
+        "_retention": pl.String,
+    })
+    mapping_df = pl.DataFrame(mapping_rows, schema=_mapping_schema)
+
+    # ── Build batch context(s) and normalize/partition ────────────────────────
+    t_normalize_start = perf_counter()
+    if batch_cols:
+        batch_ctx_map, batch_mapping_df = _build_multi_batch_contexts(
+            pl_df=pl_df,
+            batch_cols=batch_cols,
+            global_workflow_id=workflow_id,
+            global_batch_start_time=batch_start_time,
+            global_batch_finish_time=batch_finish_time,
+            global_batch_params=batch_params,
+        )
+        partitioned = insert_pipeline.normalize_write_input(
+            pl_df,
+            name_col=name_col,
+            label_cols=label_cols,
+            mapping_df=mapping_df,
+            batch_mapping=batch_mapping_df,
+            batch_cols=batch_cols,
+            knowledge_time=knowledge_time,
+        )
+        result_df = (
+            pl_df.select(identity_cols + batch_cols).unique()
+            .join(mapping_df.select(identity_cols + ["_series_id"]), on=identity_cols)
+            .join(batch_mapping_df.select(batch_cols + ["_batch_id"]), on=batch_cols)
+            .select(["_series_id", "_batch_id"])
+            .unique()
+        )
+    else:
+        single_batch_ctx = BatchContext(
+            batch_id=str(uuid7()),
+            workflow_id=workflow_id if workflow_id is not None else "sdk-workflow",
+            batch_start_time=batch_start_time if batch_start_time is not None else datetime.now(timezone.utc),
+            batch_finish_time=batch_finish_time,
+            batch_params=batch_params,
+        )
+        batch_ctx_map = {single_batch_ctx.batch_id: single_batch_ctx}
+        partitioned = insert_pipeline.normalize_write_input(
+            pl_df,
+            name_col=name_col,
+            label_cols=label_cols,
+            mapping_df=mapping_df,
+            batch_id=single_batch_ctx.batch_id,
+            knowledge_time=knowledge_time,
+        )
+        result_df = mapping_df.select(["_series_id", pl.lit(single_batch_ctx.batch_id).alias("_batch_id")]).unique()
+    profiling._record(profiling.PHASE_WRITE_NORMALIZE, perf_counter() - t_normalize_start)
+
+    # ── Insert all partitions in one transaction ───────────────────────────────
+    try:
+        with _get_connection(_pool, _get_conninfo()) as conn:
+            db.insert.insert_tables(conn, partitioned=partitioned, batch_contexts=batch_ctx_map)
+    except (errors.UndefinedTable, errors.UndefinedObject) as e:
+        raise ValueError(
+            "TimeDB tables do not exist. Please create the schema first by running:\n"
+            "  td.create()"
+        ) from e
+
+    # ── Build results: one InsertResult per (series_id, batch_id) pair ────────
+    results = [
+        InsertResult(
+            series_id=sid,
+            batch_id=uuid.UUID(bid),
+            workflow_id=batch_ctx_map[bid].workflow_id,
+        )
+        for sid, bid in result_df.iter_rows()
+    ]
+    profiling._record(profiling.PHASE_WRITE_TOTAL, perf_counter() - t_write_start)
+    return results
 
 
 def _list_batches(

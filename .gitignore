@@ -75,8 +75,13 @@ loc_graph.py
 architecture/
 benchmarks/
 benchmark2.0/
+benchmark3.0/
 clickhouse/
 benchmark_many_series/
+examples/pipeline_animation.py
+examples/design_concepts.py
+examples/block_samples.py
+examples/routing_samples.py
 
 # ClickHouse server data dirs (created when clickhouse-server runs from repo root)
 data/

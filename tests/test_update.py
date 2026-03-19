@@ -8,7 +8,7 @@ import pandas as pd
 def _setup_overlapping_series(td, sample_datetime):
     """Helper: create a overlapping series, insert one value, return (td, result, series_id)."""
     series_id = td.create_series(
-        name="forecast", unit="dimensionless",
+        "forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -174,7 +174,7 @@ def test_update_batch_id_raises(td, sample_datetime):
 def test_update_nonexistent_record_without_value(td, sample_datetime):
     """Test that updating a non-existent record without value raises error."""
     series_id = td.create_series(
-        name="forecast", unit="dimensionless",
+        "forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -199,7 +199,7 @@ def test_update_nonexistent_record_without_value(td, sample_datetime):
 def test_update_nonexistent_record_with_value(td, sample_datetime):
     """Test that updating a non-existent record always raises an error (use insert() instead)."""
     series_id = td.create_series(
-        name="forecast", unit="dimensionless",
+        "forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -308,7 +308,7 @@ def test_update_creates_new_version(td, clean_db, sample_datetime):
 def _setup_flat_series(td, sample_datetime):
     """Helper: create a flat series, insert one value, return (td, series_id)."""
     series_id = td.create_series(
-        name="meter_reading", unit="dimensionless", overlapping=False,
+        "meter_reading", unit="dimensionless", overlapping=False,
     )
 
     df = pd.DataFrame({

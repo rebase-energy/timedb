@@ -13,11 +13,9 @@ name = "timedb"
 version = "0.1.4"
 description = "timedb — opinionated schema & API for time series"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -46,7 +44,6 @@ test = [
   "pytest>=8.4.2",
   "pytest-cov>=5.0.0",
   "pint>=0.23",
-  "pint-pandas>=0.6",
   "nbmake>=1.5",
 ]
 notebooks = [
@@ -54,10 +51,10 @@ notebooks = [
   "jupyter>=1.1.1",
   "notebook>=7.5.2",
   "seaborn>=0.13.2",
+  "pint>=0.23",
 ]
 pint = [
   "pint>=0.23",
-  "pint-pandas>=0.6",
 ]
 docs = [
   "sphinx>=7.4.7",

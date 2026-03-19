@@ -28,7 +28,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-import pandas as pd
+import polars as pl
 
 from .sdk import TimeDataClient
 
@@ -280,10 +280,11 @@ async def insert_values(request_body: InsertRequest, request: Request):
                 row["valid_time_end"] = _ensure_tz(dp.valid_time_end)
             rows.append(row)
 
-        df = pd.DataFrame(rows)
-        df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
-        if "valid_time_end" in df.columns:
-            df["valid_time_end"] = pd.to_datetime(df["valid_time_end"], utc=True)
+        has_end = any("valid_time_end" in row for row in rows)
+        schema = {"valid_time": pl.Datetime("us", "UTC"), "value": pl.Float64}
+        if has_end:
+            schema["valid_time_end"] = pl.Datetime("us", "UTC")
+        df = pl.DataFrame(rows, schema=schema)
 
         # Insert via SDK
         result = collection.insert(
@@ -356,16 +357,11 @@ async def read_values(
         if ts.num_rows == 0:
             return {"count": 0, "data": []}
 
-        # Convert TimeSeries → DataFrame → JSON-serializable records
-        df_reset = ts.to_pandas().reset_index()
-        records = df_reset.to_dict(orient="records")
-
-        for record in records:
-            for key, value in record.items():
-                if isinstance(value, (pd.Timestamp, datetime)):
-                    record[key] = value.isoformat()
-                elif pd.isna(value):
-                    record[key] = None
+        # Convert TimeSeries → Polars DataFrame → JSON-serializable records
+        df_pl = ts.to_polars()
+        dt_cols = [c for c, t in zip(df_pl.columns, df_pl.dtypes) if isinstance(t, pl.Datetime)]
+        df_pl = df_pl.with_columns([pl.col(c).dt.to_string("%Y-%m-%dT%H:%M:%S%z") for c in dt_cols])
+        records = df_pl.to_dicts()
 
         return {"count": len(records), "data": records}
     except ValueError as e:
@@ -468,7 +464,7 @@ async def create_series(request_body: CreateSeriesRequest, request: Request):
     try:
         td = _get_client(request)
         series_id = td.create_series(
-            name=request_body.name,
+            request_body.name,
             description=request_body.description,
             unit=request_body.unit,
             labels=request_body.labels,

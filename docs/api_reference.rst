@@ -21,7 +21,13 @@ entry point for most use cases (``import timedb as td``):
 .. autofunction:: timedb.create
 .. autofunction:: timedb.delete
 .. autofunction:: timedb.create_series
+.. autofunction:: timedb.create_series_many
 .. autofunction:: timedb.get_series
+
+Multi-Series Write
+''''''''''''''''''
+
+.. autofunction:: timedb.write
 
 Main Client
 ~~~~~~~~~~~
@@ -259,7 +265,13 @@ For additional CLI commands, see :doc:`cli`.
 Units and Validation
 --------------------
 
-Unit handling is integrated into the SDK. The ``IncompatibleUnitError`` exception
-is raised when pint unit conversion fails (e.g., inserting kg values into an MW series).
+Unit conversion is integrated into both ingestion paths. Pass ``unit=`` to ``insert()``
+or the ``write*`` methods to declare the incoming unit; TimeDB uses pint to compute a
+scalar conversion factor to the series' canonical unit before writing.
+:class:`~timedb.IncompatibleUnitError` is raised before any data reaches the database
+when units are dimensionally incompatible (e.g., ``"kg"`` into an ``"MW"`` series).
 
-See the :doc:`SDK documentation <sdk>` for details on pint unit support.
+Note: pint-pandas array dtype support was removed. Only scalar ``unit=`` kwarg conversion
+is supported. ``TimeSeries`` objects carry their own unit and are converted automatically.
+
+See the :doc:`SDK documentation <sdk>` for full details.

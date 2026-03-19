@@ -27,6 +27,12 @@ PHASE_INSERT_COPY          = "insert.copy"           # COPY FROM STDIN (bulk tra
 PHASE_INSERT_UPSERT        = "insert.upsert"         # CTE + upsert merge (flat only)
 PHASE_INSERT_TOTAL         = "insert.total"          # Full insert_table() wall time
 
+# ── Write phase constants ─────────────────────────────────────────────────────
+
+PHASE_WRITE_SERIES_RESOLVE = "write.series_resolve"  # resolve_series() DB call (one round-trip for all series)
+PHASE_WRITE_NORMALIZE      = "write.normalize"       # normalize_write_input() Polars join + decorate pass
+PHASE_WRITE_TOTAL          = "write.total"           # Full _write() wall time (excludes SDK overhead above _write)
+
 # ── Read phase constants ──────────────────────────────────────────────────────
 
 PHASE_READ_SQL_EXEC         = "read.sql_exec"          # cursor.execute() — SQL planning + execution in Postgres

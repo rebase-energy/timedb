@@ -14,8 +14,8 @@ from timedb import TimeSeries, DataShape
 
 def test_read_flat_via_sdk(td, sample_datetime):
     """Test reading flat via SDK returns a pivoted DataFrame."""
-    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
-    td.create_series(name="humidity", unit="dimensionless", overlapping=False)
+    td.create_series("temperature", unit="dimensionless", overlapping=False)
+    td.create_series("humidity", unit="dimensionless", overlapping=False)
 
     df_temp = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -42,7 +42,7 @@ def test_read_flat_via_sdk(td, sample_datetime):
 
 def test_read_flat_db_layer(td, clean_db, sample_datetime):
     """Test reading flat via the db.read layer."""
-    series_id = td.create_series(name="power", unit="dimensionless", overlapping=False)
+    series_id = td.create_series("power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -65,7 +65,7 @@ def test_read_flat_db_layer(td, clean_db, sample_datetime):
 
 def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
     """Test filtering flat by valid_time range."""
-    series_id = td.create_series(name="power", unit="dimensionless", overlapping=False)
+    series_id = td.create_series("power", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
         "valid_time": [
@@ -102,7 +102,7 @@ def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
 def test_read_overlapping_latest_via_sdk(td, sample_datetime):
     """Test reading latest overlapping via SDK."""
     td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -125,7 +125,7 @@ def test_read_overlapping_latest_via_sdk(td, sample_datetime):
 def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
     """Test reading forecast history via SDK (overlapping=True)."""
     td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -161,7 +161,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
 def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
     """Test reading overlapping forecast history via the db.read layer."""
     series_id = td.create_series(
-        name="forecast", unit="dimensionless",
+        "forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -195,7 +195,7 @@ def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
 def test_read_overlapping_latest_picks_newest(td, sample_datetime):
     """Test that latest overlapping read picks the most recent knowledge_time."""
     td.create_series(
-        name="price", unit="dimensionless",
+        "price", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -234,7 +234,7 @@ def test_read_overlapping_latest_picks_newest(td, sample_datetime):
 def test_read_relative_basic_via_sdk(td, sample_datetime):
     """read_relative returns only forecasts issued before the per-window cutoff."""
     td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -267,7 +267,7 @@ def test_read_relative_basic_via_sdk(td, sample_datetime):
 def test_read_relative_picks_latest_before_cutoff(td, sample_datetime):
     """read_relative picks the latest forecast that is still before the cutoff."""
     td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -301,7 +301,7 @@ def test_read_relative_picks_latest_before_cutoff(td, sample_datetime):
 def test_read_relative_multi_window(td, sample_datetime):
     """read_relative applies the cutoff independently per window."""
     td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -352,7 +352,7 @@ def test_read_relative_multi_window(td, sample_datetime):
 def test_read_relative_empty_when_no_qualifying_forecasts(td, sample_datetime):
     """read_relative returns empty DataFrame when all forecasts are after the cutoff."""
     td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -376,7 +376,7 @@ def test_read_relative_empty_when_no_qualifying_forecasts(td, sample_datetime):
 
 def test_read_relative_raises_for_flat_series(td, sample_datetime):
     """read_relative raises ValueError for non-overlapping (flat) series."""
-    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
+    td.create_series("temperature", unit="dimensionless", overlapping=False)
     td.get_series("temperature").insert(
         data=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
     )
@@ -393,7 +393,7 @@ def test_read_relative_raises_for_flat_series(td, sample_datetime):
 def test_read_relative_db_layer(td, clean_db, sample_datetime):
     """read_overlapping_relative can be called directly via the db layer."""
     series_id = td.create_series(
-        name="wind_forecast", unit="dimensionless",
+        "wind_forecast", unit="dimensionless",
         overlapping=True, retention="medium",
     )
 
@@ -426,7 +426,7 @@ def test_read_relative_db_layer(td, clean_db, sample_datetime):
 
 def test_read_relative_daily_basic(td, sample_datetime):
     """days_ahead + time_of_day shorthand selects the correct forecast batch."""
-    td.create_series(name="wind_forecast", unit="dimensionless",
+    td.create_series("wind_forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     # Window start = midnight of sample_datetime's day
@@ -456,7 +456,7 @@ def test_read_relative_daily_basic(td, sample_datetime):
 
 def test_read_relative_daily_same_day(td, sample_datetime):
     """days_ahead=0 uses a same-day cutoff at time_of_day."""
-    td.create_series(name="price", unit="dimensionless",
+    td.create_series("price", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     window_start = sample_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -485,7 +485,7 @@ def test_read_relative_daily_same_day(td, sample_datetime):
 
 def test_read_relative_daily_raises_mixed_params(td):
     """Mixing (days_ahead, time_of_day) with (window_length, issue_offset) raises ValueError."""
-    td.create_series(name="wind_forecast", unit="dimensionless",
+    td.create_series("wind_forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     with pytest.raises(ValueError, match="Cannot mix"):
@@ -498,7 +498,7 @@ def test_read_relative_daily_raises_mixed_params(td):
 
 def test_read_relative_daily_raises_without_start_valid(td):
     """Using days_ahead/time_of_day without start_valid raises ValueError."""
-    td.create_series(name="wind_forecast", unit="dimensionless",
+    td.create_series("wind_forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     with pytest.raises(ValueError, match="start_valid is required"):
@@ -514,7 +514,7 @@ def test_read_relative_daily_raises_without_start_valid(td):
 
 def test_read_mode_history_hides_corrections(td, sample_datetime):
     """overlapping=True returns one row per (knowledge_time, valid_time) — the latest correction."""
-    td.create_series(name="forecast", unit="dimensionless",
+    td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     result = td.get_series("forecast").insert(
@@ -539,7 +539,7 @@ def test_read_mode_history_hides_corrections(td, sample_datetime):
 
 def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
     """overlapping=True, include_updates=True exposes every row including all corrections."""
-    td.create_series(name="forecast", unit="dimensionless",
+    td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     result = td.get_series("forecast").insert(
@@ -565,7 +565,7 @@ def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
 
 def test_read_include_updates_overlapping(td, sample_datetime):
     """include_updates=True for overlapping shows all corrections for the winning knowledge_time only."""
-    td.create_series(name="forecast", unit="dimensionless",
+    td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     # Insert two batches (two knowledge_times)
@@ -605,7 +605,7 @@ def test_read_include_updates_overlapping(td, sample_datetime):
 
 def test_read_include_updates_flat(td, sample_datetime):
     """include_updates=True for flat series returns [valid_time, change_time] index with audit columns."""
-    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
+    td.create_series("temperature", unit="dimensionless", overlapping=False)
 
     td.get_series("temperature").insert(
         data=pd.DataFrame({
@@ -637,7 +637,7 @@ def test_read_include_updates_flat(td, sample_datetime):
 
 def test_read_overlapping_true_raises_for_flat(td, sample_datetime):
     """overlapping=True on a flat series raises ValueError."""
-    td.create_series(name="temperature", unit="dimensionless", overlapping=False)
+    td.create_series("temperature", unit="dimensionless", overlapping=False)
 
     td.get_series("temperature").insert(
         data=pd.DataFrame({"valid_time": [sample_datetime], "value": [20.0]})
@@ -649,7 +649,7 @@ def test_read_overlapping_true_raises_for_flat(td, sample_datetime):
 
 def test_read_relative_picks_latest_correction(td, sample_datetime):
     """read_relative returns the corrected value when the correction shares knowledge_time."""
-    td.create_series(name="forecast", unit="dimensionless",
+    td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
     kt = sample_datetime - timedelta(hours=13)
