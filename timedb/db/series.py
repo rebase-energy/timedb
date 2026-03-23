@@ -5,7 +5,7 @@ Handles creation, retrieval, and routing of series with their canonical units an
 Provides SeriesRegistry for caching series metadata across SDK, API, and DB layer.
 """
 import json
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import psycopg
 
 
@@ -143,56 +143,141 @@ class SeriesRegistry:
         return self._cache
 
 
+def _make_series_key(name: str, labels: dict) -> Tuple[str, str]:
+    """Canonical, hashable key for a (name, labels) pair."""
+    return (name, json.dumps(labels, sort_keys=True))
+
+
+def resolve_series(
+    conn: psycopg.Connection,
+    identities: List[Tuple[str, Dict[str, Any]]],
+    registry: "SeriesRegistry",
+) -> Dict[Tuple[str, str], int]:
+    """
+    Bulk lookup of series_ids for a list of (name, labels_dict) pairs.
+
+    Uses a single ``WHERE name = ANY(%s)`` round-trip, then filters by labels
+    in Python.  Populates *registry* with all matching rows.
+
+    Args:
+        conn: psycopg connection.
+        identities: List of ``(name, labels_dict)`` pairs to resolve.
+        registry: SeriesRegistry instance — matching rows are cached into it.
+
+    Returns:
+        ``{(name, labels_json_canonical): series_id}`` for every found pair.
+        Missing entries are simply absent from the dict; the caller is
+        responsible for raising an error on any missing series.
+    """
+    if not identities:
+        return {}
+
+    # Normalize names the same way create_series() does — prevents whitespace misses
+    identities = [(name.strip(), labels) for name, labels in identities]
+
+    names = list({name for name, _ in identities})
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT series_id, name, description, unit, labels, overlapping, retention "
+            "FROM series_table WHERE name = ANY(%s)",
+            (names,),
+        )
+        rows = cur.fetchall()
+
+    # Build a lookup from canonical key → series_id and populate registry
+    found: Dict[Tuple[str, str], int] = {}
+    for row in rows:
+        sid, name, description, unit, labels, overlapping, retention = row
+        labels = labels or {}
+        registry._cache[sid] = {
+            "name": name,
+            "description": description,
+            "unit": unit,
+            "labels": labels,
+            "overlapping": overlapping,
+            "retention": retention,
+            "table": get_table_name(overlapping, retention),
+        }
+        key = _make_series_key(name, labels)
+        found[key] = sid
+
+    return found
+
+
 def create_series(
     conn: psycopg.Connection,
-    *,
-    name: str,
-    unit: str,
-    labels: Optional[Dict[str, str]] = None,
-    description: Optional[str] = None,
-    overlapping: bool = False,
-    retention: str = "medium",
-) -> int:
+    series_specs: List[Dict[str, Any]],
+) -> List[int]:
     """
-    Create a new series, or return the existing series_id if one already exists
-    with the same (name, labels).
+    Batch get-or-create for multiple series in one round-trip.
+
+    Returns series_ids in the same order as the input. Each spec is a dict
+    with ``name`` (required) and optional ``unit``, ``labels``, ``description``,
+    ``overlapping``, ``retention``.
+
+    Uses ``ON CONFLICT (name, labels) DO UPDATE SET series_id =
+    series_table.series_id`` — a no-op update that forces conflicting rows to
+    appear in ``RETURNING``, preserving get-or-create semantics for all entries
+    regardless of whether they already exist.
 
     Args:
         conn: psycopg connection
-        name: Series name (e.g., 'wind_power')
-        unit: Canonical unit (e.g., 'MW', 'dimensionless')
-        labels: Optional dict of labels for series differentiation
-        description: Optional human-readable description
-        overlapping: Whether series stores versioned data (default: False)
-        retention: 'short', 'medium', or 'long' (default: 'medium')
+        series_specs: List of dicts. Each dict may contain:
+            name (str, required), unit (str), labels (dict), description (str),
+            overlapping (bool), retention (str).
 
     Returns:
-        int: The series_id (auto-generated bigserial)
+        List[int]: series_ids in the same order as *series_specs*.
+
+    Raises:
+        ValueError: If *series_specs* is empty.
+        ValueError: If the same (name, labels) pair appears more than once.
     """
-    labels_dict = labels or {}
-    labels_json = json.dumps(labels_dict, sort_keys=True)
+    if not series_specs:
+        raise ValueError("series_specs must not be empty")
+
+    normalized = []
+    seen: set = set()
+    duplicates: set = set()
+    for spec in series_specs:
+        labels_json = json.dumps(spec.get("labels") or {}, sort_keys=True)
+        name = spec["name"].strip()
+        unit = (spec.get("unit") or "dimensionless").strip()
+        desc = spec.get("description")
+        desc = desc.strip() if desc and desc.strip() else None
+        key = (name, labels_json)
+        if key in seen:
+            duplicates.add(key)
+        else:
+            seen.add(key)
+        normalized.append((
+            name, unit, labels_json, desc,
+            bool(spec.get("overlapping", False)),
+            spec.get("retention", "medium"),
+        ))
+
+    if duplicates:
+        dup_list = ", ".join(f"(name={k[0]!r}, labels={k[1]})" for k in sorted(duplicates))
+        raise ValueError(
+            f"Duplicate (name, labels) pairs in create_series call: {dup_list}"
+        )
+
+    placeholders = ", ".join("(%s, %s, %s::jsonb, %s, %s, %s)" for _ in normalized)
+    flat_params = [v for row in normalized for v in row]
 
     with conn.cursor() as cur:
-        # Check if series already exists with same (name, labels)
         cur.execute(
-            """
-            SELECT series_id FROM series_table
-            WHERE name = %s AND labels = %s::jsonb
-            """,
-            (name.strip(), labels_json)
+            f"INSERT INTO series_table (name, unit, labels, description, overlapping, retention) "
+            f"VALUES {placeholders} "
+            "ON CONFLICT (name, labels) DO UPDATE SET series_id = series_table.series_id "
+            "RETURNING series_id, name, labels",
+            flat_params,
         )
-        row = cur.fetchone()
-        if row:
-            return row[0]
+        lookup = {
+            (row[1], json.dumps(row[2] or {}, sort_keys=True)): row[0]
+            for row in cur.fetchall()
+        }
 
-        # Create new series - DB auto-generates series_id via bigserial
-        description_value = description.strip() if description and description.strip() else None
-        cur.execute(
-            """
-            INSERT INTO series_table (name, unit, labels, description, overlapping, retention)
-            VALUES (%s, %s, %s::jsonb, %s, %s, %s)
-            RETURNING series_id
-            """,
-            (name.strip(), unit.strip(), labels_json, description_value, overlapping, retention)
-        )
-        return cur.fetchone()[0]
+    return [lookup[(name, labels_json)] for name, _, labels_json, _, _, _ in normalized]
+
+

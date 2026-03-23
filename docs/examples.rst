@@ -33,7 +33,7 @@ Available Notebooks
 
    notebooks/quickstart
    notebooks/nb_01_write_read_pandas
-   notebooks/nb_02_units_validation
+   notebooks/nb_02_multi_insert
    notebooks/nb_03_forecast_revisions
    notebooks/nb_04_relative_forecasts
    notebooks/nb_05_timeseries_changes
@@ -41,7 +41,7 @@ Available Notebooks
 
 - :doc:`Quickstart <notebooks/quickstart>`
 - :doc:`Writing and Reading with Pandas <notebooks/nb_01_write_read_pandas>`
-- :doc:`Units Validation <notebooks/nb_02_units_validation>`
+- :doc:`Write Methods & Multi-Series Insert <notebooks/nb_02_multi_insert>`
 - :doc:`Forecast Revisions <notebooks/nb_03_forecast_revisions>`
 - :doc:`Relative Forecasts <notebooks/nb_04_relative_forecasts>`
 - :doc:`Time Series Changes <notebooks/nb_05_timeseries_changes>`
@@ -54,7 +54,7 @@ Notebook Descriptions
 
 **nb_01_write_read_pandas**: Demonstrates the fluent API with label-based filtering and broad vs. targeted operations on multiple series.
 
-**nb_02_units_validation**: Shows how TimeDB handles unit conversion and validation with Pint.
+**nb_02_multi_insert**: Multi-series bulk ingestion using ``write()`` — covers ``create_series_many()``, long-format DataFrames, unit conversion, batch tracking, and error handling.
 
 **nb_03_forecast_revisions**: Deep dive into overlapping series (versioned forecasts) with multiple revisions and historical tracking.
 

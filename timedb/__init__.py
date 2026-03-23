@@ -5,7 +5,7 @@ Quick usage:
     import timedb as td
 
     td.create()
-    td.create_series(name='wind_power', unit='MW',
+    td.create_series('wind_power', unit='MW',
                      labels={'site': 'offshore_1'}, overlapping=True)
 
     td.get_series('wind_power').where(site='offshore_1').insert(df=df, knowledge_time=knowledge_time)
@@ -64,16 +64,33 @@ def delete():
 
 def create_series(name, unit="dimensionless", labels=None, description=None,
                   overlapping=False, retention="medium"):
-    """Create a new time series. See :meth:`TimeDataClient.create_series`."""
+    """Get-or-create a single series. See :meth:`TimeDataClient.create_series`."""
     return _get_default_client().create_series(
         name, unit=unit, labels=labels, description=description,
         overlapping=overlapping, retention=retention,
     )
 
 
+def create_series_many(series):
+    """Batch get-or-create multiple series. See :meth:`TimeDataClient.create_series_many`."""
+    return _get_default_client().create_series_many(series)
+
+
 def get_series(name=None, unit=None, series_id=None):
     """Start building a series collection. See :meth:`TimeDataClient.get_series`."""
     return _get_default_client().get_series(name, unit=unit, series_id=series_id)
+
+
+def write(df, name_col="name", label_cols=None, batch_cols=None, *, knowledge_time=None,
+          unit=None, workflow_id=None, batch_start_time=None, batch_finish_time=None,
+          batch_params=None):
+    """Insert multi-series long-format data. See :meth:`TimeDataClient.write`."""
+    return _get_default_client().write(
+        df, name_col, label_cols, batch_cols,
+        knowledge_time=knowledge_time, unit=unit, workflow_id=workflow_id,
+        batch_start_time=batch_start_time, batch_finish_time=batch_finish_time,
+        batch_params=batch_params,
+    )
 
 
 __all__ = [
@@ -85,7 +102,9 @@ __all__ = [
     'create',
     'delete',
     'create_series',
+    'create_series_many',
     'get_series',
+    'write',
     # Profiling
     'profiling',
     # TimeSeries container

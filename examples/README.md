@@ -10,7 +10,7 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 |----------|-------|
 | Quickstart | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb) |
 | Writing and Reading with Pandas | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_01_write_read_pandas.ipynb) |
-| Units Validation | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_02_units_validation.ipynb) |
+| Write Methods & Multi-Series Insert | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_02_multi_insert.ipynb) |
 | Forecast Revisions | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_03_forecast_revisions.ipynb) |
 | Relative Forecasts | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_04_relative_forecasts.ipynb) |
 | Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_05_timeseries_changes.ipynb) |
@@ -55,11 +55,12 @@ Learn the fundamentals of writing and reading time series data:
 - Reading data back into DataFrames
 - Working with series IDs
 
-### Notebook 2: Units Validation (`nb_02_units_validation.ipynb`)
-Working with physical units in timedb:
-- Using pint for unit handling
-- Validating units on insert and read
-- Unit conversions
+### Notebook 2: Write Methods & Multi-Series Insert (`nb_02_multi_insert.ipynb`)
+Multi-series bulk ingestion using `write()`:
+- Creating multiple series in one call with `create_series_many()`
+- Building a long-format DataFrame and inserting with `td.write()`
+- Unit conversion, batch tracking with `batch_cols`, and `batch_params`
+- Reading back per-series results and error handling
 
 ### Notebook 3: Forecast Revisions (`nb_03_forecast_revisions.ipynb`)
 Shows how timedb handles multiple forecast runs:

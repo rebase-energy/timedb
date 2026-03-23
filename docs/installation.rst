@@ -55,7 +55,7 @@ Optional dependencies can be installed with extras:
 
 .. code-block:: bash
 
-   pip install timedb[pint]       # pint and pint-pandas for unit handling
+   pip install timedb[pint]       # pint for unit handling
 
 Database Setup
 --------------
@@ -168,8 +168,4 @@ Once installed, you can:
 4. :doc:`Set up the API server <api_setup>` to serve data via REST API
 
 
-.. toctree::
-   :hidden:
-
-   sdk
 

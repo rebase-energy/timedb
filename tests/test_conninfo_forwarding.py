@@ -40,7 +40,7 @@ def test_create_series_forwards_conninfo(mock_create_series, mock_pool):
     """TimeDataClient.create_series() should pass self._conninfo to _create_series()."""
     mock_create_series.return_value = 1
     client = TimeDataClient(conninfo=CUSTOM_CONNINFO)
-    client.create_series(name="test_series", unit="kWh")
+    client.create_series("test_series", unit="kWh")
     mock_create_series.assert_called_once()
     assert mock_create_series.call_args.kwargs["conninfo"] == CUSTOM_CONNINFO
     client.close()
