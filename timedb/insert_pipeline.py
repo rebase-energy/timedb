@@ -17,7 +17,7 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 
-from timedatamodel import TimeSeries, DataShape
+from timedatamodel import TimeSeries
 from .types import IncompatibleUnitError
 
 
@@ -46,24 +46,6 @@ def _validate_df_columns(df: pd.DataFrame) -> None:
             f"Found {len(cols)} columns: {cols}"
         )
 
-
-def _check_df_timezone(df: pd.DataFrame) -> None:
-    """Raise ValueError if any timestamp column contains timezone-naive datetimes."""
-    for col in ['knowledge_time', 'valid_time', 'valid_time_end']:
-        if col not in df.columns:
-            continue
-        s = df[col]
-        if hasattr(s.dtype, 'tz'):
-            if s.dtype.tz is None:
-                raise ValueError(
-                    f"{col} must be timezone-aware. Found timezone-naive datetime."
-                )
-        elif len(s) > 0:
-            first = s.iloc[0]
-            if isinstance(first, (pd.Timestamp, datetime)) and first.tzinfo is None:
-                raise ValueError(
-                    f"{col} must be timezone-aware. Found timezone-naive datetime."
-                )
 
 
 @lru_cache(maxsize=256)
@@ -119,6 +101,13 @@ def _resolve_polars_units(df: pl.DataFrame, ts_unit: str, series_unit: str) -> p
         return df
     factor = _compute_unit_factor(ts_unit, series_unit)
     return df.with_columns(pl.col("value") * factor)
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _to_arrow(df: pl.DataFrame, final_cols: List[str]) -> pa.Table:
+    """Select final columns and convert to a chunked Arrow table."""
+    return df.select(final_cols).to_arrow().combine_chunks()
 
 
 # ── Multi-series pipeline ─────────────────────────────────────────────────────
@@ -242,7 +231,7 @@ def normalize_write_input(
     decoration: List[pl.Expr] = [
         batch_id_expr,
         pl.col("_series_id").cast(pl.Int64).alias("series_id"),
-        pl.col("value") * pl.col("_factor"),
+        (pl.col("value") * pl.col("_factor")).fill_null(float("nan")),
     ]
     if kt_col is not None:
         decoration.append(kt_col)
@@ -270,23 +259,70 @@ def normalize_write_input(
     for group_df in joined.partition_by("_target_table"):
         target_table = group_df["_target_table"][0]
         routing = table_to_routing[target_table]
-        arrow_table = group_df.select(final_cols).to_arrow()
-        result[target_table] = (arrow_table, routing)
+        if not routing["overlapping"]:
+            if group_df.select(["series_id", "valid_time"]).is_duplicated().any():
+                raise ValueError(
+                    "Cannot insert duplicate (series_id, valid_time) pair(s) into a "
+                    "flat series. Deduplicate your data before calling write()."
+                )
+        result[target_table] = (_to_arrow(group_df, final_cols), routing)
 
     return result
 
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
+def _input_to_polars(
+    data: Union[pd.DataFrame, pl.DataFrame, TimeSeries],
+    series_unit: str,
+    data_unit: Optional[str],
+) -> pl.DataFrame:
+    """Convert any insert input to a plain Polars DataFrame with unit conversion applied.
+
+    - :class:`~timedatamodel.TimeSeries`: validated via ``validate_for_insert()``,
+      unit converted via pint.
+    - ``pd.DataFrame`` or ``pl.DataFrame``: column format validated, converted to Polars
+      (pandas only), unit converted if *data_unit* is provided.
+
+    Returns a Polars DataFrame containing only the data columns
+    (``valid_time``, optionally ``valid_time_end`` / ``knowledge_time``, ``value``).
+    No metadata columns (``batch_id``, ``series_id``) are added here.
+    """
+    if isinstance(data, TimeSeries):
+        pl_df, _ = data.validate_for_insert()
+        return _resolve_polars_units(pl_df, ts_unit=data.unit, series_unit=series_unit)
+
+    # Convert to Polars once, then do all validation on the uniform type
+    if isinstance(data, pd.DataFrame):
+        pl_df = pl.from_pandas(data)
+    elif isinstance(data, pl.DataFrame):
+        pl_df = data
+    else:
+        raise TypeError(
+            f"Expected pd.DataFrame, pl.DataFrame, or TimeSeries, got {type(data).__name__}"
+        )
+
+    _validate_df_columns(pl_df)  # list(df.columns) works on both pandas and Polars
+    for col in ["valid_time", "valid_time_end", "knowledge_time"]:
+        if col not in pl_df.columns:
+            continue
+        dtype = pl_df.schema[col]
+        if isinstance(dtype, pl.Datetime) and dtype.time_zone is None:
+            raise ValueError(f"'{col}' must be timezone-aware. Found timezone-naive datetime.")
+    if data_unit is not None:
+        pl_df = _resolve_polars_units(pl_df, ts_unit=data_unit, series_unit=series_unit)
+    return pl_df
+
+
 def normalize_insert_input(
-    data: Union[pd.DataFrame, TimeSeries],
+    data: Union[pd.DataFrame, pl.DataFrame, TimeSeries],
     series_unit: str,
     *,
     series_id: int,
     batch_id,
     knowledge_time: Optional[datetime] = None,
     data_unit: Optional[str] = None,
-) -> Tuple[pa.Table, DataShape]:
+) -> pa.Table:
     """Convert DataFrame or TimeSeries insert input to a fully-decorated ``pa.Table``.
 
     All column decoration (``batch_id``, ``series_id``, ``knowledge_time``) is
@@ -307,32 +343,20 @@ def normalize_insert_input(
             :class:`~timedatamodel.TimeSeries` (which carries its own unit).
 
     Returns:
-        ``(pa.Table, DataShape)`` — complete Arrow table with columns
-        ``[batch_id, series_id, valid_time, (valid_time_end,) value,
-        knowledge_time]`` ready to COPY into the database.
+        ``pa.Table`` with columns ``[batch_id, series_id, valid_time,
+        (valid_time_end,) value, knowledge_time]`` ready for insert into ClickHouse.
 
     Raises:
         ValueError: If *knowledge_time* kwarg and a ``knowledge_time`` column
             are both present in *data*.
         IncompatibleUnitError: If *data_unit* is not convertible to *series_unit*.
     """
-    # 1. Inspect SOURCE data columns (before any conversion)
-    source_has_kt = (
-        "knowledge_time" in data.columns
-        if isinstance(data, pd.DataFrame)
-        else "knowledge_time" in data.df.columns
-    )
-    source_has_vte = (
-        "valid_time_end" in data.columns
-        if isinstance(data, pd.DataFrame)
-        else "valid_time_end" in data.df.columns
-    )
-    # Canonical column order for the output Arrow table
-    final_cols = (
-        ["batch_id", "series_id", "valid_time", "valid_time_end", "value", "knowledge_time"]
-        if source_has_vte
-        else ["batch_id", "series_id", "valid_time", "value", "knowledge_time"]
-    )
+    # 1. Normalise any input type to a plain Polars DataFrame
+    pl_df = _input_to_polars(data, series_unit, data_unit)
+
+    # 2. Inspect columns now that we have a uniform Polars df
+    source_has_kt = "knowledge_time" in pl_df.columns
+    source_has_vte = "valid_time_end" in pl_df.columns
     if source_has_kt and knowledge_time is not None:
         raise ValueError(
             "Ambiguous knowledge_time: the data already contains a 'knowledge_time' column "
@@ -340,42 +364,32 @@ def normalize_insert_input(
             "Remove the kwarg or the column."
         )
 
-    # 2. Prepare the knowledge_time literal (if needed) — set dtype at construction
+    final_cols = ["batch_id", "series_id", "valid_time", "value", "knowledge_time"]
+    if source_has_vte:
+        final_cols.insert(3, "valid_time_end")
+
+    # 3. Prepare the knowledge_time literal (if needed) — set dtype at construction
     kt_col = None
     if not source_has_kt:
         kt = knowledge_time if knowledge_time is not None else datetime.now(timezone.utc)
         kt_col = pl.lit(kt, dtype=pl.Datetime("us", "UTC")).alias("knowledge_time")
 
-    # 3. Constant decoration columns (always added)
+    # 4. Single Rust pass: stamp batch_id, series_id, fill NaN sentinels, (knowledge_time)
     cols_to_add = [
         pl.lit(str(batch_id)).alias("batch_id"),
         pl.lit(series_id, dtype=pl.Int64).alias("series_id"),
+        pl.col("value").fill_null(float("nan")),
     ]
     if kt_col is not None:
         cols_to_add.append(kt_col)
+    pl_df = pl_df.with_columns(cols_to_add)
 
-    # 4a. TimeSeries path — extract inner Polars df, apply unit conversion, decorate
-    if isinstance(data, TimeSeries):
-        df, shape = data.validate_for_insert()
-        df = _resolve_polars_units(df, ts_unit=data.unit, series_unit=series_unit)
-        df = df.with_columns(cols_to_add)   # single Rust pass: batch_id, series_id, (kt)
-        df = df.select(final_cols)          # reorder to canonical layout (zero-copy)
-        table = df.to_arrow()               # complete, final table
+    # 5. Reject duplicate valid_times for flat (non-versioned) series
+    if not source_has_kt and pl_df.select(pl.col("valid_time").is_duplicated().any()).item():
+        raise ValueError(
+            "Cannot insert duplicate valid_time(s) into a flat series. "
+            "Deduplicate your data before calling insert()."
+        )
 
-    # 4b. pd.DataFrame path — validate, convert to Polars, apply unit conversion, decorate
-    else:
-        _validate_df_columns(data)
-        _check_df_timezone(data)
-
-        # _check_df_timezone() already guarantees tz-awareness;
-        # pl.from_pandas() preserves timezone information automatically.
-        pl_df = pl.from_pandas(data)
-        if data_unit is not None:
-            pl_df = _resolve_polars_units(pl_df, ts_unit=data_unit, series_unit=series_unit)
-        shape = DataShape.VERSIONED if source_has_kt else DataShape.SIMPLE
-
-        pl_df = pl_df.with_columns(cols_to_add)  # single Rust pass: batch_id, series_id, (kt)
-        pl_df = pl_df.select(final_cols)          # reorder to canonical layout (zero-copy)
-        table = pl_df.to_arrow()                  # complete, final table
-
-    return table, shape
+    # 6. Convert to Arrow
+    return _to_arrow(pl_df, final_cols)

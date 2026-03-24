@@ -2,7 +2,7 @@
 
 We are thrilled to announce the official initial release of TimeDB! ⏱️
 
-TimeDB is an open-source, opinionated time-series database built on top of PostgreSQL and TimescaleDB. While traditional databases treat time as a single dimension, TimeDB is built for the messy reality of forecasts, revisions, and "human-in-the-loop" data corrections.
+TimeDB is an open-source, opinionated time-series database built on top of PostgreSQL and ClickHouse. While traditional databases treat time as a single dimension, TimeDB is built for the messy reality of forecasts, revisions, and "human-in-the-loop" data corrections.
 
 ## 🧊 Why TimeDB?
 
@@ -29,7 +29,7 @@ Install via `pip`:
 pip install timedb
 ```
 
-Don't want to set up a database yet? Jump into our Google Colab Quickstart. It spins up a temporary PostgreSQL + TimescaleDB instance for you to play with.
+Don't want to set up a database yet? Jump into our Google Colab Quickstart. It spins up a temporary PostgreSQL + ClickHouse instance for you to play with.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb)
 

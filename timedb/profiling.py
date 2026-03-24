@@ -21,11 +21,10 @@ from typing import Dict
 
 # ── Insert phase constants ────────────────────────────────────────────────────
 
-PHASE_INSERT_CSV_SERIALIZE = "insert.csv_serialize"  # Arrow → CSV bytes (C++ writer)
-PHASE_INSERT_STAGE_DDL     = "insert.stage_ddl"      # CREATE TEMP TABLE (flat only)
-PHASE_INSERT_COPY          = "insert.copy"           # COPY FROM STDIN (bulk transfer)
-PHASE_INSERT_UPSERT        = "insert.upsert"         # CTE + upsert merge (flat only)
-PHASE_INSERT_TOTAL         = "insert.total"          # Full insert_table() wall time
+PHASE_INSERT_NORMALIZE      = "insert.normalize"       # normalize_insert_input() — Polars preparation in _insert()
+PHASE_INSERT_BATCH_METADATA = "insert.batch_metadata"  # _insert_batch_metadata() — CH insert for batch records
+PHASE_INSERT_ARROW          = "insert.arrow"           # ch_client.insert_arrow() — bulk Arrow transfer to ClickHouse
+PHASE_INSERT_TOTAL          = "insert.total"           # Full insert_tables() wall time
 
 # ── Write phase constants ─────────────────────────────────────────────────────
 
@@ -35,13 +34,10 @@ PHASE_WRITE_TOTAL          = "write.total"           # Full _write() wall time (
 
 # ── Read phase constants ──────────────────────────────────────────────────────
 
-PHASE_READ_SQL_EXEC         = "read.sql_exec"          # cursor.execute() — SQL planning + execution in Postgres
-PHASE_READ_FETCH_ROWS       = "read.fetch_rows"        # cursor.fetchall() — transfer rows to Python
-PHASE_READ_BUILD_ARROW      = "read.build_arrow"       # Build pa.Table from fetched rows
-PHASE_READ_BUILD_TIMESERIES = "read.build_timeseries"  # TimeSeries.__init__: shape inference + validation + metadata
-PHASE_READ_TO_PANDAS        = "read.to_pandas"         # (legacy, no longer emitted) pa.Table.to_pandas() + set_index()
-PHASE_READ_TO_POLARS        = "read.to_polars"         # pl.from_arrow() + TimeSeries.from_polars() at SDK boundary
-PHASE_READ_TOTAL            = "read.total"             # Full _fetch_arrow() wall time (DB portion only)
+PHASE_READ_SQL_EXEC    = "read.sql_exec"     # ch_client.query_arrow() — execution + Arrow transfer in one call
+PHASE_READ_BUILD_ARROW = "read.build_arrow"  # result.select(columns) — Arrow column selection
+PHASE_READ_TO_POLARS   = "read.to_polars"    # pl.from_arrow() at SDK boundary
+PHASE_READ_TOTAL       = "read.total"        # Full _fetch_ch_arrow() wall time
 
 # ── Internal state ────────────────────────────────────────────────────────────
 

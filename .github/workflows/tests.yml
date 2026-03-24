@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      timescaledb:
-        image: timescale/timescaledb-ha:pg18
+      postgres:
+        image: postgres:18
         env:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpassword
@@ -25,8 +25,19 @@ jobs:
         ports:
           - 5432:5432
 
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.3
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 8123:8123
+
     env:
-      TEST_TIMEDB_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
+      TEST_TIMEDB_PG_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
+      TEST_TIMEDB_CH_URL: http://default:@localhost:8123/default
 
     steps:
       - uses: actions/checkout@v4
@@ -49,10 +60,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
 
-      - name: Wait for TimescaleDB
+      - name: Wait for PostgreSQL
         run: |
           until pg_isready -h localhost -U testuser -d testdb; do
-            echo "Waiting for TimescaleDB to be ready..."
+            echo "Waiting for PostgreSQL to be ready..."
             sleep 2
           done
         env:
@@ -67,7 +78,8 @@ jobs:
       - name: Run notebook tests
         run: pytest --nbmake examples/ --nbmake-timeout=120
         env:
-          TIMEDB_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
+          TIMEDB_PG_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
+          TIMEDB_CH_URL: http://default:@localhost:8123/default
           MPLBACKEND: Agg
 
       - name: Upload coverage to Codecov

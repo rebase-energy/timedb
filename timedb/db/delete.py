@@ -2,66 +2,57 @@ import os
 import sys
 import time
 import psycopg
+import clickhouse_connect
 
-# -----------------------------------------------------------------------------
-# This DDL deletes all timedb tables and views (TimescaleDB version):
-#   1) Legacy views/aggregates (IF EXISTS, safe to run)
-#   2) Overlapping hypertables (short/medium/long)
-#   3) Flat hypertable
-#   4) series_table, batches_table
-#
-# Uses autocommit mode with per-statement retry to avoid deadlocks with
-# TimescaleDB background workers (compression, retention).
-# -----------------------------------------------------------------------------
-
-_DROP_STATEMENTS = [
-    # Continuous aggregates first (legacy)
+_PG_DROP_STATEMENTS = [
+    # Legacy views (safe no-ops if they don't exist)
     "DROP MATERIALIZED VIEW IF EXISTS latest_projections_short CASCADE",
     "DROP MATERIALIZED VIEW IF EXISTS latest_projections_medium CASCADE",
     "DROP MATERIALIZED VIEW IF EXISTS latest_projections_long CASCADE",
     "DROP MATERIALIZED VIEW IF EXISTS latest_values CASCADE",
-    # Regular views
     "DROP VIEW IF EXISTS latest_projection_curve CASCADE",
     "DROP VIEW IF EXISTS all_overlapping_raw CASCADE",
     "DROP VIEW IF EXISTS all_projections_raw CASCADE",
     "DROP VIEW IF EXISTS current_values_view CASCADE",
     "DROP VIEW IF EXISTS current_metadata_table CASCADE",
     "DROP VIEW IF EXISTS current_values_table CASCADE",
-    # Current overlapping hypertables
+    # Current series table
+    "DROP TABLE IF EXISTS series_table CASCADE",
+    # Legacy PG tables (clean up if they exist from old schema)
+    "DROP TABLE IF EXISTS batches_table CASCADE",
     "DROP TABLE IF EXISTS overlapping_short CASCADE",
     "DROP TABLE IF EXISTS overlapping_medium CASCADE",
     "DROP TABLE IF EXISTS overlapping_long CASCADE",
-    # Legacy projection tables
-    "DROP TABLE IF EXISTS projections_short CASCADE",
-    "DROP TABLE IF EXISTS projections_medium CASCADE",
-    "DROP TABLE IF EXISTS projections_long CASCADE",
-    "DROP TABLE IF EXISTS projections CASCADE",
-    # Current flat hypertable
     "DROP TABLE IF EXISTS flat CASCADE",
-    # Legacy actuals hypertable
-    "DROP TABLE IF EXISTS actuals CASCADE",
-    # Legacy tables
     "DROP TABLE IF EXISTS metadata_table CASCADE",
     "DROP TABLE IF EXISTS values_table CASCADE",
-    # Core tables
-    "DROP TABLE IF EXISTS series_table CASCADE",
-    "DROP TABLE IF EXISTS batches_table CASCADE",
+    "DROP TABLE IF EXISTS actuals CASCADE",
+]
+
+_CH_DROP_TABLES = [
+    "overlapping_long",
+    "overlapping_medium",
+    "overlapping_short",
+    "flat",
+    "batches_table",
 ]
 
 _MAX_RETRIES = 3
-_RETRY_DELAY = 0.5  # seconds
+_RETRY_DELAY = 0.5
 
 
-def delete_schema(conninfo: str) -> None:
+def delete_schema(pg_conninfo: str, ch_url: str) -> None:
     """
-    Deletes all timedb tables and views (TimescaleDB version).
+    Drop all TimeDB tables from both PostgreSQL and ClickHouse.
 
-    Uses autocommit mode so each DROP runs independently. Retries individual
-    statements on deadlock errors caused by TimescaleDB background workers.
+    Args:
+        pg_conninfo: PostgreSQL connection string (drops series_table).
+        ch_url: ClickHouse DSN (drops batches_table, flat, overlapping_*).
     """
-    with psycopg.connect(conninfo, autocommit=True) as conn:
+    # PostgreSQL
+    with psycopg.connect(pg_conninfo, autocommit=True) as conn:
         with conn.cursor() as cur:
-            for stmt in _DROP_STATEMENTS:
+            for stmt in _PG_DROP_STATEMENTS:
                 for attempt in range(_MAX_RETRIES):
                     try:
                         cur.execute(stmt)
@@ -72,12 +63,17 @@ def delete_schema(conninfo: str) -> None:
                         else:
                             raise
 
+    # ClickHouse
+    ch_client = clickhouse_connect.get_client(dsn=ch_url)
+    for table in _CH_DROP_TABLES:
+        ch_client.command(f"DROP TABLE IF EXISTS {table}")
+
 
 if __name__ == "__main__":
-    conninfo = os.environ.get("TIMEDB_DSN") or os.environ.get("DATABASE_URL")
-    if not conninfo:
-        print("ERROR: no DSN provided. Set TIMEDB_DSN or DATABASE_URL")
+    pg_conninfo = os.environ.get("TIMEDB_PG_DSN") or os.environ.get("DATABASE_URL")
+    ch_url = os.environ.get("TIMEDB_CH_URL")
+    if not pg_conninfo or not ch_url:
+        print("ERROR: set TIMEDB_PG_DSN and TIMEDB_CH_URL")
         sys.exit(1)
-
-    delete_schema(conninfo)
-    print("All timedb tables (including metadata) deleted successfully.")
+    delete_schema(pg_conninfo, ch_url)
+    print("All TimeDB tables deleted successfully.")

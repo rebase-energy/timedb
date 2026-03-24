@@ -4,7 +4,7 @@ This directory contains interactive Jupyter notebooks demonstrating how to use t
 
 ## Try in Google Colab
 
-Click a badge to open the notebook in Colab — no local setup required. The first cell installs PostgreSQL + TimescaleDB automatically inside the Colab VM (~2–3 min).
+Click a badge to open the notebook in Colab — no local setup required. The first cell installs PostgreSQL + ClickHouse automatically inside the Colab VM (~2–3 min).
 
 | Notebook | Colab |
 |----------|-------|
@@ -16,25 +16,23 @@ Click a badge to open the notebook in Colab — no local setup required. The fir
 | Time Series Changes | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_05_timeseries_changes.ipynb) |
 | REST API Usage | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/nb_06_api_usage.ipynb) |
 
-> **Note**: The Colab setup cell installs PostgreSQL 14 + TimescaleDB. Data persists only within the active Colab session.
+> **Note**: The Colab setup cell installs PostgreSQL + ClickHouse. Data persists only within the active Colab session.
 
 ## Prerequisites (local)
 
 1. **PostgreSQL Database**: You need a PostgreSQL database (version 12+) to run these examples.
 
-2. **Environment Variables**: Set one of these environment variables with your database connection string:
+2. **Environment Variables**: Set both database connection strings:
    ```bash
    # Bash/Zsh
-   export TIMEDB_DSN='postgresql://user:password@host:port/database'
-   # OR
-   export DATABASE_URL='postgresql://user:password@host:port/database'
+   export TIMEDB_PG_DSN='postgresql://user:password@host:port/database'
+   export TIMEDB_CH_URL='http://default:@localhost:8123/default'
    ```
 
    ```fish
    # Fish
-   set -x TIMEDB_DSN postgresql://user:password@host:port/database
-   # OR
-   set -x DATABASE_URL postgresql://user:password@host:port/database
+   set -x TIMEDB_PG_DSN postgresql://user:password@host:port/database
+   set -x TIMEDB_CH_URL http://default:@localhost:8123/default
    ```
 
 3. **Install Dependencies**: Make sure you have timedb installed:
