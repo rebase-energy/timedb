@@ -6,19 +6,17 @@ This directory contains the test suite for timedb.
 
 ### Prerequisites
 
-1. **Test Database**: You need a PostgreSQL database for testing. Set one of these environment variables:
+1. **Test Databases**: You need PostgreSQL and ClickHouse for testing. Set these environment variables:
    ```bash
    # Bash/Zsh
-   export TEST_TIMEDB_DSN='postgresql://user:password@host:port/test_database'
-   # OR
-   export TEST_DATABASE_URL='postgresql://user:password@host:port/test_database'
+   export TEST_TIMEDB_PG_DSN='postgresql://user:password@host:port/test_database'
+   export TEST_TIMEDB_CH_URL='http://default:@localhost:8123/default'
    ```
 
    ```fish
    # Fish
-   set -x TEST_TIMEDB_DSN postgresql://user:password@host:port/test_database
-   # OR
-   set -x TEST_DATABASE_URL postgresql://user:password@host:port/test_database
+   set -x TEST_TIMEDB_PG_DSN postgresql://user:password@host:port/test_database
+   set -x TEST_TIMEDB_CH_URL http://default:@localhost:8123/default
    ```
 
 2. **Install Test Dependencies**:

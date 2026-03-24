@@ -5,8 +5,8 @@
 set -l BASEDIR (dirname (status -f))
 cd $BASEDIR
 
-printf 'Recreating Postgres containers...\n'
+printf 'Recreating containers...\n'
 docker compose up -d --force-recreate --remove-orphans
 
 printf '\nContainer status:\n'
-docker ps | grep timescaledb
+docker ps | grep -E "local_postgres|local_clickhouse"

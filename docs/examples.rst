@@ -5,19 +5,21 @@ TimeDB includes interactive Jupyter notebooks that demonstrate key features and 
 
 Before running the examples locally, ensure you have:
 
-1. **PostgreSQL Database**: A PostgreSQL database (version 12+) with TimescaleDB
+1. **Databases**: PostgreSQL (series metadata) and ClickHouse (time-series values). See :doc:`installation` for setup instructions.
 
-2. **Environment Variables**: Set your database connection string:
+2. **Environment Variables**: Set your database connection strings:
 
    .. code-block:: bash
 
       # Bash/Zsh
-      export TIMEDB_DSN='postgresql://user:password@host:port/database'
+      export TIMEDB_PG_DSN='postgresql://user:password@host:port/database'
+      export TIMEDB_CH_URL='http://default:@localhost:8123/default'
 
    .. code-block:: fish
 
       # Fish
-      set -x TIMEDB_DSN postgresql://user:password@host:port/database
+      set -x TIMEDB_PG_DSN postgresql://user:password@host:port/database
+      set -x TIMEDB_CH_URL http://default:@localhost:8123/default
 
 3. **Jupyter**: Install Jupyter to run the notebooks interactively:
 
@@ -32,34 +34,34 @@ Available Notebooks
    :hidden:
 
    notebooks/quickstart
-   notebooks/nb_01_write_read_pandas
-   notebooks/nb_02_multi_insert
+   notebooks/nb_01_single_series
+   notebooks/nb_02_multi_series
    notebooks/nb_03_forecast_revisions
-   notebooks/nb_04_relative_forecasts
-   notebooks/nb_05_timeseries_changes
-   notebooks/nb_06_api_usage
+   notebooks/nb_04_reads
+   notebooks/nb_05_corrections
+   notebooks/nb_06_api
 
 - :doc:`Quickstart <notebooks/quickstart>`
-- :doc:`Writing and Reading with Pandas <notebooks/nb_01_write_read_pandas>`
-- :doc:`Write Methods & Multi-Series Insert <notebooks/nb_02_multi_insert>`
+- :doc:`Single-Series Insert and Read <notebooks/nb_01_single_series>`
+- :doc:`Multi-Series Insert with td.write() <notebooks/nb_02_multi_series>`
 - :doc:`Forecast Revisions <notebooks/nb_03_forecast_revisions>`
-- :doc:`Relative Forecasts <notebooks/nb_04_relative_forecasts>`
-- :doc:`Time Series Changes <notebooks/nb_05_timeseries_changes>`
-- :doc:`REST API Usage <notebooks/nb_06_api_usage>`
+- :doc:`Querying Time Series Data <notebooks/nb_04_reads>`
+- :doc:`Forecast Corrections <notebooks/nb_05_corrections>`
+- :doc:`REST API Usage <notebooks/nb_06_api>`
 
 Notebook Descriptions
 ---------------------
 
-**Quickstart**: Get up and running in 5 minutes with basic insert, read, and versioning operations.
+**Quickstart**: Core concepts in 5 minutes — insert a forecast, revise it, and query the latest vs. full history.
 
-**nb_01_write_read_pandas**: Demonstrates the fluent API with label-based filtering and broad vs. targeted operations on multiple series.
+**nb_01_single_series**: Single-series insert and read using polars and pandas DataFrames, with label-based routing via ``.where()``.
 
-**nb_02_multi_insert**: Multi-series bulk ingestion using ``write()`` — covers ``create_series_many()``, long-format DataFrames, unit conversion, batch tracking, and error handling.
+**nb_02_multi_series**: Multi-series bulk ingestion using ``td.write()`` — covers ``create_series_many()``, long-format DataFrames, per-row knowledge_time, batch grouping, and unit conversion.
 
-**nb_03_forecast_revisions**: Deep dive into overlapping series (versioned forecasts) with multiple revisions and historical tracking.
+**nb_03_forecast_revisions**: Overlapping series with multiple forecast runs — insert revisions and compare ``read()`` (latest) vs. ``read(overlapping=True)`` (full history).
 
-**nb_04_relative_forecasts**: Per-window knowledge_time cutoffs using ``read_relative()`` — day-ahead and shifted forecast retrieval.
+**nb_04_reads**: All query patterns: latest values, valid-time and knowledge-time range filters, full revision history, and ``read_relative()`` for day-ahead forecasts.
 
-**nb_05_timeseries_changes**: Demonstrates updating records and tracking changes over time for flat and overlapping series.
+**nb_05_corrections**: Correcting erroneous forecast values the ClickHouse-native way — append a new batch with a later ``knowledge_time``, then audit via ``read(overlapping=True)``.
 
-**nb_06_api_usage**: Examples of using the REST API for reading and writing time series data.
+**nb_06_api**: REST API usage — insert and read via JSON and Arrow IPC, single and multi-series, including the batch series creation endpoint.

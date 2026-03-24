@@ -5,9 +5,9 @@
 BASEDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$BASEDIR" || exit 1
 
-echo "Recreating Postgres containers..."
+echo "Recreating containers..."
 docker compose up -d --force-recreate --remove-orphans
 
 echo ""
 echo "Container status:"
-docker ps | grep timescaledb
+docker ps | grep -E "local_postgres|local_clickhouse"

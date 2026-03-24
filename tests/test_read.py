@@ -517,17 +517,16 @@ def test_read_mode_history_hides_corrections(td, sample_datetime):
     td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
-    result = td.get_series("forecast").insert(
+    td.get_series("forecast").insert(
         data=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
         knowledge_time=sample_datetime,
     )
 
-    # Apply a correction (same knowledge_time, new change_time)
-    td.get_series("forecast").update_records(updates=[{
-        "knowledge_time": sample_datetime,
-        "valid_time": sample_datetime,
-        "value": 110.0,
-    }])
+    # Apply a correction: re-insert with same knowledge_time, newer change_time wins via argMax
+    td.get_series("forecast").insert(
+        data=pd.DataFrame({"valid_time": [sample_datetime], "value": [110.0]}),
+        knowledge_time=sample_datetime,
+    )
 
     history = td.get_series("forecast").read(overlapping=True)
 
@@ -542,18 +541,17 @@ def test_read_mode_audit_shows_correction_chain(td, sample_datetime):
     td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
-    result = td.get_series("forecast").insert(
+    td.get_series("forecast").insert(
         data=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
         knowledge_time=sample_datetime,
     )
 
-    # Two corrections
+    # Two corrections: re-insert with same knowledge_time, each with a newer change_time
     for val in [110.0, 120.0]:
-        td.get_series("forecast").update_records(updates=[{
-            "knowledge_time": sample_datetime,
-            "valid_time": sample_datetime,
-            "value": val,
-        }])
+        td.get_series("forecast").insert(
+            data=pd.DataFrame({"valid_time": [sample_datetime], "value": [val]}),
+            knowledge_time=sample_datetime,
+        )
 
     audit = td.get_series("forecast").read(overlapping=True, include_updates=True)
 
@@ -581,14 +579,16 @@ def test_read_include_updates_overlapping(td, sample_datetime):
         knowledge_time=kt_new,
     )
 
-    # Apply a correction to the winning (newer) batch
-    td.get_series("forecast").update_records(updates=[{
-        "knowledge_time": kt_new,
-        "valid_time": sample_datetime,
-        "value": 25.0,
-        "changed_by": "tester",
-        "annotation": "corrected",
-    }])
+    # Apply a correction to the winning (newer) batch via re-insert
+    td.get_series("forecast").insert(
+        data=pd.DataFrame({
+            "valid_time": [sample_datetime],
+            "value": [25.0],
+            "changed_by": ["tester"],
+            "annotation": ["corrected"],
+        }),
+        knowledge_time=kt_new,
+    )
 
     df = td.get_series("forecast").read(include_updates=True)
 
@@ -614,22 +614,25 @@ def test_read_include_updates_flat(td, sample_datetime):
         })
     )
 
-    td.get_series("temperature").update_records(updates=[{
-        "valid_time": sample_datetime,
-        "value": 21.0,
-        "changed_by": "tester",
-        "annotation": "fixed typo",
-    }])
+    # Correction: re-insert with updated value; argMax(value, change_time) wins at read time
+    td.get_series("temperature").insert(
+        data=pd.DataFrame({
+            "valid_time": [sample_datetime],
+            "value": [21.0],
+            "changed_by": ["tester"],
+            "annotation": ["fixed typo"],
+        }),
+    )
 
     df = td.get_series("temperature").read(include_updates=True)
 
-    # Flat series use in-place UPDATE — only one row per valid_time, reflecting the latest state
+    # Flat corrections are new inserts — both original and correction appear in history
     assert df.shape == DataShape.CORRECTED
-    assert len(df) == 1
+    assert len(df) == 2  # original (20.0) + correction (21.0)
     pdf = df.to_pandas()
-    assert pdf["value"].iloc[0] == 21.0
-    assert pdf["changed_by"].iloc[0] == "tester"
-    assert pdf["annotation"].iloc[0] == "fixed typo"
+    assert pdf["value"].iloc[-1] == 21.0   # latest row is the correction
+    assert pdf["changed_by"].iloc[-1] == "tester"
+    assert pdf["annotation"].iloc[-1] == "fixed typo"
     assert "value" in df.columns
     assert "changed_by" in df.columns
     assert "annotation" in df.columns
@@ -654,17 +657,16 @@ def test_read_relative_picks_latest_correction(td, sample_datetime):
 
     kt = sample_datetime - timedelta(hours=13)
 
-    result = td.get_series("forecast").insert(
+    td.get_series("forecast").insert(
         data=pd.DataFrame({"valid_time": [sample_datetime], "value": [100.0]}),
         knowledge_time=kt,
     )
 
-    # Correct the value — same knowledge_time, new change_time
-    td.get_series("forecast").update_records(updates=[{
-        "knowledge_time": kt,
-        "valid_time": sample_datetime,
-        "value": 110.0,
-    }])
+    # Correct the value — re-insert with same knowledge_time, newer change_time wins via argMax
+    td.get_series("forecast").insert(
+        data=pd.DataFrame({"valid_time": [sample_datetime], "value": [110.0]}),
+        knowledge_time=kt,
+    )
 
     df = td.get_series("forecast").read_relative(
         start_valid=sample_datetime,

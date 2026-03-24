@@ -57,48 +57,54 @@ uv run file.py
 
 ## 3) Database Environment
 
-If you do not already have PostgreSQL with the TimescaleDB extension set up, spin one up locally using Docker.
+TimeDB uses two databases:
+- **PostgreSQL** (port `5433`) — stores series metadata
+- **ClickHouse** (port `8123`) — stores all time-series values
+
+Spin both up locally using Docker:
 
 ```bash
-cd timescaledb-test/
+cd local-db/
 docker compose up -d
 ```
 
-Verify the container is running:
+Verify the containers are running:
 
 ```bash
 docker ps
 ```
 
-This starts a local TimescaleDB Community Edition instance on port `5433`.
+You should see `local_postgres` (port 5433) and `local_clickhouse` (port 8123).
 
 ## 4) Configuration
 
-The application requires a `TIMEDB_DSN` environment variable to connect to the database.
+The application requires `TIMEDB_PG_DSN` and `TIMEDB_CH_URL` environment variables.
 
-Fastest option (recommended): from the repository root (base directory), copy the example environment file.
+Fastest option (recommended): from the repository root, copy the example environment file.
 
 ```bash
 cp .env.example .env
 ```
 
-`TIMEDB_DSN` should already be set correctly for the local Docker setup.
-
+Both variables are already set correctly for the local Docker setup:
 
 ```text
-TIMEDB_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+TIMEDB_PG_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+TIMEDB_CH_URL=http://default:@localhost:8123/default
 ```
 
-Alternatively, export the variable directly in your shell:
+Alternatively, export the variables directly in your shell:
 
 ```bash
 # Bash/Zsh
-export TIMEDB_DSN='postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
+export TIMEDB_PG_DSN='postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
+export TIMEDB_CH_URL='http://default:@localhost:8123/default'
 ```
 
 ```fish
 # Fish
-set -x TIMEDB_DSN postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+set -x TIMEDB_PG_DSN postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+set -x TIMEDB_CH_URL http://default:@localhost:8123/default
 ```
 
 ## 5) Next Steps
@@ -109,17 +115,23 @@ Now you can try the examples in `examples/`, or build your own script using the 
 
 ### Helper scripts (Bash and Fish)
 
-If you are using the local Docker setup, use scripts in `timescaledb-test/`:
+If you are using the local Docker setup, use scripts in `local-db/`:
 
 - `./restart-db.sh` or `./restart-db.fish`: Restarts containers while preserving existing data.
 - `./clean-restart-db.sh` or `./clean-restart-db.fish`: Removes containers, volumes, and data, then starts fresh.
 
 ### Manual inspection
 
-Connect directly with `psql`:
+Connect to PostgreSQL with `psql`:
 
 ```bash
 psql postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+```
+
+Connect to ClickHouse with the HTTP interface:
+
+```bash
+curl http://localhost:8123/ping
 ```
 
 ## 7) Building Documentation

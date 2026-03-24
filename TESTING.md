@@ -16,22 +16,20 @@ pip install -e ".[test]"
 
 This installs timedb in editable mode along with pytest and pytest-cov.
 
-### 2. Configure Test Database
+### 2. Configure Test Databases
 
-Set one of these environment variables with your test database connection string:
+Set both environment variables for PostgreSQL and ClickHouse:
 
 ```bash
 # Bash/Zsh
-export TEST_TIMEDB_DSN='postgresql://user:password@host:port/test_database'
-# OR
-export TEST_DATABASE_URL='postgresql://user:password@host:port/test_database'
+export TEST_TIMEDB_PG_DSN='postgresql://user:password@host:port/test_database'
+export TEST_TIMEDB_CH_URL='http://default:@localhost:8123/default'
 ```
 
 ```fish
 # Fish
-set -x TEST_TIMEDB_DSN postgresql://user:password@host:port/test_database
-# OR
-set -x TEST_DATABASE_URL postgresql://user:password@host:port/test_database
+set -x TEST_TIMEDB_PG_DSN postgresql://user:password@host:port/test_database
+set -x TEST_TIMEDB_CH_URL http://default:@localhost:8123/default
 ```
 
 **Important**: Use a separate test database, not your development database. Tests will create and drop schema objects.
@@ -90,14 +88,14 @@ pytest -m "not slow"
 Fixtures are defined in `conftest.py`:
 
 - `test_db_conninfo`: Provides the test database connection string
-- `clean_db`: Creates a fresh TimescaleDB schema for each test
+- `clean_db`: Creates a fresh schema in both PostgreSQL and ClickHouse for each test
 - `sample_batch_id`: Generates a UUID for test runs
 - `sample_workflow_id`: Provides a test workflow ID
 - `sample_datetime`: Provides a sample datetime for testing
 
 ### Schema
 
-The schema is defined in `pg_create_table_timescaledb.sql` (tables) and `pg_create_timescaledb_features.sql` (hypertables, compression, retention). It supports inserts, reads, and updates with `valid_time_end` for intervals, tags, annotations, and versioning.
+The PostgreSQL schema is defined in `pg_create_tables.sql` (series_table). The ClickHouse schema is defined in `ch_create_tables.sql` (batches_table, flat, overlapping_short/medium/long). It supports inserts, reads, and updates with full temporal versioning.
 
 Used by: `create`, `insert`, `read`, `update` modules and all test files.
 
@@ -163,7 +161,7 @@ pytest --cov=timedb --cov-fail-under=80
 
 ### Tests Fail with "Database connection not configured"
 
-Make sure you've set `TEST_TIMEDB_DSN` or `TEST_DATABASE_URL` environment variable.
+Make sure you've set `TEST_TIMEDB_PG_DSN` and `TEST_TIMEDB_CH_URL` environment variables.
 
 ### Tests Fail with Permission Errors
 

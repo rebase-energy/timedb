@@ -9,37 +9,41 @@ from timedb import TimeDataClient
 
 
 @pytest.fixture(scope="function")
-def test_db_conninfo():
-    """Get test database connection string from environment."""
-    conninfo = os.environ.get("TEST_TIMEDB_DSN") or os.environ.get("TEST_DATABASE_URL")
+def test_pg_conninfo():
+    """Get PostgreSQL test connection string from environment."""
+    conninfo = os.environ.get("TEST_TIMEDB_PG_DSN") or os.environ.get("TEST_DATABASE_URL")
     if not conninfo:
-        pytest.skip("TEST_TIMEDB_DSN or TEST_DATABASE_URL environment variable not set")
+        pytest.skip("TEST_TIMEDB_PG_DSN environment variable not set")
     return conninfo
 
 
 @pytest.fixture(scope="function")
-def clean_db(test_db_conninfo):
+def test_ch_url():
+    """Get ClickHouse test URL from environment."""
+    ch_url = os.environ.get("TEST_TIMEDB_CH_URL")
+    if not ch_url:
+        pytest.skip("TEST_TIMEDB_CH_URL environment variable not set")
+    return ch_url
+
+
+@pytest.fixture(scope="function")
+def clean_db(test_pg_conninfo, test_ch_url):
     """Create a clean database schema for each test.
 
-    Creates the full TimescaleDB schema including:
-    - batches_table, series_table
-    - flat (hypertable for immutable facts)
-    - overlapping_short/medium/long (hypertables for versioned overlapping)
+    Creates:
+    - PostgreSQL: series_table
+    - ClickHouse: batches_table, flat, overlapping_short/medium/long
     """
-    # Delete existing schema if it exists
-    delete.delete_schema(test_db_conninfo)
-
-    # Create fresh schema
-    create.create_schema(test_db_conninfo)
-
-    yield test_db_conninfo
+    delete.delete_schema(test_pg_conninfo, test_ch_url)
+    create.create_schema(test_pg_conninfo, test_ch_url)
+    yield test_pg_conninfo, test_ch_url
 
 
 @pytest.fixture
 def td(clean_db):
     """TimeDataClient with connection pool properly closed after each test."""
-    os.environ["TIMEDB_DSN"] = clean_db
-    client = TimeDataClient()
+    pg_conninfo, ch_url = clean_db
+    client = TimeDataClient(pg_conninfo=pg_conninfo, ch_url=ch_url)
     yield client
     client.close()
 
