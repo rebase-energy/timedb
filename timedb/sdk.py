@@ -1374,7 +1374,7 @@ def _insert(
     if profiling._enabled:
         profiling._record(profiling.PHASE_INSERT_NORMALIZE, perf_counter() - _t_normalize)
 
-    with _get_connection(_pool, _get_pg_conninfo()) as conn:
+    with _get_connection(_pool) as conn:
         db.insert.insert_table(ch_client, conn, table=table, routing=routing, batch_ctx=batch_ctx)
 
     return InsertResult(
@@ -1490,7 +1490,7 @@ def _write(
         mapping_combos = unique_df.to_dicts()
         unique_sids = pl_df[series_col].unique().to_list()
 
-        with _get_connection(_pool, _get_pg_conninfo()) as conn:
+        with _get_connection(_pool) as conn:
             found_ids = db.series.resolve_series_by_ids(conn, unique_sids, registry)
         profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
 
@@ -1541,7 +1541,7 @@ def _write(
         identity_df = unique_df.select(identity_cols).unique() if has_unit_col else unique_df
         identities = [(row[0], dict(zip(label_cols, row[1:]))) for row in identity_df.iter_rows()]
 
-        with _get_connection(_pool, _get_pg_conninfo()) as conn:
+        with _get_connection(_pool) as conn:
             found = db.series.resolve_series(conn, identities, registry)
         profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
 
@@ -1648,7 +1648,7 @@ def _write(
     profiling._record(profiling.PHASE_WRITE_NORMALIZE, perf_counter() - t_normalize_start)
 
     # ── Insert all partitions ─────────────────────────────────────────────────
-    with _get_connection(_pool, _get_pg_conninfo()) as conn:
+    with _get_connection(_pool) as conn:
         db.insert.insert_tables(conn, ch_client, partitioned=partitioned, batch_contexts=batch_ctx_map)
 
     # ── Build results: one InsertResult per (series_id, batch_id) pair ────────
