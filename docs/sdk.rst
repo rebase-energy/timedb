@@ -409,15 +409,38 @@ combos) times regardless of DataFrame size.
    # Series registered as "MW" — kW rows are multiplied by 0.001 automatically.
    # Passing unit= kwarg at the same time as a unit column raises ValueError.
 
+**Pattern 6 — direct series ID routing** ``(series_col)``**:** when you already know
+the integer ``series_id`` values (e.g. from a previous ``create_series()`` call or a
+read→write round-trip), bypass name/label resolution entirely:
+
+.. code-block:: text
+
+   series_id | valid_time                | value
+   ----------|---------------------------|------
+   42        | 2025-01-01 00:00:00+00:00 |  4.2
+   42        | 2025-01-01 01:00:00+00:00 |  4.5
+   17        | 2025-01-01 00:00:00+00:00 |  9.1
+   ...
+
+.. code-block:: python
+
+   results = td.write(df, series_col="series_id")
+   # Validates that series IDs 42 and 17 exist, then inserts directly.
+   # Mutually exclusive with name_col and label_cols.
+
+All other options (``unit``, ``batch_cols``, ``knowledge_time``, etc.) work
+identically in both routing modes.
+
 Full signature:
 
 .. code-block:: python
 
    results = td.write(
        df,                       # pd.DataFrame or pl.DataFrame
-       name_col="name",          # defaults to "name"
-       label_cols=None,          # None → inferred; [] → no labels
+       name_col=None,            # defaults to "name"; mutually exclusive with series_col
+       label_cols=None,          # None → inferred; [] → no labels; mutually exclusive with series_col
        batch_cols=None,          # columns that define batch identity (provenance)
+       series_col=None,          # route by series ID; mutually exclusive with name_col/label_cols
        *,
        knowledge_time=None,      # broadcast; mutually exclusive with column
        unit=None,                # broadcast unit; mutually exclusive with unit column

@@ -119,10 +119,11 @@ _OPTIONAL_PASSTHROUGH = ["valid_time_end", "change_time", "changed_by", "annotat
 
 def normalize_write_input(
     pl_df: pl.DataFrame,
-    name_col: str,
+    name_col: Optional[str],
     label_cols: List[str],
     mapping_df: pl.DataFrame,
     *,
+    series_col: Optional[str] = None,
     batch_id: Optional[str] = None,
     batch_mapping: Optional[pl.DataFrame] = None,
     batch_cols: Optional[List[str]] = None,
@@ -131,8 +132,9 @@ def normalize_write_input(
     """Convert a multi-series Polars DataFrame to partitioned Arrow tables.
 
     *pl_df* must already be a Polars DataFrame (caller converts from Pandas if
-    needed).  *mapping_df* must be a flat Polars DataFrame with columns
-    ``[name_col, *label_cols, _series_id, _unit, _factor, _target_table,
+    needed).  *mapping_df* must be a flat Polars DataFrame keyed on routing
+    columns (either ``[name_col, *label_cols]`` or ``[series_col]``) with
+    metadata columns ``[_series_id, _unit, _factor, _target_table,
     _overlapping, _retention]`` — one row per unique series identity.
 
     Unit conversion is applied vectorized via a join.  All
@@ -145,12 +147,15 @@ def normalize_write_input(
 
     Args:
         pl_df: Input data as a Polars DataFrame.  Must contain ``valid_time``
-            and ``value`` columns plus *name_col* and *label_cols*.
+            and ``value`` columns plus routing columns.
         name_col: Column in *pl_df* that maps to ``series_table.name``.
+            ``None`` when *series_col* is used.
         label_cols: Columns in *pl_df* that map to ``series_table.labels``.
-        mapping_df: Flat routing table with columns
-            ``[name_col, *label_cols, _series_id, _unit, _factor,
-            _target_table, _overlapping, _retention]``.
+        mapping_df: Flat routing table keyed on routing columns with
+            ``[_series_id, _unit, _factor, _target_table, _overlapping,
+            _retention]`` metadata columns.
+        series_col: Column whose values are integer series IDs.  When set,
+            the join uses *series_col* instead of *name_col*/*label_cols*.
         batch_id: UUID batch identifier stamped into every row (single-batch
             path, mutually exclusive with *batch_mapping*).
         batch_mapping: Polars DataFrame with columns ``[*batch_cols, "_batch_id"]``
@@ -171,7 +176,10 @@ def normalize_write_input(
             kwarg are provided.
         ValueError: If any datetime column is timezone-naive.
     """
-    routing_cols = {name_col} | set(label_cols)
+    if series_col is not None:
+        routing_cols = {series_col}
+    else:
+        routing_cols = {name_col} | set(label_cols)
     data_col_names = [c for c in pl_df.columns if c not in routing_cols]
 
     # ── Validate required columns ─────────────────────────────────────────────
@@ -201,7 +209,11 @@ def normalize_write_input(
     # ── Type-safe join: cast mapping_df routing cols to match pl_df schema ────
     # Include "unit" in the join key when it's present — this supports per-row
     # unit conversion where mapping_df has one row per (series, unit) combo.
-    join_on = [name_col] + label_cols
+    if series_col is not None:
+        join_on: list[str] = [series_col]
+    else:
+        assert name_col is not None
+        join_on = [name_col] + label_cols
     if "unit" in pl_df.columns:
         join_on = join_on + ["unit"]
     cast_schema = {col: pl_df.schema[col] for col in join_on if col in pl_df.schema}

@@ -193,8 +193,9 @@ Key Endpoints
 
    **Query parameters:**
 
-   - ``name_col`` (str, default ``"name"``): column whose values are series names
-   - ``label_cols`` (str): comma-separated label column names, e.g. ``"site,turbine"``
+   - ``name_col`` (str, default ``None`` → ``"name"``): column whose values are series names (mutually exclusive with ``series_col``)
+   - ``label_cols`` (str): comma-separated label column names, e.g. ``"site,turbine"`` (mutually exclusive with ``series_col``)
+   - ``series_col`` (str, optional): column whose values are integer series IDs — bypasses name/label resolution (mutually exclusive with ``name_col``/``label_cols``)
    - ``knowledge_time`` (datetime, optional): broadcast knowledge_time for all rows
    - ``unit`` (str, optional): incoming unit — auto-converted to each series' canonical unit
    - ``batch_cols`` (str, optional): comma-separated columns that define separate batches

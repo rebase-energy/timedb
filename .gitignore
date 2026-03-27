@@ -91,6 +91,7 @@ clickhouse-test/
 storage_benchmark_tsdb/
 benchmark6.0_tsdb/
 benchmark7.0_api/
+ch-issue.py
 
 # ClickHouse server data dirs (created when clickhouse-server runs from repo root)
 data/

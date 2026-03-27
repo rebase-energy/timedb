@@ -903,9 +903,10 @@ class TimeDataClient:
     def write(
         self,
         df: Union[pd.DataFrame, pl.DataFrame],
-        name_col: str = "name",
+        name_col: Optional[str] = None,
         label_cols: Optional[List[str]] = None,
         batch_cols: Optional[List[str]] = None,
+        series_col: Optional[str] = None,
         *,
         knowledge_time: Optional[datetime] = None,
         unit: Optional[str] = None,
@@ -917,14 +918,15 @@ class TimeDataClient:
         """
         Insert multi-series data in long/tidy format.
 
-        All routing information is encoded in the DataFrame itself.  *name_col*
-        identifies which column becomes ``series_table.name``; *label_cols*
-        identifies which columns become ``series_table.labels``.  All series
-        must already exist — unknown (name, labels) combinations raise a
+        Series routing is controlled by either *name_col*/*label_cols* (resolve
+        by name and labels) or *series_col* (route by integer series ID
+        directly, bypassing resolution).  The two modes are mutually exclusive.
+
+        All series must already exist — unknown identities raise a
         :class:`ValueError` before any data is written.
 
         The DataFrame must contain ``valid_time`` and ``value`` columns in
-        addition to *name_col* and *label_cols*.  Optional passthrough columns
+        addition to routing columns.  Optional passthrough columns
         (``valid_time_end``, ``change_time``, ``changed_by``, ``annotation``)
         are forwarded to the database unchanged if present.
 
@@ -932,11 +934,17 @@ class TimeDataClient:
             df: Long-format DataFrame (Pandas or Polars) containing routing
                 and data columns.
             name_col: Column whose values map to ``series_table.name``.
-                Defaults to ``"name"``.
+                Defaults to ``"name"`` when *series_col* is not set.
+                Mutually exclusive with *series_col*.
             label_cols: Columns whose values map to ``series_table.labels``.
                 If ``None`` (default), inferred as all columns not in
                 :data:`_WRITE_RESERVED_COLS`, not *name_col*, and not
                 *batch_cols*.  Pass ``[]`` explicitly for series with no labels.
+                Mutually exclusive with *series_col*.
+            series_col: Column whose values are integer ``series_table.series_id``
+                values.  When set, bypasses name/label resolution and only
+                validates that the IDs exist.  Mutually exclusive with
+                *name_col* and *label_cols*.
             batch_cols: Columns that define batch identity (provenance).  Each
                 unique combination of values becomes a distinct batch in the
                 database.  Three routing rules apply:
@@ -970,7 +978,10 @@ class TimeDataClient:
             combinations and M is the number of series.
 
         Raises:
-            ValueError: If any (name, labels) combination has no matching series.
+            ValueError: If any (name, labels) combination or series ID has no
+                matching series.
+            ValueError: If *series_col* is used together with *name_col* or
+                *label_cols*.
             ValueError: If ``valid_time`` or ``value`` columns are missing.
             ValueError: If *batch_cols* contains columns not present in *df*.
             ValueError: If *batch_cols* overlaps with *label_cols*.
@@ -981,11 +992,32 @@ class TimeDataClient:
             >>> td.write(df, name_col="metric", label_cols=["site", "turbine_id"])
         """
         all_cols = list(df.columns)
-        if name_col not in all_cols:
-            raise ValueError(
-                f"Name column {name_col!r} not found in DataFrame. "
-                f"Rename your column to 'name' or pass name_col='your_column'."
-            )
+
+        # ── Mutual exclusivity: series_col vs name_col/label_cols ─────────
+        if series_col is not None:
+            if name_col is not None:
+                raise ValueError(
+                    "series_col and name_col are mutually exclusive. "
+                    "Use series_col to route by series ID, or name_col/label_cols to route by name and labels."
+                )
+            if label_cols is not None:
+                raise ValueError(
+                    "series_col and label_cols are mutually exclusive. "
+                    "Use series_col to route by series ID, or name_col/label_cols to route by name and labels."
+                )
+            if series_col not in all_cols:
+                raise ValueError(
+                    f"Series column {series_col!r} not found in DataFrame. "
+                    f"Available columns: {all_cols}"
+                )
+            label_cols = []
+        else:
+            name_col = name_col or "name"
+            if name_col not in all_cols:
+                raise ValueError(
+                    f"Name column {name_col!r} not found in DataFrame. "
+                    f"Rename your column to 'name' or pass name_col='your_column'."
+                )
 
         # Validate unit column / kwarg mutual exclusion
         if "unit" in all_cols and unit is not None:
@@ -1003,7 +1035,7 @@ class TimeDataClient:
                     f"Available columns: {all_cols}"
                 )
 
-        if label_cols is None:
+        if series_col is None and label_cols is None:
             exclude = _WRITE_RESERVED_COLS | set(batch_cols or [])
             label_cols = [c for c in all_cols if c not in exclude and c != name_col]
 
@@ -1022,6 +1054,7 @@ class TimeDataClient:
             name_col=name_col,
             label_cols=label_cols,
             batch_cols=batch_cols,
+            series_col=series_col,
             knowledge_time=knowledge_time,
             data_unit=unit,
             workflow_id=workflow_id,
@@ -1382,9 +1415,10 @@ def _build_multi_batch_contexts(
 
 def _write(
     df: Union[pd.DataFrame, pl.DataFrame],
-    name_col: str,
+    name_col: Optional[str],
     label_cols: List[str],
     batch_cols: Optional[List[str]] = None,
+    series_col: Optional[str] = None,
     *,
     knowledge_time: Optional[datetime] = None,
     data_unit: Optional[str] = None,
@@ -1403,11 +1437,14 @@ def _write(
     in one atomic transaction.
 
     Args:
-        df: Long-format DataFrame with *name_col*, *label_cols*, ``valid_time``,
+        df: Long-format DataFrame with routing columns, ``valid_time``,
             ``value``, and optional audit columns.
         name_col: Column whose values map to ``series_table.name``.
+            ``None`` when *series_col* is used.
         label_cols: Columns whose values map to ``series_table.labels``.
         batch_cols: Columns that define batch identity (provenance).
+        series_col: Column whose values are integer series IDs.  When set,
+            bypasses name/label resolution and only validates IDs exist.
         knowledge_time: Broadcast knowledge_time (mutually exclusive with a
             ``knowledge_time`` column in *df*).
         data_unit: Unit of the incoming values for pint conversion.
@@ -1419,7 +1456,8 @@ def _write(
         List of :class:`InsertResult`, one per unique (series_id, batch_id) pair.
 
     Raises:
-        ValueError: If any (name, labels) combination has no matching series.
+        ValueError: If any (name, labels) combination or series ID has no
+            matching series.
         IncompatibleUnitError: If *data_unit* is incompatible with any series unit.
     """
 
@@ -1439,70 +1477,120 @@ def _write(
             "Every row must specify a unit. Use 'dimensionless' for unit-free values."
         )
 
-    # ── Extract unique routing combos + identities ────────────────────────────
-    identity_cols = [name_col] + label_cols
-    mapping_keys_cols = identity_cols + (["unit"] if has_unit_col else [])
-    unique_df = pl_df.select(mapping_keys_cols).unique()
-    mapping_combos = unique_df.to_dicts()
-    identity_df = unique_df.select(identity_cols).unique() if has_unit_col else unique_df
-    identities = [(row[0], dict(zip(label_cols, row[1:]))) for row in identity_df.iter_rows()]
-
-    # ── Resolve series in one DB round-trip ───────────────────────────────────
+    # ── Resolve series and build mapping DataFrame ─────────────────────────────
     t_resolve_start = perf_counter()
     registry = SeriesRegistry()
-    with _get_connection(_pool, _get_pg_conninfo()) as conn:
-        found = db.series.resolve_series(conn, identities, registry)
-    profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
 
-    if missing := [
-        f"name={n!r}, labels={l!r}"
-        for n, l in identities
-        if db.series._make_series_key(n.strip(), l) not in found
-    ]:
-        raise ValueError(
-            f"No series found for {len(missing)} identity combination(s):\n"
-            + "\n".join(f"  {m}" for m in missing)
-        )
+    if series_col is not None:
+        # ── Fast path: series_col provides IDs directly ──────────────────
+        pl_df = pl_df.with_columns(pl.col(series_col).cast(pl.Int64))
+        identity_cols = [series_col]
+        mapping_keys_cols = [series_col] + (["unit"] if has_unit_col else [])
+        unique_df = pl_df.select(mapping_keys_cols).unique()
+        mapping_combos = unique_df.to_dicts()
+        unique_sids = pl_df[series_col].unique().to_list()
 
-    # ── Build mapping DataFrame (unit factors + routing metadata) ─────────────
-    # One row per unique (name, labels[, unit]) combo.  pint is only invoked
-    # O(unique combos) times regardless of DataFrame size.
-    mapping_rows: Dict[str, list] = {
-        name_col: [], **{lc: [] for lc in label_cols},
-        "_series_id": [], "_unit": [], "_factor": [],
-        "_target_table": [], "_overlapping": [], "_retention": [],
-    }
-    if has_unit_col:
-        mapping_rows["unit"] = []
+        with _get_connection(_pool, _get_pg_conninfo()) as conn:
+            found_ids = db.series.resolve_series_by_ids(conn, unique_sids, registry)
+        profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
 
-    for row in mapping_combos:
-        name = row[name_col]
-        labels = {k: row[k] for k in label_cols}
-        sid = found[db.series._make_series_key(name.strip(), labels)]
-        meta = registry.get_cached(sid)
-        series_unit = meta["unit"]
-        incoming_unit = row["unit"] if has_unit_col else (data_unit or "dimensionless")
-
-        factor = insert_pipeline._compute_unit_factor(incoming_unit, series_unit)
-        if factor is None and incoming_unit == "dimensionless" and series_unit != "dimensionless":
-            warnings.warn(
-                f"Inserting dimensionless values into series with unit '{series_unit}' "
-                f"(name={name!r}, labels={labels!r}). Values stored as-is without conversion.",
-                UserWarning,
-                stacklevel=3,
+        if missing := [sid for sid in unique_sids if sid not in found_ids]:
+            raise ValueError(
+                f"No series found for {len(missing)} series_id(s): {missing}"
             )
 
-        mapping_rows[name_col].append(name)
-        for lc in label_cols:
-            mapping_rows[lc].append(labels.get(lc))
+        mapping_rows: Dict[str, list] = {
+            series_col: [],
+            "_series_id": [], "_unit": [], "_factor": [],
+            "_target_table": [], "_overlapping": [], "_retention": [],
+        }
         if has_unit_col:
-            mapping_rows["unit"].append(row["unit"])
-        mapping_rows["_series_id"].append(sid)
-        mapping_rows["_unit"].append(series_unit)
-        mapping_rows["_factor"].append(factor if factor is not None else 1.0)
-        mapping_rows["_target_table"].append(meta["table"])
-        mapping_rows["_overlapping"].append(meta["overlapping"])
-        mapping_rows["_retention"].append(meta["retention"])
+            mapping_rows["unit"] = []
+
+        for row in mapping_combos:
+            sid = row[series_col]
+            meta = registry.get_cached(sid)
+            series_unit = meta["unit"]
+            incoming_unit = row["unit"] if has_unit_col else (data_unit or "dimensionless")
+
+            factor = insert_pipeline._compute_unit_factor(incoming_unit, series_unit)
+            if factor is None and incoming_unit == "dimensionless" and series_unit != "dimensionless":
+                warnings.warn(
+                    f"Inserting dimensionless values into series with unit '{series_unit}' "
+                    f"(series_id={sid}). Values stored as-is without conversion.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
+            mapping_rows[series_col].append(sid)
+            if has_unit_col:
+                mapping_rows["unit"].append(row["unit"])
+            mapping_rows["_series_id"].append(sid)
+            mapping_rows["_unit"].append(series_unit)
+            mapping_rows["_factor"].append(factor if factor is not None else 1.0)
+            mapping_rows["_target_table"].append(meta["table"])
+            mapping_rows["_overlapping"].append(meta["overlapping"])
+            mapping_rows["_retention"].append(meta["retention"])
+
+    else:
+        # ── Standard path: resolve by name + labels ──────────────────────
+        identity_cols = [name_col] + label_cols
+        mapping_keys_cols = identity_cols + (["unit"] if has_unit_col else [])
+        unique_df = pl_df.select(mapping_keys_cols).unique()
+        mapping_combos = unique_df.to_dicts()
+        identity_df = unique_df.select(identity_cols).unique() if has_unit_col else unique_df
+        identities = [(row[0], dict(zip(label_cols, row[1:]))) for row in identity_df.iter_rows()]
+
+        with _get_connection(_pool, _get_pg_conninfo()) as conn:
+            found = db.series.resolve_series(conn, identities, registry)
+        profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
+
+        if missing := [
+            f"name={n!r}, labels={l!r}"
+            for n, l in identities
+            if db.series._make_series_key(n.strip(), l) not in found
+        ]:
+            raise ValueError(
+                f"No series found for {len(missing)} identity combination(s):\n"
+                + "\n".join(f"  {m}" for m in missing)
+            )
+
+        mapping_rows: Dict[str, list] = {
+            name_col: [], **{lc: [] for lc in label_cols},
+            "_series_id": [], "_unit": [], "_factor": [],
+            "_target_table": [], "_overlapping": [], "_retention": [],
+        }
+        if has_unit_col:
+            mapping_rows["unit"] = []
+
+        for row in mapping_combos:
+            name = row[name_col]
+            labels = {k: row[k] for k in label_cols}
+            sid = found[db.series._make_series_key(name.strip(), labels)]
+            meta = registry.get_cached(sid)
+            series_unit = meta["unit"]
+            incoming_unit = row["unit"] if has_unit_col else (data_unit or "dimensionless")
+
+            factor = insert_pipeline._compute_unit_factor(incoming_unit, series_unit)
+            if factor is None and incoming_unit == "dimensionless" and series_unit != "dimensionless":
+                warnings.warn(
+                    f"Inserting dimensionless values into series with unit '{series_unit}' "
+                    f"(name={name!r}, labels={labels!r}). Values stored as-is without conversion.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
+            mapping_rows[name_col].append(name)
+            for lc in label_cols:
+                mapping_rows[lc].append(labels.get(lc))
+            if has_unit_col:
+                mapping_rows["unit"].append(row["unit"])
+            mapping_rows["_series_id"].append(sid)
+            mapping_rows["_unit"].append(series_unit)
+            mapping_rows["_factor"].append(factor if factor is not None else 1.0)
+            mapping_rows["_target_table"].append(meta["table"])
+            mapping_rows["_overlapping"].append(meta["overlapping"])
+            mapping_rows["_retention"].append(meta["retention"])
 
     # Derive routing col types from pl_df.schema (labels can be any type).
     _mapping_schema = {col: pl_df.schema[col] for col in mapping_keys_cols}
@@ -1531,6 +1619,7 @@ def _write(
             pl_df,
             name_col=name_col,
             label_cols=label_cols,
+            series_col=series_col,
             mapping_df=mapping_df,
             batch_mapping=batch_mapping_df,
             batch_cols=batch_cols,
@@ -1550,6 +1639,7 @@ def _write(
             pl_df,
             name_col=name_col,
             label_cols=label_cols,
+            series_col=series_col,
             mapping_df=mapping_df,
             batch_id=single_batch_ctx.batch_id,
             knowledge_time=knowledge_time,

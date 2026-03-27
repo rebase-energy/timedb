@@ -1340,3 +1340,105 @@ def test_write_passthrough_changed_by(td, ch_client, sample_datetime):
     res = ch_client.query("SELECT changed_by FROM flat")
     assert len(res.result_rows) > 0
     assert res.result_rows[0][0] == "pipeline-v2"
+
+
+# =============================================================================
+# write() series_col tests
+# =============================================================================
+
+def test_write_series_col_basic(td, ch_client, sample_datetime):
+    """write(series_col=...) inserts data using series IDs directly."""
+    sid_a = td.create_series("sensor_a", unit="dimensionless")
+    sid_b = td.create_series("sensor_b", unit="dimensionless")
+
+    df = pd.DataFrame({
+        "sid": [sid_a, sid_a, sid_b, sid_b],
+        "valid_time": [
+            sample_datetime,
+            sample_datetime + timedelta(hours=1),
+            sample_datetime,
+            sample_datetime + timedelta(hours=1),
+        ],
+        "value": [1.0, 2.0, 3.0, 4.0],
+    })
+
+    results = td.write(df, series_col="sid")
+
+    assert len(results) == 2
+    assert len({r.batch_id for r in results}) == 1
+
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 4
+
+
+def test_write_series_col_invalid_id_raises(td, sample_datetime):
+    """write(series_col=...) raises ValueError for unknown series IDs."""
+    td.create_series("existing", unit="dimensionless")
+
+    df = pd.DataFrame({
+        "series_id": [999999],
+        "valid_time": [sample_datetime],
+        "value": [1.0],
+    })
+
+    with pytest.raises(ValueError, match="No series found"):
+        td.write(df, series_col="series_id")
+
+
+def test_write_series_col_with_unit_kwarg(td, ch_client, sample_datetime):
+    """write(series_col=..., unit=...) applies unit conversion."""
+    sid = td.create_series("power", unit="MW")
+
+    df = pd.DataFrame({
+        "sid": [sid],
+        "valid_time": [sample_datetime],
+        "value": [1000.0],  # 1000 kW = 1.0 MW
+    })
+
+    td.write(df, series_col="sid", unit="kW")
+
+    res = ch_client.query("SELECT value FROM flat")
+    assert abs(res.result_rows[0][0] - 1.0) < 1e-9
+
+
+def test_write_series_col_with_batch_cols(td, ch_client, sample_datetime):
+    """write(series_col=..., batch_cols=...) creates multiple batches."""
+    sid = td.create_series("metric", unit="dimensionless", overlapping=True)
+
+    df = pd.DataFrame({
+        "sid": [sid, sid],
+        "model": ["v1", "v2"],
+        "valid_time": [sample_datetime, sample_datetime],
+        "value": [1.0, 2.0],
+    })
+
+    results = td.write(df, series_col="sid", batch_cols=["model"])
+
+    assert len(results) == 2
+    assert len({r.batch_id for r in results}) == 2
+
+
+def test_write_series_col_mutual_exclusivity_name_col(td, sample_datetime):
+    """write() raises ValueError when both series_col and name_col are set."""
+    df = pd.DataFrame({
+        "series_id": [1],
+        "name": ["x"],
+        "valid_time": [sample_datetime],
+        "value": [1.0],
+    })
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        td.write(df, series_col="series_id", name_col="name")
+
+
+def test_write_series_col_mutual_exclusivity_label_cols(td, sample_datetime):
+    """write() raises ValueError when both series_col and label_cols are set."""
+    df = pd.DataFrame({
+        "series_id": [1],
+        "site": ["x"],
+        "valid_time": [sample_datetime],
+        "value": [1.0],
+    })
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        td.write(df, series_col="series_id", label_cols=["site"])

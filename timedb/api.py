@@ -223,6 +223,7 @@ async def root():
             "write_values": "POST /write - Insert multi-series data in long format (JSON or Arrow IPC stream)",
             "read_values": "GET /values - Read time series values (JSON or Arrow IPC stream)",
             "create_series": "POST /series - Create a new time series",
+            "create_series_many": "POST /series/many - Batch create multiple series",
             "list_series": "GET /series - List/filter time series",
             "series_labels": "GET /series/labels - List unique label values",
             "series_count": "GET /series/count - Count matching series",
@@ -451,11 +452,12 @@ async def read_values(
 @app.post("/write")
 async def write_values(
     request: Request,
-    name_col: str = Query("name", description="Column whose values map to series name"),
+    name_col: Optional[str] = Query(None, description="Column whose values map to series name (defaults to 'name', mutually exclusive with series_col)"),
     label_cols: Optional[str] = Query(
         None,
-        description="Comma-separated label column names. Omit to auto-infer (all non-reserved columns).",
+        description="Comma-separated label column names. Omit to auto-infer (mutually exclusive with series_col).",
     ),
+    series_col: Optional[str] = Query(None, description="Column whose values are integer series IDs (bypasses name/label resolution, mutually exclusive with name_col/label_cols)"),
     batch_cols: Optional[str] = Query(None, description="Comma-separated batch column names"),
     knowledge_time: Optional[datetime] = Query(None, description="Broadcast knowledge_time for all rows"),
     unit: Optional[str] = Query(None, description="Unit of incoming values (auto-converts to canonical unit)"),
@@ -467,11 +469,11 @@ async def write_values(
     """
     Insert multi-series data in long/tidy format.
 
-    All series must already exist. Unknown (name, labels) combinations raise an error
-    before any data is written.
+    All series must already exist. Route by name/labels (default) or by series ID
+    (pass ``series_col``). The two modes are mutually exclusive.
 
     **Arrow IPC stream** (`Content-Type: application/vnd.apache.arrow.stream`):
-    Arrow table with `valid_time`, `value`, and routing columns (name_col, label_cols).
+    Arrow table with `valid_time`, `value`, and routing columns (name_col/label_cols or series_col).
     Client: `df.write_ipc_stream(buf)` (Polars) or `pa.ipc.new_stream()` (PyArrow).
 
     **JSON** (`Content-Type: application/json`):
@@ -521,6 +523,7 @@ async def write_values(
             df,
             name_col=name_col,
             label_cols=parsed_label_cols,
+            series_col=series_col,
             batch_cols=parsed_batch_cols,
             knowledge_time=kt,
             unit=unit,
