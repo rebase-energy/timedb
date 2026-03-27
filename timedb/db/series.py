@@ -5,7 +5,7 @@ Handles creation, retrieval, and routing of series with their canonical units an
 Provides SeriesRegistry for caching series metadata across SDK, API, and DB layer.
 """
 import json
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Set, Tuple
 import psycopg
 
 
@@ -200,6 +200,54 @@ def resolve_series(
         }
         key = _make_series_key(name, labels)
         found[key] = sid
+
+    return found
+
+
+def resolve_series_by_ids(
+    conn: psycopg.Connection,
+    series_ids: List[int],
+    registry: "SeriesRegistry",
+) -> Set[int]:
+    """
+    Bulk lookup of series metadata for a list of series_ids.
+
+    Uses a single ``WHERE series_id = ANY(%s)`` round-trip.
+    Populates *registry* with all matching rows.
+
+    Args:
+        conn: psycopg connection.
+        series_ids: List of integer series IDs to validate.
+        registry: SeriesRegistry instance — matching rows are cached into it.
+
+    Returns:
+        Set of series_ids that were found in the database.
+    """
+    if not series_ids:
+        return set()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT series_id, name, description, unit, labels, overlapping, retention "
+            "FROM series_table WHERE series_id = ANY(%s)",
+            (series_ids,),
+        )
+        rows = cur.fetchall()
+
+    found: Set[int] = set()
+    for row in rows:
+        sid, name, description, unit, labels, overlapping, retention = row
+        labels = labels or {}
+        registry._cache[sid] = {
+            "name": name,
+            "description": description,
+            "unit": unit,
+            "labels": labels,
+            "overlapping": overlapping,
+            "retention": retention,
+            "table": get_table_name(overlapping, retention),
+        }
+        found.add(sid)
 
     return found
 
