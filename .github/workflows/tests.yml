@@ -29,6 +29,8 @@ jobs:
         image: clickhouse/clickhouse-server:25.3
         env:
           TZ: UTC
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+          CLICKHOUSE_PASSWORD: ""
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping"
           --health-interval 10s
