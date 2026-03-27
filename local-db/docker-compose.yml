@@ -12,7 +12,7 @@ services:
       - ./pgdata:/var/lib/postgresql/data
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.3
+    image: clickhouse/clickhouse-server:26.1
     container_name: local_clickhouse
     restart: always
     environment:
