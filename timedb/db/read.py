@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -81,6 +81,21 @@ def _fetch_ch_arrow(
     return table
 
 
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Convert to naive UTC so clickhouse-connect doesn't apply server_tz offset.
+
+    clickhouse-connect converts tz-aware datetimes to the server's timezone
+    before sending, but the parameter type hint (e.g. DateTime64(6, 'UTC'))
+    tells ClickHouse to parse the string as UTC.  When server_tz != UTC this
+    causes an offset.  Stripping tzinfo bypasses the conversion.
+
+    See https://github.com/ClickHouse/clickhouse-connect/issues/697
+    """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def _build_ch_where_clause(
     series_id: int,
     start_valid: Optional[datetime] = None,
@@ -94,16 +109,16 @@ def _build_ch_where_clause(
 
     if start_valid is not None:
         filters.append("valid_time >= {start_valid:DateTime64(6, 'UTC')}")
-        params["start_valid"] = start_valid
+        params["start_valid"] = _to_naive_utc(start_valid)
     if end_valid is not None:
         filters.append("valid_time < {end_valid:DateTime64(6, 'UTC')}")
-        params["end_valid"] = end_valid
+        params["end_valid"] = _to_naive_utc(end_valid)
     if start_known is not None:
         filters.append("knowledge_time >= {start_known:DateTime64(6, 'UTC')}")
-        params["start_known"] = start_known
+        params["start_known"] = _to_naive_utc(start_known)
     if end_known is not None:
         filters.append("knowledge_time < {end_known:DateTime64(6, 'UTC')}")
-        params["end_known"] = end_known
+        params["end_known"] = _to_naive_utc(end_known)
 
     return "WHERE " + " AND ".join(filters), params
 
@@ -306,7 +321,7 @@ def read_overlapping_relative(
     params.update({
         "window_secs": int(window_length.total_seconds()),
         "offset_secs": int(issue_offset.total_seconds()),
-        "start_window": start_window,
+        "start_window": _to_naive_utc(start_window),
     })
     sql = f"""
     SELECT

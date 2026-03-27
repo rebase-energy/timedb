@@ -40,7 +40,7 @@ def test_read_flat_via_sdk(td, sample_datetime):
     assert df.shape == DataShape.SIMPLE
 
 
-def test_read_flat_db_layer(td, clean_db, sample_datetime):
+def test_read_flat_db_layer(td, ch_client, sample_datetime):
     """Test reading flat via the db.read layer."""
     series_id = td.create_series("power", unit="dimensionless", overlapping=False)
 
@@ -52,7 +52,7 @@ def test_read_flat_db_layer(td, clean_db, sample_datetime):
 
     # Read via db layer
     result = read.read_flat(
-        clean_db,
+        ch_client,
         series_id=series_id,
         start_valid=sample_datetime,
         end_valid=sample_datetime + timedelta(hours=2),
@@ -63,7 +63,7 @@ def test_read_flat_db_layer(td, clean_db, sample_datetime):
     assert "valid_time" in result.schema.names
 
 
-def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
+def test_read_flat_filter_by_valid_time(td, ch_client, sample_datetime):
     """Test filtering flat by valid_time range."""
     series_id = td.create_series("power", unit="dimensionless", overlapping=False)
 
@@ -80,7 +80,7 @@ def test_read_flat_filter_by_valid_time(td, clean_db, sample_datetime):
 
     # Read only a subset
     result = read.read_flat(
-        clean_db,
+        ch_client,
         series_id=series_id,
         start_valid=sample_datetime + timedelta(hours=1),
         end_valid=sample_datetime + timedelta(hours=3),
@@ -158,7 +158,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
     assert result.shape == DataShape.VERSIONED
 
 
-def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
+def test_read_overlapping_all_versions_db_layer(td, ch_client, sample_datetime):
     """Test reading overlapping forecast history via the db.read layer."""
     series_id = td.create_series(
         "forecast", unit="dimensionless",
@@ -180,7 +180,7 @@ def test_read_overlapping_all_versions_db_layer(td, clean_db, sample_datetime):
     td.get_series("forecast").insert(data=df2, knowledge_time=knowledge_time_2)
 
     result = read.read_overlapping(
-        clean_db,
+        ch_client,
         series_id=series_id,
         table="overlapping_medium",
         start_valid=sample_datetime,
@@ -390,7 +390,7 @@ def test_read_relative_raises_for_flat_series(td, sample_datetime):
         )
 
 
-def test_read_relative_db_layer(td, clean_db, sample_datetime):
+def test_read_relative_db_layer(td, ch_client, sample_datetime):
     """read_overlapping_relative can be called directly via the db layer."""
     series_id = td.create_series(
         "wind_forecast", unit="dimensionless",
@@ -404,7 +404,7 @@ def test_read_relative_db_layer(td, clean_db, sample_datetime):
     )
 
     result = read.read_overlapping_relative(
-        clean_db,
+        ch_client,
         series_id=series_id,
         table="overlapping_medium",
         window_length=timedelta(hours=24),
@@ -579,15 +579,16 @@ def test_read_include_updates_overlapping(td, sample_datetime):
         knowledge_time=kt_new,
     )
 
-    # Apply a correction to the winning (newer) batch via re-insert
-    td.get_series("forecast").insert(
-        data=pd.DataFrame({
+    # Apply a correction to the winning (newer) batch via write() (supports audit columns)
+    td.write(
+        pd.DataFrame({
+            "name": ["forecast"],
             "valid_time": [sample_datetime],
+            "knowledge_time": [kt_new],
             "value": [25.0],
             "changed_by": ["tester"],
             "annotation": ["corrected"],
         }),
-        knowledge_time=kt_new,
     )
 
     df = td.get_series("forecast").read(include_updates=True)
@@ -614,9 +615,10 @@ def test_read_include_updates_flat(td, sample_datetime):
         })
     )
 
-    # Correction: re-insert with updated value; argMax(value, change_time) wins at read time
-    td.get_series("temperature").insert(
-        data=pd.DataFrame({
+    # Correction via write() which supports audit columns (insert() has strict column validation)
+    td.write(
+        pd.DataFrame({
+            "name": ["temperature"],
             "valid_time": [sample_datetime],
             "value": [21.0],
             "changed_by": ["tester"],

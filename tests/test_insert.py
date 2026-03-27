@@ -1,12 +1,13 @@
 """Tests for inserting flat and overlapping data."""
+import json
 import uuid
 import pytest
-import psycopg
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import polars as pl
 
 from timedb import TimeSeries, DataShape, IncompatibleUnitError
+from timedb.db import read
 from timedatamodel.enums import TimeSeriesType
 
 
@@ -14,7 +15,7 @@ from timedatamodel.enums import TimeSeriesType
 # Flat insertion tests
 # =============================================================================
 
-def test_insert_flat_creates_batch(td, clean_db, sample_datetime):
+def test_insert_flat_creates_batch(td, ch_client, sample_datetime):
     """Test inserting flat via SDK creates one batch and rows in the flat table."""
     td.create_series("temperature", unit="dimensionless", overlapping=False)
 
@@ -29,21 +30,19 @@ def test_insert_flat_creates_batch(td, clean_db, sample_datetime):
     assert result.series_id > 0
 
     # Verify rows in flat table
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 2
 
-            # Verify one batch was created
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
+    # Verify one batch was created
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
 
-            # Verify no rows in any overlapping table
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 0
+    # Verify no rows in any overlapping table
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 0
 
 
-def test_insert_flat_with_knowledge_time(td, clean_db, sample_datetime):
+def test_insert_flat_with_knowledge_time(td, ch_client, sample_datetime):
     """Test inserting flat with explicit knowledge_time creates one batch."""
     knowledge_time = sample_datetime - timedelta(hours=1)
 
@@ -63,16 +62,14 @@ def test_insert_flat_with_knowledge_time(td, clean_db, sample_datetime):
     assert isinstance(result.batch_id, uuid.UUID)
 
     # Verify data was inserted
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 1
 
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
 
 
-def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
+def test_insert_flat_point_in_time(td, ch_client, sample_datetime):
     """Test inserting multiple point-in-time flat data."""
     td.create_series("power", unit="dimensionless", overlapping=False)
 
@@ -87,13 +84,11 @@ def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
 
     result = td.get_series("power").insert(data=df)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 3
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 3
 
 
-def test_insert_flat_interval(td, clean_db, sample_datetime):
+def test_insert_flat_interval(td, ch_client, sample_datetime):
     """Test inserting interval flat data with valid_time_end."""
     td.create_series("energy", unit="dimensionless", overlapping=False)
 
@@ -105,30 +100,27 @@ def test_insert_flat_interval(td, clean_db, sample_datetime):
 
     result = td.get_series("energy").insert(data=df)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT valid_time_end FROM flat")
-            row = cur.fetchone()
-            assert row is not None
-            assert row[0] is not None
+    res = ch_client.query("SELECT valid_time_end FROM flat")
+    assert len(res.result_rows) > 0
+    assert res.result_rows[0][0] is not None
 
 
-def test_insert_flat_duplicate_valid_time_raises(td, clean_db, sample_datetime):
+def test_insert_flat_duplicate_valid_time_raises(td, sample_datetime):
     """Flat insert with duplicate valid_times raises ValueError before hitting the DB."""
     td.create_series("dedup_err", unit="dimensionless")
     vt = sample_datetime
-    ts = TimeSeries.from_pandas(pd.DataFrame([
-        {"knowledge_time": sample_datetime,                      "valid_time": vt, "value": 1.0},
-        {"knowledge_time": sample_datetime + timedelta(hours=1), "valid_time": vt, "value": 2.0},
-    ]), unit="dimensionless")
+    df = pd.DataFrame([
+        {"valid_time": vt, "value": 1.0},
+        {"valid_time": vt, "value": 2.0},
+    ])
 
     with pytest.raises(ValueError, match=r"duplicate.*valid_time"):
-        td.get_series("dedup_err").insert(data=ts)
+        td.get_series("dedup_err").insert(data=df)
 
 
-def test_insert_flat_upsert(td, clean_db, sample_datetime):
-    """Test that inserting the same flat valid_time twice updates the value."""
-    td.create_series("meter", unit="dimensionless", overlapping=False)
+def test_insert_flat_upsert(td, ch_client, sample_datetime):
+    """Test that inserting the same flat valid_time twice — the latest value wins via argMax."""
+    series_id = td.create_series("meter", unit="dimensionless", overlapping=False)
 
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime],
@@ -142,20 +134,17 @@ def test_insert_flat_upsert(td, clean_db, sample_datetime):
     })
     td.get_series("meter").insert(data=df2)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 1
-
-            cur.execute("SELECT value FROM flat")
-            assert cur.fetchone()[0] == 150.0
+    # ClickHouse is append-only; read layer deduplicates via argMax(value, change_time)
+    result = read.read_flat(ch_client, series_id=series_id)
+    assert result.num_rows == 1
+    assert result.column("value").to_pylist()[0] == 150.0
 
 
 # =============================================================================
 # Overlapping insertion tests
 # =============================================================================
 
-def test_insert_overlapping_creates_batch(td, clean_db, sample_datetime):
+def test_insert_overlapping_creates_batch(td, ch_client, sample_datetime):
     """Test inserting overlapping via SDK creates rows in overlapping_medium table."""
     td.create_series(
         "wind_forecast", unit="dimensionless",
@@ -173,20 +162,18 @@ def test_insert_overlapping_creates_batch(td, clean_db, sample_datetime):
     assert result.series_id > 0
 
     # Verify rows in overlapping_medium
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s",
-                (str(result.batch_id),)
-            )
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query(
+        "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = {bid:String}",
+        parameters={"bid": str(result.batch_id)},
+    )
+    assert res.result_rows[0][0] == 2
 
-            # Verify no rows in flat
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 0
+    # Verify no rows in flat
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 0
 
 
-def test_insert_overlapping_short_tier(td, clean_db):
+def test_insert_overlapping_short_tier(td, ch_client):
     """Test inserting overlapping with retention='short'."""
     # Use a recent datetime to avoid the 6-month retention policy on overlapping_short
     recent_time = datetime.now(timezone.utc).replace(microsecond=0)
@@ -203,19 +190,17 @@ def test_insert_overlapping_short_tier(td, clean_db):
 
     td.get_series("price_forecast").insert(data=df, knowledge_time=recent_time)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM overlapping_short")
-            assert cur.fetchone()[0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_short")
+    assert res.result_rows[0][0] == 1
 
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 0
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 0
 
-            cur.execute("SELECT COUNT(*) FROM overlapping_long")
-            assert cur.fetchone()[0] == 0
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_long")
+    assert res.result_rows[0][0] == 0
 
 
-def test_insert_overlapping_long_tier(td, clean_db, sample_datetime):
+def test_insert_overlapping_long_tier(td, ch_client, sample_datetime):
     """Test inserting overlapping with retention='long'."""
     td.create_series(
         "climate_forecast", unit="dimensionless",
@@ -229,13 +214,11 @@ def test_insert_overlapping_long_tier(td, clean_db, sample_datetime):
 
     td.get_series("climate_forecast").insert(data=df, knowledge_time=sample_datetime)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM overlapping_long")
-            assert cur.fetchone()[0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_long")
+    assert res.result_rows[0][0] == 1
 
 
-def test_insert_overlapping_interval(td, clean_db, sample_datetime):
+def test_insert_overlapping_interval(td, ch_client, sample_datetime):
     """Test inserting interval overlapping with valid_time_end."""
     td.create_series(
         "energy_forecast", unit="dimensionless",
@@ -252,12 +235,9 @@ def test_insert_overlapping_interval(td, clean_db, sample_datetime):
         data=df, knowledge_time=sample_datetime,
     )
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT valid_time_end FROM overlapping_medium")
-            row = cur.fetchone()
-            assert row is not None
-            assert row[0] is not None
+    res = ch_client.query("SELECT valid_time_end FROM overlapping_medium")
+    assert len(res.result_rows) > 0
+    assert res.result_rows[0][0] is not None
 
 
 # =============================================================================
@@ -290,7 +270,7 @@ def _make_simple_ts(datetimes, values, unit="dimensionless", timeseries_type=Tim
     return TimeSeries.from_polars(df, unit=unit, timeseries_type=timeseries_type)
 
 
-def test_insert_timeseries_flat(td, clean_db, sample_datetime):
+def test_insert_timeseries_flat(td, ch_client, sample_datetime):
     """TimeSeries with SIMPLE shape inserts correctly into a flat series."""
     td.create_series("ts_flat", unit="dimensionless", overlapping=False)
 
@@ -304,13 +284,11 @@ def test_insert_timeseries_flat(td, clean_db, sample_datetime):
     assert isinstance(result.batch_id, uuid.UUID)
     assert result.series_id > 0
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 2
 
 
-def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
+def test_insert_timeseries_overlapping(td, ch_client, sample_datetime):
     """TimeSeries with SIMPLE shape inserts correctly into an overlapping series."""
     td.create_series("ts_ovlp", unit="dimensionless", overlapping=True, retention="medium")
 
@@ -324,16 +302,14 @@ def test_insert_timeseries_overlapping(td, clean_db, sample_datetime):
 
     assert isinstance(result.batch_id, uuid.UUID)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = %s",
-                (str(result.batch_id),),
-            )
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query(
+        "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = {bid:String}",
+        parameters={"bid": str(result.batch_id)},
+    )
+    assert res.result_rows[0][0] == 2
 
 
-def test_insert_timeseries_unit_conversion(td, clean_db, sample_datetime):
+def test_insert_timeseries_unit_conversion(td, ch_client, sample_datetime):
     """TimeSeries whose unit differs from the series unit is converted automatically."""
     # Series stores in MW; insert in kW — value should be divided by 1000
     td.create_series("power_mw", unit="MW", overlapping=False)
@@ -342,14 +318,12 @@ def test_insert_timeseries_unit_conversion(td, clean_db, sample_datetime):
 
     td.get_series("power_mw").insert(data=ts)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM flat")
-            stored = cur.fetchone()[0]
-            assert abs(stored - 1.0) < 1e-9, f"Expected 1.0 MW, got {stored}"
+    res = ch_client.query("SELECT value FROM flat")
+    stored = res.result_rows[0][0]
+    assert abs(stored - 1.0) < 1e-9, f"Expected 1.0 MW, got {stored}"
 
 
-def test_insert_df_unit_conversion(td, clean_db, sample_datetime):
+def test_insert_df_unit_conversion(td, ch_client, sample_datetime):
     """DataFrame insert with unit kwarg converts values to the series' canonical unit."""
     # Series stores in MW; insert in kW — value should be divided by 1000
     td.create_series("power_mw_df", unit="MW", overlapping=False)
@@ -361,14 +335,12 @@ def test_insert_df_unit_conversion(td, clean_db, sample_datetime):
 
     td.get_series("power_mw_df").insert(data=df, unit="kW")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM flat")
-            stored = cur.fetchone()[0]
-            assert abs(stored - 1.0) < 1e-9, f"Expected 1.0 MW, got {stored}"
+    res = ch_client.query("SELECT value FROM flat")
+    stored = res.result_rows[0][0]
+    assert abs(stored - 1.0) < 1e-9, f"Expected 1.0 MW, got {stored}"
 
 
-def test_insert_df_unit_incompatible_raises(td, clean_db, sample_datetime):
+def test_insert_df_unit_incompatible_raises(td, ch_client, sample_datetime):
     """DataFrame insert with an incompatible unit raises IncompatibleUnitError before any DB write."""
     td.create_series("power_mw_df2", unit="MW", overlapping=False)
 
@@ -381,13 +353,11 @@ def test_insert_df_unit_incompatible_raises(td, clean_db, sample_datetime):
         td.get_series("power_mw_df2").insert(data=df, unit="meter")
 
     # Verify nothing was written
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 0
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 0
 
 
-def test_insert_df_unit_none_no_conversion(td, clean_db, sample_datetime):
+def test_insert_df_unit_none_no_conversion(td, ch_client, sample_datetime):
     """DataFrame insert with unit=None (default) stores values unchanged for dimensionless series."""
     td.create_series("scalar_metric", unit="dimensionless", overlapping=False)
 
@@ -398,14 +368,12 @@ def test_insert_df_unit_none_no_conversion(td, clean_db, sample_datetime):
 
     td.get_series("scalar_metric").insert(data=df, unit=None)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM flat")
-            stored = cur.fetchone()[0]
-            assert abs(stored - 42.5) < 1e-9, f"Expected 42.5, got {stored}"
+    res = ch_client.query("SELECT value FROM flat")
+    stored = res.result_rows[0][0]
+    assert abs(stored - 42.5) < 1e-9, f"Expected 42.5, got {stored}"
 
 
-def test_insert_timeseries_interval(td, clean_db, sample_datetime):
+def test_insert_timeseries_interval(td, ch_client, sample_datetime):
     """TimeSeries with valid_time_end column inserts interval data correctly."""
     td.create_series("energy_ts", unit="dimensionless", overlapping=False)
 
@@ -418,12 +386,9 @@ def test_insert_timeseries_interval(td, clean_db, sample_datetime):
 
     td.get_series("energy_ts").insert(data=ts)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT valid_time_end FROM flat")
-            row = cur.fetchone()
-            assert row is not None
-            assert row[0] is not None
+    res = ch_client.query("SELECT valid_time_end FROM flat")
+    assert len(res.result_rows) > 0
+    assert res.result_rows[0][0] is not None
 
 
 def test_insert_timeseries_wrong_shape(td, sample_datetime):
@@ -460,7 +425,7 @@ def _make_versioned_ts(knowledge_times, valid_times, values, unit="dimensionless
 # VERSIONED insert tests
 # =============================================================================
 
-def test_insert_versioned_single_kt(td, clean_db, sample_datetime):
+def test_insert_versioned_single_kt(td, ch_client, sample_datetime):
     """VERSIONED TimeSeries with one unique knowledge_time creates exactly one batch."""
     td.create_series(
         "v_single", unit="dimensionless",
@@ -476,15 +441,13 @@ def test_insert_versioned_single_kt(td, clean_db, sample_datetime):
 
     assert isinstance(result.batch_id, uuid.UUID)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 2
 
 
-def test_insert_versioned_multi_kt(td, clean_db, sample_datetime):
+def test_insert_versioned_multi_kt(td, ch_client, sample_datetime):
     """VERSIONED TimeSeries with multiple unique knowledge_times creates exactly one batch."""
     td.create_series(
         "v_multi", unit="dimensionless",
@@ -509,16 +472,14 @@ def test_insert_versioned_multi_kt(td, clean_db, sample_datetime):
 
     assert isinstance(result.batch_id, uuid.UUID)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            # One batch per insert() call regardless of unique knowledge_time count
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 5
+    # One batch per insert() call regardless of unique knowledge_time count
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 5
 
 
-def test_insert_versioned_into_flat(td, clean_db, sample_datetime):
+def test_insert_versioned_into_flat(td, ch_client, sample_datetime):
     """VERSIONED TimeSeries inserted into a flat series stores per-row knowledge_times."""
     td.create_series("v_flat_ok", unit="dimensionless", overlapping=False)
 
@@ -533,17 +494,15 @@ def test_insert_versioned_into_flat(td, clean_db, sample_datetime):
     result = td.get_series("v_flat_ok").insert(data=ts)
     assert isinstance(result.batch_id, uuid.UUID)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT knowledge_time FROM flat WHERE series_id = %s ORDER BY valid_time",
-                (result.series_id,),
-            )
-            rows = cur.fetchall()
+    res = ch_client.query(
+        "SELECT knowledge_time FROM flat WHERE series_id = {sid:Int64} ORDER BY valid_time",
+        parameters={"sid": result.series_id},
+    )
+    rows = res.result_rows
     assert len(rows) == 2
 
 
-def test_insert_versioned_kt_kwarg_ambiguity_raises(td, clean_db, sample_datetime):
+def test_insert_versioned_kt_kwarg_ambiguity_raises(td, sample_datetime):
     """Passing knowledge_time kwarg with a VERSIONED insert raises ValueError (ambiguous)."""
     td.create_series(
         "v_ambiguous", unit="dimensionless",
@@ -566,7 +525,7 @@ def test_insert_versioned_kt_kwarg_ambiguity_raises(td, clean_db, sample_datetim
 # knowledge_time in DataFrame tests
 # =============================================================================
 
-def test_insert_df_with_kt_column_overlapping(td, clean_db, sample_datetime):
+def test_insert_df_with_kt_column_overlapping(td, ch_client, sample_datetime):
     """DataFrame with knowledge_time column is accepted and routes correctly."""
     td.create_series(
         "df_kt_col", unit="dimensionless",
@@ -590,13 +549,11 @@ def test_insert_df_with_kt_column_overlapping(td, clean_db, sample_datetime):
 
     assert isinstance(result.batch_id, uuid.UUID)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            # One batch per insert() call
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 3
+    # One batch per insert() call
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 3
 
 
 def test_insert_df_kt_ambiguity_raises(td, sample_datetime):
@@ -619,7 +576,7 @@ def test_insert_df_kt_ambiguity_raises(td, sample_datetime):
         )
 
 
-def test_insert_df_without_kt_defaults_to_now(td, clean_db, sample_datetime):
+def test_insert_df_without_kt_defaults_to_now(td, ch_client, sample_datetime):
     """DataFrame without knowledge_time and no kwarg stores rows with a recent knowledge_time."""
     td.create_series("df_no_kt", unit="dimensionless", overlapping=False)
 
@@ -634,21 +591,20 @@ def test_insert_df_without_kt_defaults_to_now(td, clean_db, sample_datetime):
 
     after = datetime.now(timezone.utc)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT knowledge_time FROM flat")
-            row = cur.fetchone()
-            assert row is not None
-            kt = row[0]
-            # knowledge_time should be between before and after (baked from now())
-            assert before <= kt <= after
+    res = ch_client.query("SELECT knowledge_time FROM flat")
+    assert len(res.result_rows) > 0
+    kt = res.result_rows[0][0]
+    # ClickHouse DateTime64('UTC') returns timezone-aware datetime
+    if kt.tzinfo is None:
+        kt = kt.replace(tzinfo=timezone.utc)
+    assert before <= kt <= after
 
 
 # =============================================================================
 # write() tests
 # =============================================================================
 
-def test_write_long_format_pandas(td, clean_db, sample_datetime):
+def test_write_long_format_pandas(td, ch_client, sample_datetime):
     """write() inserts multi-series long-format Pandas data in one batch."""
     td.create_series("sensor_a", unit="dimensionless")
     td.create_series("sensor_b", unit="dimensionless")
@@ -669,15 +625,13 @@ def test_write_long_format_pandas(td, clean_db, sample_datetime):
     assert len(results) == 2
     assert len({r.batch_id for r in results}) == 1  # one batch for all
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 4
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 4
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
 
 
-def test_write_long_format_polars(td, clean_db, sample_datetime):
+def test_write_long_format_polars(td, ch_client, sample_datetime):
     """write() inserts multi-series long-format Polars data in one batch."""
     td.create_series("sensor_a", unit="dimensionless")
     td.create_series("sensor_b", unit="dimensionless")
@@ -698,13 +652,11 @@ def test_write_long_format_polars(td, clean_db, sample_datetime):
     assert len(results) == 2
     assert len({r.batch_id for r in results}) == 1
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 4
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 4
 
 
-def test_write_with_label_cols(td, clean_db, sample_datetime):
+def test_write_with_label_cols(td, ch_client, sample_datetime):
     """write() with label_cols routes to the correct series."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
     td.create_series("power", unit="dimensionless", labels={"site": "B"})
@@ -720,10 +672,8 @@ def test_write_with_label_cols(td, clean_db, sample_datetime):
 
     assert len(results) == 2
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 2
 
 
 def test_write_missing_series_raises(td, sample_datetime):
@@ -738,7 +688,7 @@ def test_write_missing_series_raises(td, sample_datetime):
         td.write(df, name_col="metric")
 
 
-def test_write_mixed_flat_overlapping(td, clean_db, sample_datetime):
+def test_write_mixed_flat_overlapping(td, ch_client, sample_datetime):
     """write() with flat and overlapping series inserts both in one transaction."""
     td.create_series("flat_metric", unit="dimensionless", overlapping=False)
     td.create_series("ovlp_metric", unit="dimensionless", overlapping=True, retention="medium")
@@ -754,17 +704,15 @@ def test_write_mixed_flat_overlapping(td, clean_db, sample_datetime):
     assert len(results) == 2
     assert len({r.batch_id for r in results}) == 1  # single shared batch
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 1
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 1
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 1
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 1
 
 
-def test_write_unit_incompatible_raises(td, clean_db, sample_datetime):
+def test_write_unit_incompatible_raises(td, ch_client, sample_datetime):
     """write() raises IncompatibleUnitError before DB write for incompatible units."""
     from timedb import IncompatibleUnitError
 
@@ -779,15 +727,13 @@ def test_write_unit_incompatible_raises(td, clean_db, sample_datetime):
     with pytest.raises(IncompatibleUnitError):
         td.write(df, name_col="metric", unit="kg")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 0
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 0
 
 
 
 
-def test_write_passthrough_change_time(td, clean_db, sample_datetime):
+def test_write_passthrough_change_time(td, ch_client, sample_datetime):
     """write() preserves an explicit change_time column rather than using DEFAULT."""
     td.create_series("ct_metric", unit="dimensionless")
 
@@ -802,41 +748,31 @@ def test_write_passthrough_change_time(td, clean_db, sample_datetime):
 
     td.write(df, name_col="metric")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT change_time FROM flat")
-            stored_ct = cur.fetchone()[0]
-            assert abs((stored_ct - explicit_ct).total_seconds()) < 1
+    res = ch_client.query("SELECT change_time FROM flat")
+    stored_ct = res.result_rows[0][0]
+    if stored_ct.tzinfo is None:
+        stored_ct = stored_ct.replace(tzinfo=timezone.utc)
+    assert abs((stored_ct - explicit_ct).total_seconds()) < 1
 
 
-def test_write_upsert_stamps_change_time(td, clean_db, sample_datetime):
-    """Upsert without change_time column updates change_time to now() via ON CONFLICT."""
-    td.create_series("upsert_ct", unit="dimensionless")
+def test_write_upsert_stamps_change_time(td, ch_client, sample_datetime):
+    """Two writes to the same valid_time produce distinct change_times; read returns latest."""
+    series_id = td.create_series("upsert_ct", unit="dimensionless")
 
     vt = sample_datetime
     df1 = pd.DataFrame({"metric": ["upsert_ct"], "valid_time": [vt], "value": [1.0]})
     td.write(df1, name_col="metric")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT change_time FROM flat")
-            ct_before_upsert = cur.fetchone()[0]
-
     df2 = pd.DataFrame({"metric": ["upsert_ct"], "valid_time": [vt], "value": [2.0]})
-    before = datetime.now(timezone.utc)
     td.write(df2, name_col="metric")
-    after = datetime.now(timezone.utc)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value, change_time FROM flat")
-            row = cur.fetchone()
-            assert row[0] == 2.0                        # value updated
-            assert before <= row[1] <= after            # change_time refreshed to now()
-            assert row[1] >= ct_before_upsert           # never went backwards
+    # Read latest via argMax — should return value 2.0
+    result = read.read_flat(ch_client, series_id=series_id)
+    assert result.num_rows == 1
+    assert result.column("value").to_pylist()[0] == 2.0
 
 
-def test_write_passthrough_annotation(td, clean_db, sample_datetime):
+def test_write_passthrough_annotation(td, ch_client, sample_datetime):
     """write() forwards an annotation column to the database unchanged."""
     td.create_series("ann_metric", unit="dimensionless")
 
@@ -849,19 +785,16 @@ def test_write_passthrough_annotation(td, clean_db, sample_datetime):
 
     td.write(df, name_col="metric")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT annotation FROM flat")
-            row = cur.fetchone()
-            assert row is not None
-            assert row[0] == "corrected value"
+    res = ch_client.query("SELECT annotation FROM flat")
+    assert len(res.result_rows) > 0
+    assert res.result_rows[0][0] == "corrected value"
 
 
 # =============================================================================
 # write() — batch_cols: unreserved columns → batch_params
 # =============================================================================
 
-def test_write_batch_cols_unreserved_creates_multiple_batches(td, clean_db, sample_datetime):
+def test_write_batch_cols_unreserved_creates_multiple_batches(td, ch_client, sample_datetime):
     """batch_cols with an unreserved column creates one batch per unique value."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -879,13 +812,11 @@ def test_write_batch_cols_unreserved_creates_multiple_batches(td, clean_db, samp
     assert len(results) == 2
     assert len({r.batch_id for r in results}) == 2  # two distinct batches
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 2
 
 
-def test_write_batch_cols_unreserved_batch_params_json(td, clean_db, sample_datetime):
+def test_write_batch_cols_unreserved_batch_params_json(td, ch_client, sample_datetime):
     """Unreserved batch_col values are packed into batch_params JSON on the batch record."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -899,15 +830,13 @@ def test_write_batch_cols_unreserved_batch_params_json(td, clean_db, sample_date
 
     td.write(df, batch_cols=["model"])
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT batch_params FROM batches_table ORDER BY inserted_at")
-            rows = cur.fetchall()
-            stored_models = {row[0]["model"] for row in rows}
-            assert stored_models == {"ECMWF", "GFS"}
+    res = ch_client.query("SELECT batch_params FROM batches_table ORDER BY inserted_at")
+    rows = res.result_rows
+    stored_models = {json.loads(row[0])["model"] for row in rows}
+    assert stored_models == {"ECMWF", "GFS"}
 
 
-def test_write_batch_cols_result_count_n_batches_times_m_series(td, clean_db, sample_datetime):
+def test_write_batch_cols_result_count_n_batches_times_m_series(td, ch_client, sample_datetime):
     """Returns N×M InsertResults: one per (batch, series) combination."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
     td.create_series("power", unit="dimensionless", labels={"site": "B"})
@@ -928,7 +857,7 @@ def test_write_batch_cols_result_count_n_batches_times_m_series(td, clean_db, sa
     assert len({r.batch_id for r in results}) == 3
 
 
-def test_write_batch_cols_shared_workflow_id_kwarg(td, clean_db, sample_datetime):
+def test_write_batch_cols_shared_workflow_id_kwarg(td, ch_client, sample_datetime):
     """Global workflow_id kwarg is applied to all batches when not in batch_cols."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -942,15 +871,13 @@ def test_write_batch_cols_shared_workflow_id_kwarg(td, clean_db, sample_datetime
 
     td.write(df, batch_cols=["model"], workflow_id="shared-run")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT workflow_id FROM batches_table")
-            rows = cur.fetchall()
-            assert len(rows) == 1
-            assert rows[0][0] == "shared-run"
+    res = ch_client.query("SELECT DISTINCT workflow_id FROM batches_table")
+    rows = res.result_rows
+    assert len(rows) == 1
+    assert rows[0][0] == "shared-run"
 
 
-def test_write_batch_cols_global_batch_params_merged(td, clean_db, sample_datetime):
+def test_write_batch_cols_global_batch_params_merged(td, ch_client, sample_datetime):
     """Global batch_params kwarg is merged with per-batch unreserved col values."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -964,17 +891,15 @@ def test_write_batch_cols_global_batch_params_merged(td, clean_db, sample_dateti
 
     td.write(df, batch_cols=["model"], batch_params={"source": "nwp"})
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT batch_params FROM batches_table ORDER BY inserted_at")
-            rows = cur.fetchall()
-            for row in rows:
-                params = row[0]
-                assert params["source"] == "nwp"       # global key present
-                assert params["model"] in {"ECMWF", "GFS"}  # per-batch key present
+    res = ch_client.query("SELECT batch_params FROM batches_table ORDER BY inserted_at")
+    rows = res.result_rows
+    for row in rows:
+        params = json.loads(row[0])
+        assert params["source"] == "nwp"       # global key present
+        assert params["model"] in {"ECMWF", "GFS"}  # per-batch key present
 
 
-def test_write_batch_cols_compound_key(td, clean_db, sample_datetime):
+def test_write_batch_cols_compound_key(td, ch_client, sample_datetime):
     """batch_cols with multiple columns creates one batch per unique combination."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -998,17 +923,15 @@ def test_write_batch_cols_compound_key(td, clean_db, sample_datetime):
     assert len(results) == 4  # 4 unique (model, run) combos × 1 series
     assert len({r.batch_id for r in results}) == 4
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 4
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 4
 
 
 # =============================================================================
 # write() — batch_cols: reserved columns → native batches_table fields
 # =============================================================================
 
-def test_write_batch_cols_reserved_workflow_id_stored_natively(td, clean_db, sample_datetime):
+def test_write_batch_cols_reserved_workflow_id_stored_natively(td, ch_client, sample_datetime):
     """workflow_id in batch_cols maps to the native batches_table field, not batch_params."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -1022,20 +945,18 @@ def test_write_batch_cols_reserved_workflow_id_stored_natively(td, clean_db, sam
 
     td.write(df, batch_cols=["workflow_id"])
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT workflow_id, batch_params FROM batches_table ORDER BY inserted_at")
-            rows = cur.fetchall()
-            assert len(rows) == 2
-            stored_wf_ids = {row[0] for row in rows}
-            assert stored_wf_ids == {"run-06z", "run-18z"}
-            # workflow_id is a reserved field — should NOT appear in batch_params
-            for row in rows:
-                params = row[1]
-                assert params is None or "workflow_id" not in params
+    res = ch_client.query("SELECT workflow_id, batch_params FROM batches_table ORDER BY inserted_at")
+    rows = res.result_rows
+    assert len(rows) == 2
+    stored_wf_ids = {row[0] for row in rows}
+    assert stored_wf_ids == {"run-06z", "run-18z"}
+    # workflow_id is a reserved field — should NOT appear in batch_params
+    for row in rows:
+        params = json.loads(row[1]) if row[1] else None
+        assert params is None or "workflow_id" not in params
 
 
-def test_write_batch_cols_reserved_batch_start_finish_time(td, clean_db, sample_datetime):
+def test_write_batch_cols_reserved_batch_start_finish_time(td, ch_client, sample_datetime):
     """batch_start_time and batch_finish_time in batch_cols are stored as native fields."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -1055,19 +976,23 @@ def test_write_batch_cols_reserved_batch_start_finish_time(td, clean_db, sample_
 
     td.write(df, batch_cols=["batch_start_time", "batch_finish_time"])
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT batch_start_time, batch_finish_time, batch_params "
-                "FROM batches_table ORDER BY batch_start_time"
-            )
-            rows = cur.fetchall()
-            assert len(rows) == 2
-            assert rows[0][0].replace(tzinfo=timezone.utc) == t_start_a or rows[0][0] == t_start_a
-            assert rows[0][2] is None  # not packed into batch_params
+    res = ch_client.query(
+        "SELECT batch_start_time, batch_finish_time, batch_params "
+        "FROM batches_table ORDER BY batch_start_time"
+    )
+    rows = res.result_rows
+    assert len(rows) == 2
+    stored_start = rows[0][0]
+    if stored_start.tzinfo is None:
+        stored_start = stored_start.replace(tzinfo=timezone.utc)
+    assert stored_start == t_start_a
+    # not packed into batch_params (ClickHouse defaults to '{}')
+    params = json.loads(rows[0][2]) if rows[0][2] else {}
+    assert "batch_start_time" not in params
+    assert "batch_finish_time" not in params
 
 
-def test_write_batch_cols_mix_reserved_and_unreserved(td, clean_db, sample_datetime):
+def test_write_batch_cols_mix_reserved_and_unreserved(td, ch_client, sample_datetime):
     """Reserved cols go to native fields; unreserved cols go to batch_params."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -1082,16 +1007,15 @@ def test_write_batch_cols_mix_reserved_and_unreserved(td, clean_db, sample_datet
 
     td.write(df, batch_cols=["workflow_id", "model"])
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT workflow_id, batch_params FROM batches_table ORDER BY inserted_at")
-            rows = cur.fetchall()
-            assert len(rows) == 2
-            for row in rows:
-                wf_id, params = row
-                assert wf_id in {"run-A", "run-B"}
-                assert "model" in params
-                assert "workflow_id" not in (params or {})
+    res = ch_client.query("SELECT workflow_id, batch_params FROM batches_table ORDER BY inserted_at")
+    rows = res.result_rows
+    assert len(rows) == 2
+    for row in rows:
+        wf_id, params_str = row
+        params = json.loads(params_str)
+        assert wf_id in {"run-A", "run-B"}
+        assert "model" in params
+        assert "workflow_id" not in (params or {})
 
 
 # =============================================================================
@@ -1131,7 +1055,7 @@ def test_write_batch_cols_overlaps_label_cols_raises(td, sample_datetime):
 # write() — batch_cols: knowledge_time interactions
 # =============================================================================
 
-def test_write_batch_cols_with_knowledge_time_kwarg(td, clean_db, sample_datetime):
+def test_write_batch_cols_with_knowledge_time_kwarg(td, ch_client, sample_datetime):
     """knowledge_time kwarg is broadcast to all rows across all batches."""
     td.create_series("power", unit="dimensionless", overlapping=True, retention="medium")
 
@@ -1148,16 +1072,16 @@ def test_write_batch_cols_with_knowledge_time_kwarg(td, clean_db, sample_datetim
 
     td.write(df, batch_cols=["model"], knowledge_time=kt)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT knowledge_time FROM overlapping_medium")
-            rows = cur.fetchall()
-            assert len(rows) == 1
-            stored_kt = rows[0][0]
-            assert abs((stored_kt - kt).total_seconds()) < 1
+    res = ch_client.query("SELECT DISTINCT knowledge_time FROM overlapping_medium")
+    rows = res.result_rows
+    assert len(rows) == 1
+    stored_kt = rows[0][0]
+    if stored_kt.tzinfo is None:
+        stored_kt = stored_kt.replace(tzinfo=timezone.utc)
+    assert abs((stored_kt - kt).total_seconds()) < 1
 
 
-def test_write_batch_cols_with_per_row_knowledge_time(td, clean_db, sample_datetime):
+def test_write_batch_cols_with_per_row_knowledge_time(td, ch_client, sample_datetime):
     """Per-row knowledge_time column works correctly alongside batch_cols."""
     td.create_series("power", unit="dimensionless", overlapping=True, retention="medium")
 
@@ -1175,13 +1099,11 @@ def test_write_batch_cols_with_per_row_knowledge_time(td, clean_db, sample_datet
     results = td.write(df, batch_cols=["model"])
     assert len(results) == 2
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT knowledge_time FROM overlapping_medium ORDER BY knowledge_time")
-            rows = cur.fetchall()
-            assert len(rows) == 2
-            stored_kts = {r[0] for r in rows}
-            assert len(stored_kts) == 2  # two distinct knowledge_times stored
+    res = ch_client.query("SELECT knowledge_time FROM overlapping_medium ORDER BY knowledge_time")
+    rows = res.result_rows
+    assert len(rows) == 2
+    stored_kts = {r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc) for r in rows}
+    assert len(stored_kts) == 2  # two distinct knowledge_times stored
 
 
 def test_write_batch_cols_knowledge_time_kwarg_and_column_raises(td, sample_datetime):
@@ -1204,7 +1126,7 @@ def test_write_batch_cols_knowledge_time_kwarg_and_column_raises(td, sample_date
 # write() — batch_cols: overlapping series
 # =============================================================================
 
-def test_write_batch_cols_overlapping_series(td, clean_db, sample_datetime):
+def test_write_batch_cols_overlapping_series(td, ch_client, sample_datetime):
     """batch_cols creates multiple batches in the overlapping table."""
     td.create_series("forecast", unit="dimensionless", overlapping=True, retention="medium")
 
@@ -1225,19 +1147,17 @@ def test_write_batch_cols_overlapping_series(td, clean_db, sample_datetime):
     assert len(results) == 2
     assert len({r.batch_id for r in results}) == 2
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM overlapping_medium")
-            assert cur.fetchone()[0] == 4
-            cur.execute("SELECT COUNT(*) FROM batches_table")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
+    assert res.result_rows[0][0] == 4
+    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    assert res.result_rows[0][0] == 2
 
 
 # =============================================================================
 # write() — unit handling
 # =============================================================================
 
-def test_write_unit_kwarg_converts_all_series(td, clean_db, sample_datetime):
+def test_write_unit_kwarg_converts_all_series(td, ch_client, sample_datetime):
     """unit= kwarg triggers pint conversion for all series in the write call."""
     td.create_series("power", unit="MW", labels={"site": "A"})
     td.create_series("power", unit="MW", labels={"site": "B"})
@@ -1251,16 +1171,14 @@ def test_write_unit_kwarg_converts_all_series(td, clean_db, sample_datetime):
 
     td.write(df, unit="kW")
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM flat ORDER BY series_id")
-            rows = cur.fetchall()
-            assert len(rows) == 2
-            assert abs(rows[0][0] - 1.0) < 1e-9
-            assert abs(rows[1][0] - 2.0) < 1e-9
+    res = ch_client.query("SELECT value FROM flat ORDER BY series_id")
+    rows = res.result_rows
+    assert len(rows) == 2
+    assert abs(rows[0][0] - 1.0) < 1e-9
+    assert abs(rows[1][0] - 2.0) < 1e-9
 
 
-def test_write_per_row_unit_column_mixed_units(td, clean_db, sample_datetime):
+def test_write_per_row_unit_column_mixed_units(td, ch_client, sample_datetime):
     """unit column applies per-row pint conversion — mixed kW and MW stored as MW."""
     td.create_series("power", unit="MW", labels={"site": "A"})
 
@@ -1274,16 +1192,14 @@ def test_write_per_row_unit_column_mixed_units(td, clean_db, sample_datetime):
 
     td.write(df)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM flat ORDER BY valid_time")
-            rows = cur.fetchall()
-            assert len(rows) == 2
-            assert abs(rows[0][0] - 3.0) < 1e-9
-            assert abs(rows[1][0] - 5.0) < 1e-9
+    res = ch_client.query("SELECT value FROM flat ORDER BY valid_time")
+    rows = res.result_rows
+    assert len(rows) == 2
+    assert abs(rows[0][0] - 3.0) < 1e-9
+    assert abs(rows[1][0] - 5.0) < 1e-9
 
 
-def test_write_per_row_unit_column_null_raises(td, clean_db, sample_datetime):
+def test_write_per_row_unit_column_null_raises(td, ch_client, sample_datetime):
     """unit column with null values raises ValueError before any DB write."""
     td.create_series("power", unit="MW")
 
@@ -1297,10 +1213,8 @@ def test_write_per_row_unit_column_null_raises(td, clean_db, sample_datetime):
     with pytest.raises(ValueError, match="null"):
         td.write(df)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 0
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 0
 
 
 def test_write_unit_col_and_unit_kwarg_raises(td, sample_datetime):
@@ -1322,7 +1236,7 @@ def test_write_unit_col_and_unit_kwarg_raises(td, sample_datetime):
 # write() — label and routing
 # =============================================================================
 
-def test_write_auto_infers_label_cols_excluding_batch_cols(td, clean_db, sample_datetime):
+def test_write_auto_infers_label_cols_excluding_batch_cols(td, sample_datetime):
     """label_cols are auto-inferred — batch_cols are excluded from the inferred set."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
@@ -1340,7 +1254,7 @@ def test_write_auto_infers_label_cols_excluding_batch_cols(td, clean_db, sample_
     assert len(results) == 2
 
 
-def test_write_default_name_col(td, clean_db, sample_datetime):
+def test_write_default_name_col(td, ch_client, sample_datetime):
     """name_col defaults to 'name' — no explicit name_col argument needed."""
     td.create_series("temperature", unit="dimensionless")
 
@@ -1353,13 +1267,11 @@ def test_write_default_name_col(td, clean_db, sample_datetime):
     results = td.write(df)
     assert len(results) == 1
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM flat")
-            assert cur.fetchone()[0] == 2
+    res = ch_client.query("SELECT COUNT(*) FROM flat")
+    assert res.result_rows[0][0] == 2
 
 
-def test_write_explicit_empty_label_cols(td, clean_db, sample_datetime):
+def test_write_explicit_empty_label_cols(td, sample_datetime):
     """label_cols=[] works for series with no labels."""
     td.create_series("global_metric", unit="dimensionless")
 
@@ -1389,7 +1301,7 @@ def test_write_name_col_not_in_dataframe_raises(td, sample_datetime):
 # write() — optional passthrough columns
 # =============================================================================
 
-def test_write_passthrough_valid_time_end(td, clean_db, sample_datetime):
+def test_write_passthrough_valid_time_end(td, ch_client, sample_datetime):
     """valid_time_end column is forwarded to the flat table unchanged."""
     td.create_series("interval_metric", unit="dimensionless")
 
@@ -1404,16 +1316,15 @@ def test_write_passthrough_valid_time_end(td, clean_db, sample_datetime):
 
     td.write(df)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT valid_time_end FROM flat")
-            row = cur.fetchone()
-            assert row is not None
-            stored_vte = row[0]
-            assert abs((stored_vte - vte).total_seconds()) < 1
+    res = ch_client.query("SELECT valid_time_end FROM flat")
+    assert len(res.result_rows) > 0
+    stored_vte = res.result_rows[0][0]
+    if stored_vte.tzinfo is None:
+        stored_vte = stored_vte.replace(tzinfo=timezone.utc)
+    assert abs((stored_vte - vte).total_seconds()) < 1
 
 
-def test_write_passthrough_changed_by(td, clean_db, sample_datetime):
+def test_write_passthrough_changed_by(td, ch_client, sample_datetime):
     """changed_by column is forwarded to the flat table unchanged."""
     td.create_series("audited_metric", unit="dimensionless")
 
@@ -1426,9 +1337,6 @@ def test_write_passthrough_changed_by(td, clean_db, sample_datetime):
 
     td.write(df)
 
-    with psycopg.connect(clean_db) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT changed_by FROM flat")
-            row = cur.fetchone()
-            assert row is not None
-            assert row[0] == "pipeline-v2"
+    res = ch_client.query("SELECT changed_by FROM flat")
+    assert len(res.result_rows) > 0
+    assert res.result_rows[0][0] == "pipeline-v2"

@@ -15,6 +15,8 @@ services:
     image: clickhouse/clickhouse-server:25.3
     container_name: local_clickhouse
     restart: always
+    environment:
+      TZ: UTC
     ports:
       - "127.0.0.1:8123:8123"
       - "127.0.0.1:9000:9000"
