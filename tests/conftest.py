@@ -1,7 +1,7 @@
 """Pytest configuration and fixtures for timedb tests."""
 import os
 import pytest
-import psycopg
+import clickhouse_connect
 from datetime import datetime, timezone
 
 from timedb.db import create, delete
@@ -44,6 +44,15 @@ def td(clean_db):
     """TimeDataClient with connection pool properly closed after each test."""
     pg_conninfo, ch_url = clean_db
     client = TimeDataClient(pg_conninfo=pg_conninfo, ch_url=ch_url)
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def ch_client(clean_db):
+    """ClickHouse client for direct verification queries."""
+    _, ch_url = clean_db
+    client = clickhouse_connect.get_client(dsn=ch_url)
     yield client
     client.close()
 
