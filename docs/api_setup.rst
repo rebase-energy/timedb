@@ -9,7 +9,7 @@ Prerequisites
 Before setting up the API server, ensure:
 
 1. **Database is set up**: The timedb schema must be created (see :doc:`CLI <cli>` or :doc:`SDK <sdk>`)
-2. **Database connection configured**: Set ``TIMEDB_DSN`` or ``DATABASE_URL`` environment variable
+2. **Database connection configured**: Set ``TIMEDB_PG_DSN`` (or ``DATABASE_URL``) and ``TIMEDB_CH_URL`` environment variables
 3. **Dependencies installed**: FastAPI and uvicorn are included in timedb package
 
 Starting the API Server
@@ -66,18 +66,20 @@ Configuration
 Database Connection
 ~~~~~~~~~~~~~~~~~~~
 
-The API server requires a database connection. Set one of these environment variables:
+The API server requires connections to both PostgreSQL (series metadata) and ClickHouse (time series data).
+Set these environment variables:
 
-- ``TIMEDB_DSN`` (preferred)
-- ``DATABASE_URL`` (alternative)
+- ``TIMEDB_PG_DSN`` (or ``DATABASE_URL``): PostgreSQL connection string
+- ``TIMEDB_CH_URL``: ClickHouse connection URL
 
 You can use a ``.env`` file in your project root:
 
 .. code-block:: text
 
-   TIMEDB_DSN=postgresql://user:password@localhost:5432/timedb
+   TIMEDB_PG_DSN=postgresql://user:password@localhost:5432/timedb
+   TIMEDB_CH_URL=clickhouse://localhost:8123/timedb
 
-The API will fail to start if the database connection is not configured.
+The API will fail to start if either connection is not configured.
 
 Accessing the API
 -----------------
@@ -96,9 +98,9 @@ API Endpoints Overview
 The API provides the following endpoints:
 
 - ``GET /`` - API information and available endpoints
-- ``POST /values`` - Insert time series data
-- ``GET /values`` - Read time series values
-- ``PUT /values`` - Update existing time series records
+- ``POST /values`` - Insert single-series data (JSON or Arrow IPC stream)
+- ``POST /write`` - Insert multi-series data in long format (JSON or Arrow IPC stream)
+- ``GET /values`` - Read time series values (JSON or Arrow IPC stream)
 - ``POST /series`` - Create a new time series
 - ``GET /series`` - List/filter time series
 - ``GET /series/labels`` - List unique label values for a key
@@ -106,53 +108,45 @@ The API provides the following endpoints:
 
 Visit ``/docs`` when the server is running for detailed endpoint documentation with request/response schemas.
 
-Updating Records via API
-------------------------
+Multi-Series Write via API
+--------------------------
 
-Update overlapping records using the ``PUT /values`` endpoint:
+Insert data for multiple series in a single request using ``POST /write``:
 
 .. code-block:: bash
 
-   curl -X PUT http://localhost:8000/values \
+   curl -X POST http://localhost:8000/write?name_col=name&label_cols=site \
      -H "Content-Type: application/json" \
-     -d '{
-       "updates": [
-         {
-           "valid_time": "2025-01-01T12:00:00Z",
-           "series_id": 1,
-           "batch_id": 42,
-           "value": 150.0,
-           "annotation": "Corrected reading",
-           "tags": ["reviewed"],
-           "changed_by": "user@example.com"
-         }
-       ]
-     }'
+     -d '[
+       {"name": "wind_power", "site": "Gotland", "valid_time": "2025-01-01T00:00:00Z", "value": 100.0},
+       {"name": "wind_power", "site": "Aland",   "valid_time": "2025-01-01T00:00:00Z", "value": 95.0}
+     ]'
 
-Or using Python requests:
+Or using Python with Arrow IPC for better performance:
 
 .. code-block:: python
 
+   import io
+   import polars as pl
    import requests
 
-   response = requests.put(
-       "http://localhost:8000/values",
-       json={
-           "updates": [
-               {
-                   "valid_time": valid_time.isoformat(),
-                   "series_id": series_id,
-                   "batch_id": batch_id,
-                   "value": 150.0,
-                   "annotation": "Corrected",
-                   "tags": ["reviewed"],
-                   "changed_by": "user@example.com"
-               }
-           ]
-       }
+   df = pl.DataFrame({
+       "name": ["wind_power", "wind_power"],
+       "site": ["Gotland", "Aland"],
+       "valid_time": ["2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+       "value": [100.0, 95.0],
+   }).with_columns(pl.col("valid_time").str.to_datetime(time_unit="us", time_zone="UTC"))
+
+   buf = io.BytesIO()
+   df.write_ipc_stream(buf)
+
+   response = requests.post(
+       "http://localhost:8000/write",
+       params={"name_col": "name", "label_cols": "site"},
+       headers={"Content-Type": "application/vnd.apache.arrow.stream"},
+       data=buf.getvalue(),
    )
-   result = response.json()
-   print(f"Updated: {len(result['updated'])}")
+   print(response.json())
 
 Production Deployment
 ---------------------
@@ -186,7 +180,8 @@ Create ``/etc/systemd/system/timedb-api.service``:
    Type=simple
    User=timedb
    WorkingDirectory=/opt/timedb
-   Environment="TIMEDB_DSN=postgresql://user:password@localhost:5432/timedb"
+   Environment="TIMEDB_PG_DSN=postgresql://user:password@localhost:5432/timedb"
+   Environment="TIMEDB_CH_URL=clickhouse://localhost:8123/timedb"
    ExecStart=/usr/local/bin/uvicorn timedb.api:app --host 0.0.0.0 --port 8000
    Restart=always
 
@@ -221,7 +216,10 @@ Build and run:
 .. code-block:: bash
 
    docker build -t timedb-api .
-   docker run -p 8000:8000 -e TIMEDB_DSN="postgresql://..." timedb-api
+   docker run -p 8000:8000 \
+     -e TIMEDB_PG_DSN="postgresql://..." \
+     -e TIMEDB_CH_URL="clickhouse://..." \
+     timedb-api
 
 Troubleshooting
 ---------------
@@ -229,7 +227,7 @@ Troubleshooting
 Server won't start
 ~~~~~~~~~~~~~~~~~~
 
-- **Check database connection**: Ensure ``TIMEDB_DSN`` or ``DATABASE_URL`` is set correctly
+- **Check database connection**: Ensure ``TIMEDB_PG_DSN`` (or ``DATABASE_URL``) and ``TIMEDB_CH_URL`` are set correctly
 - **Check database exists**: Verify the database is accessible
 - **Check schema exists**: Run ``timedb create tables`` first
 - **Check port availability**: Ensure the port is not already in use

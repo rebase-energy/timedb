@@ -1,0 +1,19 @@
+-- TimeDB PostgreSQL Schema
+-- Only series_table lives here. All values tables live in ClickHouse.
+
+CREATE TABLE IF NOT EXISTS series_table (
+  series_id     bigserial PRIMARY KEY,
+  name          text NOT NULL,
+  unit          text NOT NULL,
+  labels        jsonb NOT NULL DEFAULT '{}',
+  description   text,
+  overlapping   boolean NOT NULL DEFAULT false,
+  retention     text NOT NULL DEFAULT 'medium',
+  inserted_at   timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT series_identity_uniq UNIQUE (name, labels),
+  CONSTRAINT series_name_not_empty CHECK (length(btrim(name)) > 0),
+  CONSTRAINT valid_retention CHECK (retention IN ('short', 'medium', 'long'))
+);
+
+CREATE INDEX IF NOT EXISTS series_labels_gin_idx ON series_table USING GIN (labels);

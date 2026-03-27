@@ -1,5 +1,5 @@
 """
-High-level SDK for TimeDB (TimescaleDB version).
+High-level SDK for TimeDB.
 
 Provides a simple interface for working with TimeDB, including automatic
 DataFrame conversion for time series data. Optional unit conversion via pint
@@ -36,6 +36,7 @@ try:
     from uuid import uuid7
 except ImportError:
     from uuid6 import uuid7
+import clickhouse_connect
 import psycopg
 from psycopg import errors
 from psycopg_pool import ConnectionPool
@@ -49,7 +50,7 @@ class SeriesCollection:
     operating on one or more time series without manually managing series IDs.
 
     The collection resolves which series match the filters only when an
-    operation like .read(), .insert(), or .update_records() is called.
+    operation like .read() or .insert() is called.
     This allows building complex queries progressively.
 
     Filtering:
@@ -60,7 +61,7 @@ class SeriesCollection:
         Once filtered, the collection supports:
         - read(): Retrieve time series data
         - insert(): Add new data points
-        - update_records(): Update existing records
+
         - count(): Count matching series
         - list_labels(): List unique label values
 
@@ -90,6 +91,7 @@ class SeriesCollection:
         series_id: Optional[int] = None,
         _registry: Optional[SeriesRegistry] = None,
         _pool: Optional[ConnectionPool] = None,
+        _ch_client=None,
     ):
         self._conninfo = conninfo
         self._name = name
@@ -99,6 +101,7 @@ class SeriesCollection:
         self._registry = _registry or SeriesRegistry()
         self._resolved = False
         self._pool = _pool
+        self._ch_client = _ch_client
 
     def where(self, **labels) -> 'SeriesCollection':
         """
@@ -130,6 +133,7 @@ class SeriesCollection:
             series_id=self._series_id,
             _registry=self._registry,
             _pool=self._pool,
+            _ch_client=self._ch_client,
         )
 
     def _resolve_ids(self) -> List[int]:
@@ -185,7 +189,7 @@ class SeriesCollection:
 
     def insert(
         self,
-        data: Union[pd.DataFrame, "TimeSeries"],
+        data: Union[pd.DataFrame, pl.DataFrame, "TimeSeries"],
         workflow_id: Optional[str] = None,
         batch_start_time: Optional[datetime] = None,
         batch_finish_time: Optional[datetime] = None,
@@ -261,61 +265,9 @@ class SeriesCollection:
             batch_finish_time=batch_finish_time,
             batch_params=batch_params,
             data_unit=unit,
+            ch_client=self._ch_client,
             _pool=self._pool,
         )
-
-    def update_records(self, updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Update records for this collection.
-
-        **Single-series only.** Collection must resolve to exactly one series.
-
-        Supports both flat and overlapping series:
-
-        - **Flat**: In-place update (no versioning) by (series_id, valid_time)
-        - **Overlapping**: Appends a correction row, preserving the original
-          knowledge_time and stamping change_time=now(). Lookup priority:
-
-          - knowledge_time + valid_time: Exact version lookup
-          - valid_time only: Latest version overall
-
-        .. note::
-            Values must be in the series' canonical unit. Unlike ``insert()``,
-            no automatic unit conversion is performed here.
-
-        Args:
-            updates: List of update dicts. Each item must include ``valid_time``.
-                Optional fields are ``value`` (new value, must be in the series'
-                canonical unit), ``annotation`` (text annotation; set to ``None``
-                to clear), ``tags`` (set to ``[]`` to clear), ``changed_by``
-                (user identifier), and ``knowledge_time`` (target specific
-                version, overlapping only).
-
-        Returns:
-            List of dicts with update info for each updated record
-
-        Raises:
-            ValueError: If collection matches multiple series or no series
-
-        Example:
-            >>> td.get_series("temperature").where(site="A").update_records([
-            ...     {"valid_time": dt, "value": 25.0, "annotation": "Corrected"}
-            ... ])
-        """
-        if not updates:
-            return []
-
-        series_id = self._get_single_id()
-
-        # Add series_id to all updates
-        filled_updates = []
-        for u in updates:
-            u_copy = u.copy()
-            if "series_id" not in u_copy:
-                u_copy["series_id"] = series_id
-            filled_updates.append(u_copy)
-
-        return _update_records(filled_updates, _pool=self._pool, _registry=self._registry)
 
     def read(
         self,
@@ -432,63 +384,63 @@ class SeriesCollection:
                 )
             if include_updates:
                 table = _read_overlapping_with_updates(
+                    ch_client=self._ch_client,
                     series_id=series_id,
                     routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
                     end_known=end_known,
-                    _pool=self._pool,
                 )
             else:
                 table = _read_overlapping(
+                    ch_client=self._ch_client,
                     series_id=series_id,
                     routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
                     end_known=end_known,
-                    _pool=self._pool,
                 )
         elif include_updates:
             if is_overlapping:
                 table = _read_overlapping_latest_with_updates(
+                    ch_client=self._ch_client,
                     series_id=series_id,
                     routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
                     end_known=end_known,
-                    _pool=self._pool,
                 )
             else:
                 table = _read_flat_with_updates(
+                    ch_client=self._ch_client,
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
                     end_known=end_known,
-                    _pool=self._pool,
                 )
         else:
             if is_overlapping:
                 table = _read_overlapping_latest(
+                    ch_client=self._ch_client,
                     series_id=series_id,
                     routing_table=meta["table"],
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
                     end_known=end_known,
-                    _pool=self._pool,
                 )
             else:
                 table = _read_flat(
+                    ch_client=self._ch_client,
                     series_id=series_id,
                     start_valid=start_valid,
                     end_valid=end_valid,
                     start_known=start_known,
                     end_known=end_known,
-                    _pool=self._pool,
                 )
 
         ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
@@ -595,7 +547,7 @@ class SeriesCollection:
                 )
                 - timedelta(days=days_ahead)
             )
-            start_window = start_valid.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_window = start_valid.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
         else:
             if window_length is None or issue_offset is None:
                 raise ValueError("Both window_length and issue_offset are required.")
@@ -616,6 +568,7 @@ class SeriesCollection:
             )
 
         table = _read_overlapping_relative(
+            ch_client=self._ch_client,
             series_id=series_id,
             routing_table=meta["table"],
             window_length=window_length,
@@ -623,7 +576,6 @@ class SeriesCollection:
             start_window=start_window,
             start_valid=start_valid,
             end_valid=end_valid,
-            _pool=self._pool,
         )
         _prof = profiling.is_enabled()
         _t0 = perf_counter() if _prof else 0.0
@@ -719,7 +671,7 @@ class SeriesCollection:
         """
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
-        return _list_batches(series_id=series_id, routing=routing, _pool=self._pool)
+        return _list_batches(ch_client=self._ch_client, series_id=series_id, routing=routing)
 
     def count(self) -> int:
         """Count how many series match the current filters."""
@@ -787,19 +739,28 @@ class TimeDataClient:
         >>> df = ts_result.to_pandas()  # pd.DataFrame with valid_time index
 
     Environment:
-        Requires TIMEDB_DSN or DATABASE_URL environment variable
-        to connect to the PostgreSQL database.
+        Requires TIMEDB_PG_DSN (PostgreSQL) and TIMEDB_CH_URL (ClickHouse)
+        environment variables.
     """
 
-    def __init__(self, conninfo: Optional[str] = None, min_size: int = 2, max_size: int = 10):
-        self._conninfo = conninfo or _get_conninfo()
+    def __init__(
+        self,
+        pg_conninfo: Optional[str] = None,
+        ch_url: Optional[str] = None,
+        min_size: int = 2,
+        max_size: int = 10,
+    ):
+        self._conninfo = pg_conninfo or _get_pg_conninfo()
+        self._ch_url = ch_url or _get_ch_url()
+        self._ch_client = clickhouse_connect.get_client(dsn=self._ch_url)
         self._pool = ConnectionPool(self._conninfo, min_size=min_size, max_size=max_size, open=True)
         atexit.register(self.close)
 
     def close(self):
-        """Close the connection pool."""
+        """Close the connection pool and ClickHouse client."""
         if not self._pool.closed:
             self._pool.close()
+        self._ch_client.close()
 
     def __enter__(self):
         return self
@@ -844,42 +805,16 @@ class TimeDataClient:
             unit=unit,
             series_id=series_id,
             _pool=self._pool,
+            _ch_client=self._ch_client,
         )
 
-    def create(
-        self,
-        retention=None,
-        *,
-        retention_short: str = "6 months",
-        retention_medium: str = "3 years",
-        retention_long: str = "5 years",
-    ) -> None:
-        """
-        Create database schema (TimescaleDB version).
-
-        Args:
-            retention: Shorthand to set the default (medium) retention period.
-                       An int is interpreted as years (e.g., 5 → "5 years").
-                       A string is used as-is (e.g., "18 months").
-            retention_short: Retention for overlapping_short (default: "6 months")
-            retention_medium: Retention for overlapping_medium (default: "3 years")
-            retention_long: Retention for overlapping_long (default: "5 years")
-        """
-        if retention is not None:
-            if isinstance(retention, int):
-                retention_medium = f"{retention} years"
-            else:
-                retention_medium = str(retention)
-        _create(
-            conninfo=self._conninfo,
-            retention_short=retention_short,
-            retention_medium=retention_medium,
-            retention_long=retention_long,
-        )
+    def create(self) -> None:
+        """Create database schema in PostgreSQL (series_table) and ClickHouse (values tables)."""
+        _create(pg_conninfo=self._conninfo, ch_url=self._ch_url)
 
     def delete(self) -> None:
-        """Delete database schema."""
-        _delete(conninfo=self._conninfo)
+        """Delete database schema from PostgreSQL and ClickHouse."""
+        _delete(pg_conninfo=self._conninfo, ch_url=self._ch_url)
 
     def create_series(
         self,
@@ -1093,6 +1028,7 @@ class TimeDataClient:
             batch_start_time=batch_start_time,
             batch_finish_time=batch_finish_time,
             batch_params=batch_params,
+            ch_client=self._ch_client,
             _pool=self._pool,
         )
 
@@ -1102,14 +1038,24 @@ class TimeDataClient:
 # Internal helper functions (not part of public API)
 # =============================================================================
 
-def _get_conninfo() -> str:
-    """Get database connection string from environment variables."""
-    conninfo = os.environ.get("TIMEDB_DSN") or os.environ.get("DATABASE_URL")
+def _get_pg_conninfo() -> str:
+    """Get PostgreSQL connection string from environment variables."""
+    conninfo = os.environ.get("TIMEDB_PG_DSN") or os.environ.get("DATABASE_URL")
     if not conninfo:
         raise ValueError(
-            "Database connection not configured. Set TIMEDB_DSN or DATABASE_URL environment variable."
+            "PostgreSQL connection not configured. Set TIMEDB_PG_DSN environment variable."
         )
     return conninfo
+
+
+def _get_ch_url() -> str:
+    """Get ClickHouse DSN from environment variables."""
+    ch_url = os.environ.get("TIMEDB_CH_URL")
+    if not ch_url:
+        raise ValueError(
+            "ClickHouse connection not configured. Set TIMEDB_CH_URL environment variable."
+        )
+    return ch_url
 
 
 @contextmanager
@@ -1121,7 +1067,7 @@ def _get_connection(_pool: Optional[ConnectionPool] = None, conninfo: Optional[s
     
     Args:
         _pool: Optional connection pool
-        conninfo: Optional connection string (fetched via _get_conninfo() if not provided)
+        conninfo: Optional connection string (fetched via _get_pg_conninfo() if not provided)
     
     Yields:
         psycopg.Connection
@@ -1131,28 +1077,18 @@ def _get_connection(_pool: Optional[ConnectionPool] = None, conninfo: Optional[s
             yield conn
     else:
         if conninfo is None:
-            conninfo = _get_conninfo()
+            conninfo = _get_pg_conninfo()
         with psycopg.connect(conninfo) as conn:
             yield conn
 
 
 
 
-def _create(
-    retention_short: str = "6 months",
-    retention_medium: str = "3 years",
-    retention_long: str = "5 years",
-    *,
-    conninfo: Optional[str] = None,
-) -> None:
-    """Create or update the database schema (TimescaleDB version)."""
-    if conninfo is None:
-        conninfo = _get_conninfo()
+def _create(pg_conninfo: Optional[str] = None, ch_url: Optional[str] = None) -> None:
+    """Create the database schema in PostgreSQL and ClickHouse."""
     db.create.create_schema(
-        conninfo,
-        retention_short=retention_short,
-        retention_medium=retention_medium,
-        retention_long=retention_long,
+        pg_conninfo or _get_pg_conninfo(),
+        ch_url or _get_ch_url(),
     )
 
 
@@ -1162,7 +1098,7 @@ def _create_series_many(
 ) -> List[int]:
     """Core batch get-or-create. Single DB round-trip."""
     if conninfo is None:
-        conninfo = _get_conninfo()
+        conninfo = _get_pg_conninfo()
     try:
         with psycopg.connect(conninfo) as conn:
             return db.series.create_series(conn, series_specs)
@@ -1191,166 +1127,138 @@ def _create_series(
     )[0]
 
 
-def _delete(conninfo: Optional[str] = None) -> None:
-    """Delete all TimeDB tables and views."""
-    if conninfo is None:
-        conninfo = _get_conninfo()
-    db.delete.delete_schema(conninfo)
+def _delete(pg_conninfo: Optional[str] = None, ch_url: Optional[str] = None) -> None:
+    """Delete all TimeDB tables from PostgreSQL and ClickHouse."""
+    db.delete.delete_schema(
+        pg_conninfo or _get_pg_conninfo(),
+        ch_url or _get_ch_url(),
+    )
 
 
 def _read_flat(
+    ch_client,
     series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read flat values for a single series."""
-    conninfo = _get_conninfo()
-
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_flat(
-            conn,
-            series_id=series_id,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-
-    return table
+    return db.read.read_flat(
+        ch_client,
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
 
 
 def _read_overlapping_latest(
+    ch_client,
     series_id: int,
     routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read latest overlapping values for a single series."""
-    conninfo = _get_conninfo()
-
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_overlapping_latest(
-            conn,
-            series_id=series_id,
-            table=routing_table,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-
-    return table
+    return db.read.read_overlapping_latest(
+        ch_client,
+        series_id=series_id,
+        table=routing_table,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
 
 
 def _read_overlapping_with_updates(
+    ch_client,
     series_id: int,
     routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read all overlapping versions for a single series."""
-    conninfo = _get_conninfo()
-
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_overlapping_with_updates(
-            conn,
-            series_id=series_id,
-            table=routing_table,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-
-    return table
+    return db.read.read_overlapping_with_updates(
+        ch_client,
+        series_id=series_id,
+        table=routing_table,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
 
 
 def _read_overlapping(
+    ch_client,
     series_id: int,
     routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read overlapping forecast history (latest correction per knowledge_time × valid_time)."""
-    conninfo = _get_conninfo()
-
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_overlapping(
-            conn,
-            series_id=series_id,
-            table=routing_table,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-
-    return table
+    return db.read.read_overlapping(
+        ch_client,
+        series_id=series_id,
+        table=routing_table,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
 
 
 def _read_overlapping_latest_with_updates(
+    ch_client,
     series_id: int,
     routing_table: str,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read all corrections for the winning knowledge_time per valid_time."""
-    conninfo = _get_conninfo()
-
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_overlapping_latest_with_updates(
-            conn,
-            series_id=series_id,
-            table=routing_table,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-
-    return table
+    return db.read.read_overlapping_latest_with_updates(
+        ch_client,
+        series_id=series_id,
+        table=routing_table,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
 
 
 def _read_flat_with_updates(
+    ch_client,
     series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read flat values with change_time, changed_by, annotation columns."""
-    conninfo = _get_conninfo()
-
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_flat_with_updates(
-            conn,
-            series_id=series_id,
-            start_valid=start_valid,
-            end_valid=end_valid,
-            start_known=start_known,
-            end_known=end_known,
-        )
-
-    return table
+    return db.read.read_flat_with_updates(
+        ch_client,
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
 
 
 def _read_overlapping_relative(
+    ch_client,
     series_id: int,
     routing_table: str,
     window_length: timedelta,
@@ -1358,24 +1266,37 @@ def _read_overlapping_relative(
     start_window: datetime,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
-    _pool: Optional[ConnectionPool] = None,
 ) -> pa.Table:
     """Read overlapping values with per-window knowledge_time cutoff."""
-    conninfo = _get_conninfo()
+    return db.read.read_overlapping_relative(
+        ch_client,
+        series_id=series_id,
+        table=routing_table,
+        window_length=window_length,
+        issue_offset=issue_offset,
+        start_window=start_window,
+        start_valid=start_valid,
+        end_valid=end_valid,
+    )
 
-    with _get_connection(_pool, conninfo) as conn:
-        table = db.read.read_overlapping_relative(
-            conn,
-            series_id=series_id,
-            table=routing_table,
-            window_length=window_length,
-            issue_offset=issue_offset,
-            start_window=start_window,
-            start_valid=start_valid,
-            end_valid=end_valid,
-        )
 
-    return table
+def _make_batch_context(
+    workflow_id: Optional[str],
+    batch_start_time: Optional[datetime],
+    batch_finish_time: Optional[datetime],
+    batch_params: Optional[dict],
+) -> BatchContext:
+    """Create a BatchContext with a fresh UUIDv7 batch_id and sensible defaults."""
+    start = batch_start_time if batch_start_time is not None else datetime.now(timezone.utc)
+    if start.tzinfo is None:
+        raise ValueError("batch_start_time must be timezone-aware")
+    return BatchContext(
+        batch_id=str(uuid7()),
+        workflow_id=workflow_id if workflow_id is not None else "sdk-workflow",
+        batch_start_time=start,
+        batch_finish_time=batch_finish_time,
+        batch_params=batch_params,
+    )
 
 
 def _insert(
@@ -1389,6 +1310,7 @@ def _insert(
     batch_finish_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
     data_unit: Optional[str] = None,
+    ch_client=None,
     _pool: Optional[ConnectionPool] = None,
 ) -> InsertResult:
     """
@@ -1405,19 +1327,10 @@ def _insert(
     if routing is None:
         raise ValueError("routing must be provided")
 
-    batch_id = uuid7()
+    batch_ctx = _make_batch_context(workflow_id, batch_start_time, batch_finish_time, batch_params)
 
-    batch_ctx = BatchContext(
-        batch_id=str(batch_id),
-        workflow_id=workflow_id if workflow_id is not None else "sdk-workflow",
-        batch_start_time=batch_start_time if batch_start_time is not None else datetime.now(timezone.utc),
-        batch_finish_time=batch_finish_time,
-        batch_params=batch_params,
-    )
-    if batch_ctx.batch_start_time.tzinfo is None:
-        raise ValueError("batch_start_time must be timezone-aware")
-
-    table, _shape = insert_pipeline.normalize_insert_input(
+    _t_normalize = perf_counter() if profiling._enabled else 0.0
+    table = insert_pipeline.normalize_insert_input(
         data,
         series_unit,
         series_id=series_id,
@@ -1425,18 +1338,14 @@ def _insert(
         knowledge_time=knowledge_time,
         data_unit=data_unit,
     )
+    if profiling._enabled:
+        profiling._record(profiling.PHASE_INSERT_NORMALIZE, perf_counter() - _t_normalize)
 
-    try:
-        with _get_connection(_pool, _get_conninfo()) as conn:
-            db.insert.insert_table(conn, table=table, routing=routing, batch_ctx=batch_ctx)
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        raise ValueError(
-            "TimeDB tables do not exist. Please create the schema first by running:\n"
-            "  td.create()"
-        ) from e
+    with _get_connection(_pool, _get_pg_conninfo()) as conn:
+        db.insert.insert_table(ch_client, conn, table=table, routing=routing, batch_ctx=batch_ctx)
 
     return InsertResult(
-        batch_id=batch_id,
+        batch_id=uuid.UUID(batch_ctx.batch_id),
         workflow_id=batch_ctx.workflow_id,
         series_id=series_id,
     )
@@ -1483,6 +1392,7 @@ def _write(
     batch_start_time: Optional[datetime] = None,
     batch_finish_time: Optional[datetime] = None,
     batch_params: Optional[dict] = None,
+    ch_client=None,
     _pool: Optional[ConnectionPool] = None,
 ) -> List[InsertResult]:
     """
@@ -1540,7 +1450,7 @@ def _write(
     # ── Resolve series in one DB round-trip ───────────────────────────────────
     t_resolve_start = perf_counter()
     registry = SeriesRegistry()
-    with _get_connection(_pool, _get_conninfo()) as conn:
+    with _get_connection(_pool, _get_pg_conninfo()) as conn:
         found = db.series.resolve_series(conn, identities, registry)
     profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
 
@@ -1634,13 +1544,7 @@ def _write(
             .unique()
         )
     else:
-        single_batch_ctx = BatchContext(
-            batch_id=str(uuid7()),
-            workflow_id=workflow_id if workflow_id is not None else "sdk-workflow",
-            batch_start_time=batch_start_time if batch_start_time is not None else datetime.now(timezone.utc),
-            batch_finish_time=batch_finish_time,
-            batch_params=batch_params,
-        )
+        single_batch_ctx = _make_batch_context(workflow_id, batch_start_time, batch_finish_time, batch_params)
         batch_ctx_map = {single_batch_ctx.batch_id: single_batch_ctx}
         partitioned = insert_pipeline.normalize_write_input(
             pl_df,
@@ -1653,15 +1557,9 @@ def _write(
         result_df = mapping_df.select(["_series_id", pl.lit(single_batch_ctx.batch_id).alias("_batch_id")]).unique()
     profiling._record(profiling.PHASE_WRITE_NORMALIZE, perf_counter() - t_normalize_start)
 
-    # ── Insert all partitions in one transaction ───────────────────────────────
-    try:
-        with _get_connection(_pool, _get_conninfo()) as conn:
-            db.insert.insert_tables(conn, partitioned=partitioned, batch_contexts=batch_ctx_map)
-    except (errors.UndefinedTable, errors.UndefinedObject) as e:
-        raise ValueError(
-            "TimeDB tables do not exist. Please create the schema first by running:\n"
-            "  td.create()"
-        ) from e
+    # ── Insert all partitions ─────────────────────────────────────────────────
+    with _get_connection(_pool, _get_pg_conninfo()) as conn:
+        db.insert.insert_tables(conn, ch_client, partitioned=partitioned, batch_contexts=batch_ctx_map)
 
     # ── Build results: one InsertResult per (series_id, batch_id) pair ────────
     results = [
@@ -1677,26 +1575,9 @@ def _write(
 
 
 def _list_batches(
+    ch_client,
     series_id: int,
     routing: Dict[str, Any],
-    _pool: Optional[ConnectionPool] = None,
 ) -> List[Dict[str, Any]]:
     """List batches for a series. Wrapper around db.read.read_batches_for_series."""
-    conninfo = _get_conninfo()
-    with _get_connection(_pool, conninfo) as conn:
-        return db.read.read_batches_for_series(conn, series_id=series_id, routing=routing)
-
-
-def _update_records(
-    updates: List[Dict[str, Any]],
-    _pool: Optional[ConnectionPool] = None,
-    _registry: Optional[SeriesRegistry] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Update records (flat or overlapping).
-
-    Wrapper around db.update.update_records that handles the database connection.
-    """
-    registry = _registry or SeriesRegistry()
-    with _get_connection(_pool) as conn:
-        return db.update.update_records(conn, registry, updates=updates)
+    return db.read.read_batches_for_series(ch_client, series_id=series_id, routing=routing)

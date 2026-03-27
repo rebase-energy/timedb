@@ -3,7 +3,7 @@
 Welcome to TimeDB
 =================
 
-**TimeDB** is an open-source, opinionated time-series database built on top of PostgreSQL and TimescaleDB. 
+**TimeDB** is an open-source, opinionated time-series database built on top of PostgreSQL and ClickHouse.
 
 It is designed to natively handle **overlapping forecast revisions**, **auditable human-in-the-loop updates**, and **"time-of-knowledge" history**. Using a three-dimensional temporal data model, it provides a seamless workflow through its Python SDK and FastAPI backend.
 
@@ -76,7 +76,7 @@ Documentation
 
    installation
    sdk
-   api_reference
+   reference
    cli
    api_setup
    examples

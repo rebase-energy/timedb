@@ -4,7 +4,7 @@ Get up and running with timedb in under 10 minutes.
 
 ## Prerequisites
 
-- **Docker**: Required to run TimescaleDB
+- **Docker**: Required to run PostgreSQL and ClickHouse
 - **Python 3.9+**: Required to run timedb
 - **uv** (recommended): For managing Python dependencies ([installation guide](https://docs.astral.sh/uv/getting-started/installation/))
 
@@ -22,54 +22,68 @@ uv sync # --all-extras to use notebooks, tests, docs
 pip install -e .
 ```
 
-## Step 2: Start TimescaleDB
+## Step 2: Start Databases
 
-Navigate to the `timescaledb-test/` directory and start the Docker container:
+Navigate to the `local-db/` directory and start both containers:
 
 ```bash
-cd timescaledb-test
+cd local-db
 docker compose up -d
 ```
 
-Verify the container is running:
+Verify the containers are running:
 
 ```bash
 docker ps
 ```
 
-You should see a container named `local_timescaledb` running on port `5433` (mapped to the container's port `5432`).
+You should see:
+- `local_postgres` running on port `5433` (PostgreSQL — series metadata)
+- `local_clickhouse` running on port `8123` (ClickHouse — time-series values)
 
 ### Database Details
 
+**PostgreSQL**
 - **Host**: `127.0.0.1`
 - **Port**: `5433`
 - **Username**: `postgres`
 - **Password**: `devpassword`
 - **Database**: `devdb`
 
+**ClickHouse**
+- **Host**: `127.0.0.1`
+- **HTTP Port**: `8123`
+
 ## Step 3: Configure Environment Variables
 
 Create a `.env` file in the project root (same directory as `README.md`):
 
 ```bash
-# From the project root
-cat > .env << EOF
-TIMEDB_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
-EOF
+cp .env.example .env
 ```
 
-The connection string format is:
-```
-postgresql://username:password@host:port/database
+This sets both required variables:
+
+```text
+TIMEDB_PG_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
+TIMEDB_CH_URL=http://default:@localhost:8123/default
 ```
 
-To verify the connection works:
+To verify the PostgreSQL connection works:
 
 ```bash
 psql postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 ```
 
 You should see a PostgreSQL prompt. Type `\q` to exit.
+
+To verify the ClickHouse connection works:
+
+```bash
+curl http://localhost:8123/ping
+```
+
+You should see `Ok.` in the response.
 
 ## Step 4: Run the Quickstart Notebook
 
@@ -84,7 +98,7 @@ jupyter notebook examples/quickstart.ipynb
 ```
 
 The notebook will:
-1. Connect to your TimescaleDB instance
+1. Connect to PostgreSQL and ClickHouse
 2. Create the timedb schema
 3. Create a sample time series for wind power forecasts
 4. Insert forecast revisions
@@ -109,18 +123,18 @@ docker compose down
 docker compose up -d
 ```
 
-### Connection refused on port 5433
-- Verify Docker container is running: `docker ps`
+### Connection refused on port 5433 or 8123
+- Verify Docker containers are running: `docker ps`
 - Wait a few seconds for database initialization to complete
-- Check the logs: `docker compose logs db`
+- Check the logs: `docker compose logs`
 
 ### Database already exists
 If you want to start fresh:
 
 ```bash
-# Stop the container and remove the data
-docker compose down
-rm -rf timescaledb-test/pgdata
+# Stop containers and remove all data
+docker compose down -v
+rm -rf local-db/pgdata local-db/chdata
 docker compose up -d
 ```
 
@@ -132,12 +146,12 @@ Ensure your `.env` file is correct and reload the notebook kernel:
 ## Next Steps
 
 - Explore other example notebooks in the `examples/` directory
-- Read the [API Reference](docs/api_reference.rst) for detailed documentation
+- Read the [Reference](docs/reference.rst) for detailed documentation
 - Review [DEVELOPMENT.md](DEVELOPMENT.md) for advanced setup topics
 - Check out [TESTING.md](TESTING.md) to run the test suite
 
 ## Additional Resources
 
 - [timedb README](README.md) — Overview and basic usage
-- [API Documentation](docs/api_reference.rst) — Full API reference
+- [Reference](docs/reference.rst) — Full SDK, API, and CLI reference
 - [Example Notebooks](examples/) — More complex examples with units, revisions, and backtesting

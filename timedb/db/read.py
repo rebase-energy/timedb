@@ -1,18 +1,15 @@
-import os
 import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
-import psycopg
-import psycopg.rows
+import numpy as np
 import pyarrow as pa
 
 from .. import profiling
 
 
 # ---------------------------------------------------------------------------
-# Arrow type constants
+# Arrow type constants (used for empty-table construction)
 # ---------------------------------------------------------------------------
 
 _TS_TYPE = pa.timestamp("us", tz="UTC")
@@ -25,115 +22,98 @@ _COL_ARROW_TYPE: Dict[str, pa.DataType] = {
     "value":          pa.float64(),
     "changed_by":     pa.string(),
     "annotation":     pa.string(),
+    "batch_id":       pa.string(),
+    "workflow_id":    pa.string(),
+    "batch_start_time":  _TS_TYPE,
+    "batch_finish_time": _TS_TYPE,
+    "batch_params":   pa.string(),
+    "inserted_at":    _TS_TYPE,
 }
 
 
-@contextmanager
-def _ensure_conn(conninfo_or_conn):
-    """Yield a psycopg Connection, creating one only if given a string."""
-    if isinstance(conninfo_or_conn, str):
-        with psycopg.connect(conninfo_or_conn) as conn:
-            yield conn
-    else:
-        yield conninfo_or_conn
+def _empty_table(columns: List[str]) -> pa.Table:
+    return pa.table({c: pa.array([], type=_COL_ARROW_TYPE[c]) for c in columns})
 
 
-def _fetch_arrow(
-    conn: psycopg.Connection,
+def _fetch_ch_arrow(
+    ch_client,
     sql: str,
-    params: dict,
+    parameters: dict,
     columns: List[str],
 ) -> pa.Table:
-    """Execute *sql* with a binary cursor and return results as a ``pa.Table``.
-
-    Using the psycopg3 binary wire protocol avoids the text-to-datetime
-    parsing overhead in ``pd.read_sql`` and yields a zero-copy Arrow table
-    that can be wrapped in ``TimeSeries.from_arrow()`` without further
-    conversion.
+    """Execute *sql* against ClickHouse and return results as a ``pa.Table``.
 
     Parameters
     ----------
-    conn:
-        An open psycopg ``Connection``.
+    ch_client:
+        clickhouse_connect Client instance.
     sql:
-        SQL query string with ``%(name)s`` placeholders.
-    params:
+        SQL query with ``{name:Type}`` placeholders.
+    parameters:
         Query parameter dict.
     columns:
         Column names in the order they appear in the SELECT clause.
-        Used to build the Arrow schema; each name must be a key in
-        ``_COL_ARROW_TYPE``.
     """
     _prof = profiling._enabled
     _t_total = time.perf_counter() if _prof else 0.0
 
-    with conn.cursor(binary=True) as cur:
-        _t0 = time.perf_counter() if _prof else 0.0
-        cur.execute(sql, params)  # type: ignore[arg-type]  # psycopg stubs are stricter than runtime
-        if _prof: profiling._record(profiling.PHASE_READ_SQL_EXEC, time.perf_counter() - _t0)
-
-        _t0 = time.perf_counter() if _prof else 0.0
-        rows = cur.fetchall()
-        if _prof: profiling._record(profiling.PHASE_READ_FETCH_ROWS, time.perf_counter() - _t0)
+    _t0 = time.perf_counter() if _prof else 0.0
+    result = ch_client.query_arrow(sql, parameters=parameters)
+    if _prof:
+        profiling._record(profiling.PHASE_READ_SQL_EXEC, time.perf_counter() - _t0)
 
     _t0 = time.perf_counter() if _prof else 0.0
-    if not rows:
-        result = pa.table({c: pa.array([], type=_COL_ARROW_TYPE[c]) for c in columns})
+    if result.num_rows == 0:
+        table = _empty_table(columns)
     else:
-        # Transpose row-major → column-major; zip(*rows) is lazy so pa.array()
-        # consumes each column iterator in one pass without intermediate lists.
-        result = pa.table({
-            col: pa.array(col_vals, type=_COL_ARROW_TYPE[col])
-            for col, col_vals in zip(columns, zip(*rows))
-        })
-    if _prof: profiling._record(profiling.PHASE_READ_BUILD_ARROW, time.perf_counter() - _t0)
+        table = result.select(columns)
+    if "value" in table.schema.names:
+        idx = table.schema.get_field_index("value")
+        arr = table.column(idx).to_numpy(zero_copy_only=False)
+        null_mask = np.isnan(arr)
+        if null_mask.any():
+            table = table.set_column(idx, "value", pa.array(arr, mask=null_mask))
+    if _prof:
+        profiling._record(profiling.PHASE_READ_BUILD_ARROW, time.perf_counter() - _t0)
 
-    if _prof: profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t_total)
-    return result
+    if _prof:
+        profiling._record(profiling.PHASE_READ_TOTAL, time.perf_counter() - _t_total)
+    return table
 
 
-def _build_where_clause(
+def _build_ch_where_clause(
     series_id: int,
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> tuple[str, dict]:
-    """
-    Build WHERE clause and parameters for time series queries.
-
-    Returns:
-        Tuple of (where_clause_string, params_dict)
-    """
-    filters = []
-    params = {}
-
-    filters.append("v.series_id = %(series_id)s")
-    params["series_id"] = series_id
+    """Build a ClickHouse WHERE clause with ``{name:Type}`` placeholders."""
+    filters = ["series_id = {series_id:Int64}"]
+    params: dict = {"series_id": series_id}
 
     if start_valid is not None:
-        filters.append("v.valid_time >= %(start_valid)s")
+        filters.append("valid_time >= {start_valid:DateTime64(6, 'UTC')}")
         params["start_valid"] = start_valid
     if end_valid is not None:
-        filters.append("v.valid_time < %(end_valid)s")
+        filters.append("valid_time < {end_valid:DateTime64(6, 'UTC')}")
         params["end_valid"] = end_valid
-
     if start_known is not None:
-        filters.append("v.knowledge_time >= %(start_known)s")
+        filters.append("knowledge_time >= {start_known:DateTime64(6, 'UTC')}")
         params["start_known"] = start_known
     if end_known is not None:
-        filters.append("v.knowledge_time < %(end_known)s")
+        filters.append("knowledge_time < {end_known:DateTime64(6, 'UTC')}")
         params["end_known"] = end_known
 
-    where_clause = ""
-    if filters:
-        where_clause = "WHERE " + " AND ".join(filters)
+    return "WHERE " + " AND ".join(filters), params
 
-    return where_clause, params
 
+# ---------------------------------------------------------------------------
+# Flat reads
+# ---------------------------------------------------------------------------
 
 def read_flat(
-    conninfo: Union[psycopg.Connection, str],
+    ch_client,
     *,
     series_id: int,
     start_valid: Optional[datetime] = None,
@@ -141,41 +121,84 @@ def read_flat(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """
-    Read flat (fact) values from the flat table.
+    """Read latest flat (fact) values.
 
-    Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        start_valid: Start of time range (optional)
-        end_valid: End of time range (optional)
-        start_known: Start of knowledge_time range (optional)
-        end_known: End of knowledge_time range (optional)
+    Returns the most recent value per valid_time, determined by the highest
+    change_time (last write wins).
 
     Returns:
         ``pa.Table`` with columns ``(valid_time, value)``.
     """
-    where_clause, params = _build_where_clause(
+    where, params = _build_ch_where_clause(
         series_id=series_id,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
         end_known=end_known,
     )
-
     sql = f"""
-    SELECT v.valid_time, v.value
-    FROM flat v
-    {where_clause}
-    ORDER BY v.valid_time;
+    SELECT valid_time, argMax(value, change_time) AS value
+    FROM flat
+    {where}
+    GROUP BY valid_time
+    ORDER BY valid_time
     """
+    return _fetch_ch_arrow(ch_client, sql, params, ["valid_time", "value"])
 
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(conn, sql, params, ["valid_time", "value"])
 
+def read_flat_with_updates(
+    ch_client,
+    *,
+    series_id: int,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Read full correction history for flat series.
+
+    Returns every genuine correction row, filtered with lagInFrame on all
+    mutable columns so that pure-duplicate inserts (same data written twice)
+    are collapsed. Only rows where at least one of value/annotation/tags/
+    changed_by actually changed are returned.
+
+    Returns:
+        ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
+    """
+    where, params = _build_ch_where_clause(
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
+    sql = f"""
+    SELECT valid_time, change_time, value, changed_by, annotation
+    FROM (
+        SELECT *,
+            lagInFrame(tuple(value, annotation, changed_by)) OVER (
+                PARTITION BY series_id, valid_time
+                ORDER BY change_time ASC
+            ) AS prev_state
+        FROM flat
+        {where}
+    )
+    WHERE prev_state IS NULL
+       OR tuple(value, annotation, changed_by) IS DISTINCT FROM prev_state
+    ORDER BY valid_time, change_time
+    """
+    return _fetch_ch_arrow(
+        ch_client, sql, params,
+        ["valid_time", "change_time", "value", "changed_by", "annotation"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Overlapping reads
+# ---------------------------------------------------------------------------
 
 def read_overlapping_latest(
-    conninfo: Union[psycopg.Connection, str],
+    ch_client,
     *,
     series_id: int,
     table: str,
@@ -184,45 +207,72 @@ def read_overlapping_latest(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """
-    Read latest overlapping values from the overlapping table.
+    """Read latest forecast value per valid_time.
 
-    Returns the latest value for each valid_time,
-    determined by the most recent knowledge_time via DISTINCT ON.
-
-    Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
-        start_known: Start of knowledge_time range (optional)
-        end_known: End of knowledge_time range (optional)
+    Uses argMax with tuple comparison: latest knowledge_time wins,
+    then latest change_time as tiebreaker within the same forecast run.
 
     Returns:
         ``pa.Table`` with columns ``(valid_time, value)``.
     """
-    where_clause, params = _build_where_clause(
+    where, params = _build_ch_where_clause(
         series_id=series_id,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
         end_known=end_known,
     )
-
     sql = f"""
-    SELECT DISTINCT ON (v.valid_time)
-        v.valid_time, v.value
-    FROM {table} v
-    {where_clause}
-    ORDER BY v.valid_time, v.knowledge_time DESC, v.change_time DESC;
+    SELECT valid_time, argMax(value, (knowledge_time, change_time)) AS value
+    FROM {table}
+    {where}
+    GROUP BY valid_time
+    ORDER BY valid_time
     """
+    return _fetch_ch_arrow(ch_client, sql, params, ["valid_time", "value"])
 
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(conn, sql, params, ["valid_time", "value"])
+
+def read_overlapping(
+    ch_client,
+    *,
+    series_id: int,
+    table: str,
+    start_valid: Optional[datetime] = None,
+    end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None,
+    end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Read forecast history — one row per (knowledge_time, valid_time).
+
+    Returns the latest correction per forecast run × valid_time, hiding the
+    internal correction chain. Use this to see how forecasts evolved across
+    runs without seeing individual manual corrections.
+
+    Returns:
+        ``pa.Table`` with columns ``(knowledge_time, valid_time, value)``.
+    """
+    where, params = _build_ch_where_clause(
+        series_id=series_id,
+        start_valid=start_valid,
+        end_valid=end_valid,
+        start_known=start_known,
+        end_known=end_known,
+    )
+    sql = f"""
+    SELECT knowledge_time, valid_time, argMax(value, change_time) AS value
+    FROM {table}
+    {where}
+    GROUP BY knowledge_time, valid_time
+    ORDER BY knowledge_time, valid_time
+    """
+    return _fetch_ch_arrow(
+        ch_client, sql, params,
+        ["knowledge_time", "valid_time", "value"],
+    )
 
 
 def read_overlapping_relative(
-    conninfo: Union[psycopg.Connection, str],
+    ch_client,
     *,
     series_id: int,
     table: str,
@@ -232,115 +282,51 @@ def read_overlapping_relative(
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
 ) -> pa.Table:
-    """
-    Read overlapping values using a per-window knowledge_time cutoff.
+    """Read overlapping values using a per-window knowledge_time cutoff.
 
     For each valid_time, computes the window it belongs to (aligned to
     start_window with period window_length), then returns the latest forecast
     with knowledge_time <= window_start + issue_offset.
 
     Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        window_length: Length of each window (e.g., timedelta(hours=24))
+        window_length: Length of each window (e.g., timedelta(hours=24)).
         issue_offset: Offset from window_start for the knowledge_time cutoff.
                       Negative means before the window starts
                       (e.g., timedelta(hours=-12) = 12h before window start).
         start_window: Origin for window alignment (required).
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
 
     Returns:
         ``pa.Table`` with columns ``(valid_time, value)``.
     """
-    where_clause, params = _build_where_clause(
+    where, params = _build_ch_where_clause(
         series_id=series_id,
         start_valid=start_valid,
         end_valid=end_valid,
     )
     params.update({
+        "window_secs": int(window_length.total_seconds()),
+        "offset_secs": int(issue_offset.total_seconds()),
         "start_window": start_window,
-        "window_length": window_length,
-        "issue_offset": issue_offset,
     })
-
     sql = f"""
-    WITH windowed AS (
-        SELECT
-            v.valid_time,
-            v.value,
-            v.knowledge_time,
-            v.change_time,
-            -- Cutoff: latest allowed knowledge_time for the window containing this valid_time.
-            -- date_bin snaps valid_time down to the window boundary aligned to start_window,
-            -- then the issue_offset interval is added. Single C-compiled call per row.
-            date_bin(%(window_length)s, v.valid_time, %(start_window)s)
-            + %(issue_offset)s
-            AS cutoff_time
-        FROM {table} v
-        {where_clause}
-    )
-    SELECT DISTINCT ON (valid_time)
-        valid_time, value
-    FROM windowed
-    WHERE knowledge_time <= cutoff_time
-    ORDER BY valid_time, knowledge_time DESC, change_time DESC;
+    SELECT
+        valid_time,
+        argMax(value, (knowledge_time, change_time)) AS value
+    FROM {table}
+    {where}
+      AND knowledge_time <= addSeconds(
+            toStartOfInterval(valid_time,
+                toIntervalSecond({{window_secs:Int64}}),
+                {{start_window:DateTime64(6, 'UTC')}}),
+            {{offset_secs:Int64}})
+    GROUP BY valid_time
+    ORDER BY valid_time
     """
-
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(conn, sql, params, ["valid_time", "value"])
-
-
-def read_overlapping(
-    conninfo: Union[psycopg.Connection, str],
-    *,
-    series_id: int,
-    table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """
-    Read overlapping forecast history, one row per (knowledge_time, valid_time).
-
-    Returns the latest correction for each forecast run × valid_time combination,
-    hiding the internal correction chain. Use this to see how the forecast evolved
-    across runs without seeing individual manual corrections.
-
-    Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
-        start_known: Start of knowledge_time range (optional)
-        end_known: End of knowledge_time range (optional)
-
-    Returns:
-        ``pa.Table`` with columns ``(knowledge_time, valid_time, value)``.
-    """
-    where_clause, params = _build_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-    sql = f"""
-    SELECT DISTINCT ON (v.knowledge_time, v.valid_time)
-        v.knowledge_time, v.valid_time, v.value
-    FROM {table} v
-    {where_clause}
-    ORDER BY v.knowledge_time, v.valid_time, v.change_time DESC;
-    """
-
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(conn, sql, params, ["knowledge_time", "valid_time", "value"])
+    return _fetch_ch_arrow(ch_client, sql, params, ["valid_time", "value"])
 
 
 def read_overlapping_latest_with_updates(
-    conninfo: Union[psycopg.Connection, str],
+    ch_client,
     *,
     series_id: int,
     table: str,
@@ -349,105 +335,45 @@ def read_overlapping_latest_with_updates(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """
-    Read all corrections for the currently winning forecast run per valid_time.
+    """Read all corrections for the currently winning forecast run per valid_time.
 
-    For each valid_time, identifies the winning knowledge_time (the latest one),
-    then returns every correction row for that (valid_time, winning_knowledge_time)
-    pair. knowledge_time is intentionally not included in the result — use this to
-    see who edited the numbers you are currently using, and when.
-
-    Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
-        start_known: Start of knowledge_time range (optional)
-        end_known: End of knowledge_time range (optional)
+    For each valid_time, identifies the winning knowledge_time (the latest one)
+    via dense_rank(), then returns every correction row for that
+    (valid_time, winning_knowledge_time) pair. This shows who edited the numbers
+    you are currently using, and when, without exposing which knowledge_time won.
 
     Returns:
         ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
     """
-    where_clause, params = _build_where_clause(
+    where, params = _build_ch_where_clause(
         series_id=series_id,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
         end_known=end_known,
     )
-
     sql = f"""
-    WITH winning AS (
-        SELECT DISTINCT ON (v.valid_time)
-            v.valid_time, v.knowledge_time
-        FROM {table} v
-        {where_clause}
-        ORDER BY v.valid_time, v.knowledge_time DESC
+    SELECT valid_time, change_time, value, changed_by, annotation
+    FROM (
+        SELECT *,
+            dense_rank() OVER (
+                PARTITION BY valid_time
+                ORDER BY knowledge_time DESC
+            ) AS kt_rank
+        FROM {table}
+        {where}
     )
-    SELECT v.valid_time, v.change_time, v.value, v.changed_by, v.annotation
-    FROM {table} v
-    JOIN winning w ON w.valid_time = v.valid_time AND w.knowledge_time = v.knowledge_time
-    WHERE v.series_id = %(series_id)s
-    ORDER BY v.valid_time, v.change_time;
+    WHERE kt_rank = 1
+    ORDER BY valid_time, change_time
     """
-
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(
-            conn, sql, params,
-            ["valid_time", "change_time", "value", "changed_by", "annotation"],
-        )
-
-
-def read_flat_with_updates(
-    conninfo: Union[psycopg.Connection, str],
-    *,
-    series_id: int,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """
-    Read flat values with edit metadata (change_time, changed_by, annotation).
-
-    Since flat series use in-place updates, this returns exactly one row
-    per valid_time reflecting the latest state, with edit metadata exposed.
-
-    Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
-        start_known: Start of knowledge_time range (optional)
-        end_known: End of knowledge_time range (optional)
-
-    Returns:
-        ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
-    """
-    where_clause, params = _build_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    return _fetch_ch_arrow(
+        ch_client, sql, params,
+        ["valid_time", "change_time", "value", "changed_by", "annotation"],
     )
-
-    sql = f"""
-    SELECT v.valid_time, v.change_time, v.value, v.changed_by, v.annotation
-    FROM flat v
-    {where_clause}
-    ORDER BY v.valid_time, v.change_time;
-    """
-
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(
-            conn, sql, params,
-            ["valid_time", "change_time", "value", "changed_by", "annotation"],
-        )
 
 
 def read_overlapping_with_updates(
-    conninfo: Union[psycopg.Connection, str],
+    ch_client,
     *,
     series_id: int,
     table: str,
@@ -456,63 +382,56 @@ def read_overlapping_with_updates(
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """
-    Read the full audit log from the overlapping table.
+    """Read the full audit log from the overlapping table.
 
-    Returns every row ever written, including all manual corrections.
-    Each (knowledge_time, valid_time) pair may appear multiple times — once per
-    correction — ordered by change_time within each group.
-
-    Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID (required)
-        start_valid: Start of valid time range (optional)
-        end_valid: End of valid time range (optional)
-        start_known: Start of knowledge_time range (optional)
-        end_known: End of knowledge_time range (optional)
+    Returns every genuine correction row using lagInFrame on all mutable columns.
+    Rows where no mutable field changed (pure-duplicate inserts) are filtered out.
 
     Returns:
         ``pa.Table`` with columns ``(knowledge_time, change_time, valid_time, value, changed_by, annotation)``.
     """
-    where_clause, params = _build_where_clause(
+    where, params = _build_ch_where_clause(
         series_id=series_id,
         start_valid=start_valid,
         end_valid=end_valid,
         start_known=start_known,
         end_known=end_known,
     )
-
     sql = f"""
-    SELECT v.knowledge_time, v.change_time, v.valid_time, v.value, v.changed_by, v.annotation
-    FROM {table} v
-    {where_clause}
-    ORDER BY v.knowledge_time, v.change_time, v.valid_time;
+    SELECT knowledge_time, change_time, valid_time, value, changed_by, annotation
+    FROM (
+        SELECT *,
+            lagInFrame(tuple(value, annotation, changed_by)) OVER (
+                PARTITION BY series_id, knowledge_time, valid_time
+                ORDER BY change_time ASC
+            ) AS prev_state
+        FROM {table}
+        {where}
+    )
+    WHERE prev_state IS NULL
+       OR tuple(value, annotation, changed_by) IS DISTINCT FROM prev_state
+    ORDER BY knowledge_time, change_time, valid_time
     """
-
-    with _ensure_conn(conninfo) as conn:
-        return _fetch_arrow(
-            conn, sql, params,
-            ["knowledge_time", "change_time", "valid_time", "value", "changed_by", "annotation"],
-        )
+    return _fetch_ch_arrow(
+        ch_client, sql, params,
+        ["knowledge_time", "change_time", "valid_time", "value", "changed_by", "annotation"],
+    )
 
 
 def read_batches_for_series(
-    conninfo: Union[psycopg.Connection, str],
+    ch_client,
     *,
     series_id: int,
     routing: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """
-    Return all batches that contain data for a given series.
+) -> List[Dict]:
+    """Return all batches that contain data for a given series.
 
-    Discovers batches by joining batches_table with the series' data table
-    (flat or overlapping_{tier}), since there is no direct FK from batches to
-    series_table.  Results are ordered by inserted_at DESC (most recent first).
+    Performs a pure ClickHouse JOIN between batches_table and the values table.
 
     Args:
-        conninfo: Database connection or connection string
-        series_id: Series ID
-        routing: Routing dict with keys overlapping (bool) and table (str)
+        ch_client: clickhouse_connect Client.
+        series_id: Series ID.
+        routing: Routing dict with keys overlapping (bool) and table (str).
 
     Returns:
         List of dicts with keys: batch_id, workflow_id, batch_start_time,
@@ -520,25 +439,19 @@ def read_batches_for_series(
     """
     data_table = "flat" if not routing["overlapping"] else routing["table"]
     sql = f"""
-        SELECT DISTINCT
-            b.batch_id,
-            b.workflow_id,
-            b.batch_start_time,
-            b.batch_finish_time,
-            b.batch_params,
-            b.inserted_at
-        FROM batches_table b
-        JOIN {data_table} f ON f.batch_id = b.batch_id
-        WHERE f.series_id = %(series_id)s
-        ORDER BY b.inserted_at DESC
+    SELECT DISTINCT
+        b.batch_id,
+        b.workflow_id,
+        b.batch_start_time,
+        b.batch_finish_time,
+        b.batch_params,
+        b.inserted_at
+    FROM batches_table b FINAL
+    JOIN {data_table} f ON f.batch_id = b.batch_id
+    WHERE f.series_id = {{series_id:Int64}}
+    ORDER BY b.inserted_at DESC
     """
-    with _ensure_conn(conninfo) as conn:
-        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, {"series_id": series_id})
-            return cur.fetchall()
-
-
-if __name__ == "__main__":
-    conninfo = os.environ["DATABASE_URL"]
-    # Example: df = read_overlapping_latest(conninfo, series_id=1)
-    print("Run with series_id parameter")
+    result = ch_client.query(sql, parameters={"series_id": series_id})
+    columns = ["batch_id", "workflow_id", "batch_start_time", "batch_finish_time",
+               "batch_params", "inserted_at"]
+    return [dict(zip(columns, row)) for row in result.result_rows]

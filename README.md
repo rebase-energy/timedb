@@ -1,6 +1,6 @@
 <div align="center">
   <h1>⏱️ TimeDB</h1>
-  <p><b>An open-source, opinionated time-series database built on PostgreSQL & TimescaleDB.</b></p>
+  <p><b>An open-source, opinionated time-series database built on PostgreSQL & ClickHouse.</b></p>
 
   <a href="https://pypi.org/project/timedb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/timedb?color=blue&style=flat-square"></a>
   <a href="https://pypi.org/project/timedb/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/timedb?style=flat-square"></a>
@@ -51,7 +51,7 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 pip install timedb
 ```
 
-Requires Python 3.9+ and PostgreSQL 14+ with TimescaleDB.
+Requires Python 3.9+, PostgreSQL (series metadata), and ClickHouse (time-series values).
 
 ### 2. Usage Example
 
@@ -98,7 +98,7 @@ ts_all = td.get_series("wind_power").where(site="offshore_1").read(overlapping=T
 
 ## 🧪 Try it in Google Colab
 
-Want to test TimeDB without setting up PostgreSQL locally? Try our Quickstart in Colab. The first cell automatically installs PostgreSQL + TimescaleDB inside the VM (~2 min).
+Want to try TimeDB without a local setup? Open our Quickstart in Colab — the first cell automatically installs PostgreSQL + ClickHouse inside the VM.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb)
 
@@ -111,7 +111,7 @@ Want to test TimeDB without setting up PostgreSQL locally? Try our Quickstart in
 - [📖 Official Documentation](https://timedb.readthedocs.io)
 - [⚙️ Installation Guide](https://timedb.readthedocs.io/en/latest/installation.html)
 - [🐍 Python SDK Documentation](https://timedb.readthedocs.io/en/latest/sdk.html)
-- [🌐 REST API Reference](https://timedb.readthedocs.io/en/latest/api_reference.html)
+- [🌐 Reference](https://timedb.readthedocs.io/en/latest/reference.html)
 - [💡 Examples & Notebooks](examples/)
 
 ---

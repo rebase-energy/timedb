@@ -37,7 +37,8 @@ Requirements
 timedb requires:
 
 - Python 3.9 or higher
-- PostgreSQL database (version 12+) with TimescaleDB extension (version 2.0+)
+- PostgreSQL database (version 14+) — stores series metadata
+- ClickHouse database — stores all time-series values
 - For API functionality: FastAPI and uvicorn (included in dependencies)
 
 Dependencies
@@ -46,6 +47,7 @@ Dependencies
 timedb includes the following key dependencies:
 
 - ``psycopg[binary]>=3.1`` - PostgreSQL adapter (psycopg3)
+- ``clickhouse-connect>=0.7`` - ClickHouse client
 - ``pandas>=2.0.0`` - Data manipulation
 - ``fastapi>=0.104.0`` - API framework (for REST API server)
 - ``uvicorn[standard]>=0.24.0`` - ASGI server (for REST API server)
@@ -60,77 +62,51 @@ Optional dependencies can be installed with extras:
 Database Setup
 --------------
 
-Before using timedb, you need a PostgreSQL database with the TimescaleDB extension enabled. You can use:
+timedb requires two databases:
 
-- A local PostgreSQL instance with TimescaleDB installed
-- A cloud-hosted TimescaleDB instance (e.g., Timescale Cloud)
-- A Docker container running TimescaleDB
+- **PostgreSQL** (port 5433 by default) — stores series metadata (names, labels, units, routing)
+- **ClickHouse** (port 8123 by default) — stores all time-series values (flat and overlapping tables)
 
-**TimescaleDB Installation with Docker (Recommended):**
+**Local Setup with Docker (Recommended):**
 
-The project includes a ``timescaledb-test`` directory with a pre-configured Docker Compose setup:
+The project includes a ``local-db`` directory with a pre-configured Docker Compose setup that starts both databases:
 
 .. code-block:: bash
 
-   cd timescaledb-test
+   cd local-db
    docker compose up -d
 
-This starts a TimescaleDB container with:
+This starts:
 
-- Host: ``localhost``
-- Port: ``5433`` (mapped from container port 5432)
-- User: ``postgres``
-- Password: ``devpassword``
-- Database: ``devdb``
+- ``local_postgres`` on port ``5433`` (PostgreSQL 18)
+- ``local_clickhouse`` on port ``8123`` (ClickHouse HTTP interface)
 
-.. note::
-
-   The Docker Compose setup uses the **TimescaleDB Community Edition**, which is suitable for testing and development only. The Community Edition does not include advanced features such as:
-   
-   - Compression
-   - Multi-node replication
-   - Advanced analytics features
-   
-   For production use or to access all features, consider using `Timescale Cloud <https://www.timescale.com/cloud>`_ or the `Enterprise Edition <https://docs.timescale.com/enterprise-timescale/latest/>`_.
-
-To stop the container:
+To stop the containers:
 
 .. code-block:: bash
 
    docker compose down
 
-For local installation without Docker, see `TimescaleDB Installation Guide <https://docs.timescale.com/self-hosted/latest/install/>`_.
-
-Set up your database connection using one of these environment variables:
-
-- ``TIMEDB_DSN`` - Preferred connection string
-- ``DATABASE_URL`` - Alternative connection string (for compatibility with platforms like Heroku)
-
-Example connection strings:
+Set up your database connections using environment variables:
 
 .. code-block:: bash
 
-   # Using TIMEDB_DSN (for local Docker setup)
-   export TIMEDB_DSN='postgresql://postgres:devpassword@localhost:5433/devdb'
-
-   # Or using DATABASE_URL
-   export DATABASE_URL='postgresql://postgres:devpassword@localhost:5433/devdb'
+   # Bash/Zsh
+   export TIMEDB_PG_DSN='postgresql://postgres:devpassword@localhost:5433/devdb'
+   export TIMEDB_CH_URL='http://default:@localhost:8123/default'
 
 .. code-block:: fish
 
-   # Using TIMEDB_DSN (for local Docker setup)
-   set -x TIMEDB_DSN postgresql://postgres:devpassword@localhost:5433/devdb
+   # Fish
+   set -x TIMEDB_PG_DSN postgresql://postgres:devpassword@localhost:5433/devdb
+   set -x TIMEDB_CH_URL http://default:@localhost:8123/default
 
-   # Or using DATABASE_URL
-   set -x DATABASE_URL postgresql://postgres:devpassword@localhost:5433/devdb
-
-You can also use a ``.env`` file in your project root:
+You can also use a ``.env`` file in your project root (copy from ``.env.example``):
 
 .. code-block:: text
 
-   TIMEDB_DSN=postgresql://postgres:devpassword@localhost:5433/devdb
-
-The ``python-dotenv`` package (included in dependencies) will automatically load this file.
+   TIMEDB_PG_DSN=postgresql://postgres:devpassword@localhost:5433/devdb
+   TIMEDB_CH_URL=http://default:@localhost:8123/default
 
 Verification
 ------------
@@ -166,6 +142,3 @@ Once installed, you can:
 2. Use the :doc:`CLI <cli>` to manage your database schema
 3. Use the :doc:`SDK <sdk>` to interact with your database from Python
 4. :doc:`Set up the API server <api_setup>` to serve data via REST API
-
-
-

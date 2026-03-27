@@ -1,5 +1,5 @@
 """
-TimeDB - A time series database for PostgreSQL with TimescaleDB.
+TimeDB - A time series database backed by PostgreSQL + ClickHouse.
 
 Quick usage:
     import timedb as td
@@ -14,8 +14,12 @@ Quick usage:
 Explicit client usage (for custom connection settings):
     from timedb import TimeDataClient
 
-    td = TimeDataClient(conninfo='postgresql://...', min_size=4, max_size=20)
+    td = TimeDataClient(pg_conninfo='postgresql://...', ch_url='clickhouse://...')
     td.get_series('wind_power').read()
+
+Environment variables:
+    TIMEDB_PG_DSN  - PostgreSQL connection string (series_table)
+    TIMEDB_CH_URL  - ClickHouse DSN (batches + all values tables)
 """
 
 from dotenv import load_dotenv, find_dotenv
@@ -48,13 +52,9 @@ def _get_default_client():
     return _default_client
 
 
-def create(retention=None, *, retention_short="6 months",
-           retention_medium="3 years", retention_long="5 years"):
+def create():
     """Create database schema. See :meth:`TimeDataClient.create`."""
-    return _get_default_client().create(
-        retention, retention_short=retention_short,
-        retention_medium=retention_medium, retention_long=retention_long,
-    )
+    return _get_default_client().create()
 
 
 def delete():
