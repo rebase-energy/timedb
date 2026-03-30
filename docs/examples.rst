@@ -56,12 +56,12 @@ Notebook Descriptions
 
 **nb_01_single_series**: Single-series insert and read using polars and pandas DataFrames, with label-based routing via ``.where()``.
 
-**nb_02_multi_series**: Multi-series bulk ingestion using ``td.write()`` — covers ``create_series_many()``, long-format DataFrames, per-row knowledge_time, batch grouping, and unit conversion.
+**nb_02_multi_series**: Multi-series bulk ingestion using ``td.write()`` — covers ``create_series_many()``, long-format DataFrames, per-row knowledge_time, run grouping, and unit conversion.
 
 **nb_03_forecast_revisions**: Overlapping series with multiple forecast runs — insert revisions and compare ``read()`` (latest) vs. ``read(overlapping=True)`` (full history).
 
 **nb_04_reads**: All query patterns: latest values, valid-time and knowledge-time range filters, full revision history, and ``read_relative()`` for day-ahead forecasts.
 
-**nb_05_corrections**: Correcting erroneous forecast values the ClickHouse-native way — append a new batch with a later ``knowledge_time``, then audit via ``read(overlapping=True)``.
+**nb_05_corrections**: Correcting erroneous forecast values the ClickHouse-native way — append a new run with a later ``knowledge_time``, then audit via ``read(overlapping=True)``.
 
-**nb_06_api**: REST API usage — insert and read via JSON and Arrow IPC, single and multi-series, including the batch series creation endpoint.
+**nb_06_api**: REST API usage — insert and read via JSON and Arrow IPC, single and multi-series, including the bulk series creation endpoint.

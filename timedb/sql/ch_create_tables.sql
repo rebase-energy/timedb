@@ -1,22 +1,22 @@
 -- TimeDB ClickHouse Schema
--- All values tables and batch metadata live here.
+-- All values tables and run metadata live here.
 -- series_table stays in PostgreSQL.
 
 -- ============================================================================
--- 1) BATCHES TABLE
+-- 1) RUNS TABLE
 -- ============================================================================
--- Append-only batch metadata. ReplacingMergeTree deduplicates retried inserts.
+-- Append-only run metadata. ReplacingMergeTree deduplicates retried inserts.
 
-CREATE TABLE IF NOT EXISTS batches_table (
-    batch_id          String,
+CREATE TABLE IF NOT EXISTS runs_table (
+    run_id            String,
     workflow_id       Nullable(String),
-    batch_start_time  Nullable(DateTime64(6, 'UTC')),
-    batch_finish_time Nullable(DateTime64(6, 'UTC')),
-    batch_params      String DEFAULT '{}',
+    run_start_time    Nullable(DateTime64(6, 'UTC')),
+    run_finish_time   Nullable(DateTime64(6, 'UTC')),
+    run_params        String DEFAULT '{}',
     inserted_at       DateTime64(6, 'UTC') DEFAULT now64(6)
 )
 ENGINE = ReplacingMergeTree(inserted_at)
-ORDER BY batch_id
+ORDER BY run_id
 SETTINGS index_granularity = 8192;
 
 
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS flat (
     value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
     knowledge_time DateTime64(6, 'UTC')           CODEC(DoubleDelta, ZSTD(3)),
     change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    batch_id       String                         CODEC(ZSTD(3)),
+    run_id         String                         CODEC(ZSTD(3)),
     changed_by     Nullable(String)               CODEC(ZSTD(3)),
     annotation     Nullable(String)               CODEC(ZSTD(3)),
     metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS overlapping_short (
     value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
     knowledge_time DateTime64(6, 'UTC')           CODEC(Delta, ZSTD(3)),
     change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    batch_id       String                         CODEC(ZSTD(3)),
+    run_id         String                         CODEC(ZSTD(3)),
     changed_by     Nullable(String)               CODEC(ZSTD(3)),
     annotation     Nullable(String)               CODEC(ZSTD(3)),
     metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS overlapping_medium (
     value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
     knowledge_time DateTime64(6, 'UTC')           CODEC(Delta, ZSTD(3)),
     change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    batch_id       String                         CODEC(ZSTD(3)),
+    run_id         String                         CODEC(ZSTD(3)),
     changed_by     Nullable(String)               CODEC(ZSTD(3)),
     annotation     Nullable(String)               CODEC(ZSTD(3)),
     metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS overlapping_long (
     value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
     knowledge_time DateTime64(6, 'UTC')           CODEC(Delta, ZSTD(3)),
     change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    batch_id       String                         CODEC(ZSTD(3)),
+    run_id         String                         CODEC(ZSTD(3)),
     changed_by     Nullable(String)               CODEC(ZSTD(3)),
     annotation     Nullable(String)               CODEC(ZSTD(3)),
     metadata       String DEFAULT '{}'            CODEC(ZSTD(3))

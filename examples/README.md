@@ -57,7 +57,7 @@ Learn the fundamentals of writing and reading time series data:
 Multi-series bulk ingestion using `write()`:
 - Creating multiple series in one call with `create_series_many()`
 - Building a long-format DataFrame and inserting with `td.write()`
-- Unit conversion, batch tracking with `batch_cols`, and `batch_params`
+- Unit conversion, run tracking with `run_cols`, and `run_params`
 - Reading back per-series results and error handling
 
 ### Notebook 3: Forecast Revisions (`nb_03_forecast_revisions.ipynb`)

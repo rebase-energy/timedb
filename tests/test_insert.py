@@ -15,8 +15,8 @@ from timedatamodel.enums import TimeSeriesType
 # Flat insertion tests
 # =============================================================================
 
-def test_insert_flat_creates_batch(td, ch_client, sample_datetime):
-    """Test inserting flat via SDK creates one batch and rows in the flat table."""
+def test_insert_flat_creates_run(td, ch_client, sample_datetime):
+    """Test inserting flat via SDK creates one run and rows in the flat table."""
     td.create_series("temperature", unit="dimensionless", overlapping=False)
 
     df = pd.DataFrame({
@@ -26,15 +26,15 @@ def test_insert_flat_creates_batch(td, ch_client, sample_datetime):
 
     result = td.get_series("temperature").insert(data=df)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
     assert result.series_id > 0
 
     # Verify rows in flat table
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 2
 
-    # Verify one batch was created
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    # Verify one run was created
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
 
     # Verify no rows in any overlapping table
@@ -43,7 +43,7 @@ def test_insert_flat_creates_batch(td, ch_client, sample_datetime):
 
 
 def test_insert_flat_with_knowledge_time(td, ch_client, sample_datetime):
-    """Test inserting flat with explicit knowledge_time creates one batch."""
+    """Test inserting flat with explicit knowledge_time creates one run."""
     knowledge_time = sample_datetime - timedelta(hours=1)
 
     td.create_series("temperature", unit="dimensionless", overlapping=False)
@@ -55,17 +55,17 @@ def test_insert_flat_with_knowledge_time(td, ch_client, sample_datetime):
 
     result = td.get_series("temperature").insert(
         data=df,
-        batch_start_time=sample_datetime,
+        run_start_time=sample_datetime,
         knowledge_time=knowledge_time,
     )
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
 
     # Verify data was inserted
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 1
 
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
 
 
@@ -144,7 +144,7 @@ def test_insert_flat_upsert(td, ch_client, sample_datetime):
 # Overlapping insertion tests
 # =============================================================================
 
-def test_insert_overlapping_creates_batch(td, ch_client, sample_datetime):
+def test_insert_overlapping_creates_run(td, ch_client, sample_datetime):
     """Test inserting overlapping via SDK creates rows in overlapping_medium table."""
     td.create_series(
         "wind_forecast", unit="dimensionless",
@@ -158,13 +158,13 @@ def test_insert_overlapping_creates_batch(td, ch_client, sample_datetime):
 
     result = td.get_series("wind_forecast").insert(data=df, knowledge_time=sample_datetime)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
     assert result.series_id > 0
 
     # Verify rows in overlapping_medium
     res = ch_client.query(
-        "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = {bid:String}",
-        parameters={"bid": str(result.batch_id)},
+        "SELECT COUNT(*) FROM overlapping_medium WHERE run_id = {bid:String}",
+        parameters={"bid": str(result.run_id)},
     )
     assert res.result_rows[0][0] == 2
 
@@ -281,7 +281,7 @@ def test_insert_timeseries_flat(td, ch_client, sample_datetime):
 
     result = td.get_series("ts_flat").insert(data=ts)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
     assert result.series_id > 0
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
@@ -300,11 +300,11 @@ def test_insert_timeseries_overlapping(td, ch_client, sample_datetime):
 
     result = td.get_series("ts_ovlp").insert(data=ts, knowledge_time=sample_datetime)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
 
     res = ch_client.query(
-        "SELECT COUNT(*) FROM overlapping_medium WHERE batch_id = {bid:String}",
-        parameters={"bid": str(result.batch_id)},
+        "SELECT COUNT(*) FROM overlapping_medium WHERE run_id = {bid:String}",
+        parameters={"bid": str(result.run_id)},
     )
     assert res.result_rows[0][0] == 2
 
@@ -426,7 +426,7 @@ def _make_versioned_ts(knowledge_times, valid_times, values, unit="dimensionless
 # =============================================================================
 
 def test_insert_versioned_single_kt(td, ch_client, sample_datetime):
-    """VERSIONED TimeSeries with one unique knowledge_time creates exactly one batch."""
+    """VERSIONED TimeSeries with one unique knowledge_time creates exactly one run."""
     td.create_series(
         "v_single", unit="dimensionless",
         overlapping=True, retention="medium",
@@ -439,16 +439,16 @@ def test_insert_versioned_single_kt(td, ch_client, sample_datetime):
     )
     result = td.get_series("v_single").insert(data=ts)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
 
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 2
 
 
 def test_insert_versioned_multi_kt(td, ch_client, sample_datetime):
-    """VERSIONED TimeSeries with multiple unique knowledge_times creates exactly one batch."""
+    """VERSIONED TimeSeries with multiple unique knowledge_times creates exactly one run."""
     td.create_series(
         "v_multi", unit="dimensionless",
         overlapping=True, retention="medium",
@@ -470,10 +470,10 @@ def test_insert_versioned_multi_kt(td, ch_client, sample_datetime):
     )
     result = td.get_series("v_multi").insert(data=ts)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
 
-    # One batch per insert() call regardless of unique knowledge_time count
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    # One run per insert() call regardless of unique knowledge_time count
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 5
@@ -492,7 +492,7 @@ def test_insert_versioned_into_flat(td, ch_client, sample_datetime):
     )
 
     result = td.get_series("v_flat_ok").insert(data=ts)
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
 
     res = ch_client.query(
         "SELECT knowledge_time FROM flat WHERE series_id = {sid:Int64} ORDER BY valid_time",
@@ -547,10 +547,10 @@ def test_insert_df_with_kt_column_overlapping(td, ch_client, sample_datetime):
 
     result = td.get_series("df_kt_col").insert(data=df)
 
-    assert isinstance(result.batch_id, uuid.UUID)
+    assert isinstance(result.run_id, uuid.UUID)
 
-    # One batch per insert() call
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    # One run per insert() call
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 3
@@ -605,7 +605,7 @@ def test_insert_df_without_kt_defaults_to_now(td, ch_client, sample_datetime):
 # =============================================================================
 
 def test_write_long_format_pandas(td, ch_client, sample_datetime):
-    """write() inserts multi-series long-format Pandas data in one batch."""
+    """write() inserts multi-series long-format Pandas data in one run."""
     td.create_series("sensor_a", unit="dimensionless")
     td.create_series("sensor_b", unit="dimensionless")
 
@@ -623,16 +623,16 @@ def test_write_long_format_pandas(td, ch_client, sample_datetime):
     results = td.write(df, name_col="metric")
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 1  # one batch for all
+    assert len({r.run_id for r in results}) == 1  # one run for all
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 4
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
 
 
 def test_write_long_format_polars(td, ch_client, sample_datetime):
-    """write() inserts multi-series long-format Polars data in one batch."""
+    """write() inserts multi-series long-format Polars data in one run."""
     td.create_series("sensor_a", unit="dimensionless")
     td.create_series("sensor_b", unit="dimensionless")
 
@@ -650,7 +650,7 @@ def test_write_long_format_polars(td, ch_client, sample_datetime):
     results = td.write(df, name_col="metric")
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 1
+    assert len({r.run_id for r in results}) == 1
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 4
@@ -702,13 +702,13 @@ def test_write_mixed_flat_overlapping(td, ch_client, sample_datetime):
     results = td.write(df, name_col="metric", knowledge_time=sample_datetime)
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 1  # single shared batch
+    assert len({r.run_id for r in results}) == 1  # single shared run
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 1
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 1
 
 
@@ -791,11 +791,11 @@ def test_write_passthrough_annotation(td, ch_client, sample_datetime):
 
 
 # =============================================================================
-# write() — batch_cols: unreserved columns → batch_params
+# write() — run_cols: unreserved columns → run_params
 # =============================================================================
 
-def test_write_batch_cols_unreserved_creates_multiple_batches(td, ch_client, sample_datetime):
-    """batch_cols with an unreserved column creates one batch per unique value."""
+def test_write_run_cols_unreserved_creates_multiple_runs(td, ch_client, sample_datetime):
+    """run_cols with an unreserved column creates one run per unique value."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     # Different valid_times per model: flat series enforce unique (series_id, valid_time)
@@ -807,17 +807,17 @@ def test_write_batch_cols_unreserved_creates_multiple_batches(td, ch_client, sam
         "value":      [1.0, 2.0],
     })
 
-    results = td.write(df, batch_cols=["model"])
+    results = td.write(df, run_cols=["model"])
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 2  # two distinct batches
+    assert len({r.run_id for r in results}) == 2  # two distinct runs
 
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 2
 
 
-def test_write_batch_cols_unreserved_batch_params_json(td, ch_client, sample_datetime):
-    """Unreserved batch_col values are packed into batch_params JSON on the batch record."""
+def test_write_run_cols_unreserved_run_params_json(td, ch_client, sample_datetime):
+    """Unreserved run_col values are packed into run_params JSON on the run record."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -828,16 +828,16 @@ def test_write_batch_cols_unreserved_batch_params_json(td, ch_client, sample_dat
         "value":      [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["model"])
+    td.write(df, run_cols=["model"])
 
-    res = ch_client.query("SELECT batch_params FROM batches_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT run_params FROM runs_table ORDER BY inserted_at")
     rows = res.result_rows
     stored_models = {json.loads(row[0])["model"] for row in rows}
     assert stored_models == {"ECMWF", "GFS"}
 
 
-def test_write_batch_cols_result_count_n_batches_times_m_series(td, ch_client, sample_datetime):
-    """Returns N×M InsertResults: one per (batch, series) combination."""
+def test_write_run_cols_result_count_n_runs_times_m_series(td, ch_client, sample_datetime):
+    """Returns N×M InsertResults: one per (run, series) combination."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
     td.create_series("power", unit="dimensionless", labels={"site": "B"})
 
@@ -850,15 +850,15 @@ def test_write_batch_cols_result_count_n_batches_times_m_series(td, ch_client, s
                          "valid_time": sample_datetime + timedelta(hours=i), "value": 1.0})
 
     df = pd.DataFrame(rows)
-    results = td.write(df, batch_cols=["model"])
+    results = td.write(df, run_cols=["model"])
 
-    # 3 batches × 2 series = 6 results
+    # 3 runs × 2 series = 6 results
     assert len(results) == 6
-    assert len({r.batch_id for r in results}) == 3
+    assert len({r.run_id for r in results}) == 3
 
 
-def test_write_batch_cols_shared_workflow_id_kwarg(td, ch_client, sample_datetime):
-    """Global workflow_id kwarg is applied to all batches when not in batch_cols."""
+def test_write_run_cols_shared_workflow_id_kwarg(td, ch_client, sample_datetime):
+    """Global workflow_id kwarg is applied to all runs when not in run_cols."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -869,16 +869,16 @@ def test_write_batch_cols_shared_workflow_id_kwarg(td, ch_client, sample_datetim
         "value":      [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["model"], workflow_id="shared-run")
+    td.write(df, run_cols=["model"], workflow_id="shared-run")
 
-    res = ch_client.query("SELECT DISTINCT workflow_id FROM batches_table")
+    res = ch_client.query("SELECT DISTINCT workflow_id FROM runs_table")
     rows = res.result_rows
     assert len(rows) == 1
     assert rows[0][0] == "shared-run"
 
 
-def test_write_batch_cols_global_batch_params_merged(td, ch_client, sample_datetime):
-    """Global batch_params kwarg is merged with per-batch unreserved col values."""
+def test_write_run_cols_global_run_params_merged(td, ch_client, sample_datetime):
+    """Global run_params kwarg is merged with per-run unreserved col values."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -889,18 +889,18 @@ def test_write_batch_cols_global_batch_params_merged(td, ch_client, sample_datet
         "value":      [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["model"], batch_params={"source": "nwp"})
+    td.write(df, run_cols=["model"], run_params={"source": "nwp"})
 
-    res = ch_client.query("SELECT batch_params FROM batches_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT run_params FROM runs_table ORDER BY inserted_at")
     rows = res.result_rows
     for row in rows:
         params = json.loads(row[0])
         assert params["source"] == "nwp"       # global key present
-        assert params["model"] in {"ECMWF", "GFS"}  # per-batch key present
+        assert params["model"] in {"ECMWF", "GFS"}  # per-run key present
 
 
-def test_write_batch_cols_compound_key(td, ch_client, sample_datetime):
-    """batch_cols with multiple columns creates one batch per unique combination."""
+def test_write_run_cols_compound_key(td, ch_client, sample_datetime):
+    """run_cols with multiple columns creates one run per unique combination."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     # Each (model, run) combo gets a distinct valid_time to avoid flat uniqueness violations
@@ -918,21 +918,21 @@ def test_write_batch_cols_compound_key(td, ch_client, sample_datetime):
         "value":      [1.0, 2.0, 3.0, 4.0],
     })
 
-    results = td.write(df, batch_cols=["model", "run"])
+    results = td.write(df, run_cols=["model", "run"])
 
     assert len(results) == 4  # 4 unique (model, run) combos × 1 series
-    assert len({r.batch_id for r in results}) == 4
+    assert len({r.run_id for r in results}) == 4
 
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 4
 
 
 # =============================================================================
-# write() — batch_cols: reserved columns → native batches_table fields
+# write() — run_cols: reserved columns → native runs_table fields
 # =============================================================================
 
-def test_write_batch_cols_reserved_workflow_id_stored_natively(td, ch_client, sample_datetime):
-    """workflow_id in batch_cols maps to the native batches_table field, not batch_params."""
+def test_write_run_cols_reserved_workflow_id_stored_natively(td, ch_client, sample_datetime):
+    """workflow_id in run_cols maps to the native runs_table field, not run_params."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -943,21 +943,21 @@ def test_write_batch_cols_reserved_workflow_id_stored_natively(td, ch_client, sa
         "value":       [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["workflow_id"])
+    td.write(df, run_cols=["workflow_id"])
 
-    res = ch_client.query("SELECT workflow_id, batch_params FROM batches_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT workflow_id, run_params FROM runs_table ORDER BY inserted_at")
     rows = res.result_rows
     assert len(rows) == 2
     stored_wf_ids = {row[0] for row in rows}
     assert stored_wf_ids == {"run-06z", "run-18z"}
-    # workflow_id is a reserved field — should NOT appear in batch_params
+    # workflow_id is a reserved field — should NOT appear in run_params
     for row in rows:
         params = json.loads(row[1]) if row[1] else None
         assert params is None or "workflow_id" not in params
 
 
-def test_write_batch_cols_reserved_batch_start_finish_time(td, ch_client, sample_datetime):
-    """batch_start_time and batch_finish_time in batch_cols are stored as native fields."""
+def test_write_run_cols_reserved_run_start_finish_time(td, ch_client, sample_datetime):
+    """run_start_time and run_finish_time in run_cols are stored as native fields."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     t_start_a = sample_datetime
@@ -968,17 +968,17 @@ def test_write_batch_cols_reserved_batch_start_finish_time(td, ch_client, sample
     df = pd.DataFrame({
         "name":             ["power", "power"],
         "site":             ["A", "A"],
-        "batch_start_time": [t_start_a, t_start_b],
-        "batch_finish_time":[t_finish_a, t_finish_b],
+        "run_start_time": [t_start_a, t_start_b],
+        "run_finish_time":[t_finish_a, t_finish_b],
         "valid_time":       [sample_datetime, sample_datetime + timedelta(hours=2)],
         "value":            [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["batch_start_time", "batch_finish_time"])
+    td.write(df, run_cols=["run_start_time", "run_finish_time"])
 
     res = ch_client.query(
-        "SELECT batch_start_time, batch_finish_time, batch_params "
-        "FROM batches_table ORDER BY batch_start_time"
+        "SELECT run_start_time, run_finish_time, run_params "
+        "FROM runs_table ORDER BY run_start_time"
     )
     rows = res.result_rows
     assert len(rows) == 2
@@ -986,14 +986,14 @@ def test_write_batch_cols_reserved_batch_start_finish_time(td, ch_client, sample
     if stored_start.tzinfo is None:
         stored_start = stored_start.replace(tzinfo=timezone.utc)
     assert stored_start == t_start_a
-    # not packed into batch_params (ClickHouse defaults to '{}')
+    # not packed into run_params (ClickHouse defaults to '{}')
     params = json.loads(rows[0][2]) if rows[0][2] else {}
-    assert "batch_start_time" not in params
-    assert "batch_finish_time" not in params
+    assert "run_start_time" not in params
+    assert "run_finish_time" not in params
 
 
-def test_write_batch_cols_mix_reserved_and_unreserved(td, ch_client, sample_datetime):
-    """Reserved cols go to native fields; unreserved cols go to batch_params."""
+def test_write_run_cols_mix_reserved_and_unreserved(td, ch_client, sample_datetime):
+    """Reserved cols go to native fields; unreserved cols go to run_params."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -1005,9 +1005,9 @@ def test_write_batch_cols_mix_reserved_and_unreserved(td, ch_client, sample_date
         "value":       [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["workflow_id", "model"])
+    td.write(df, run_cols=["workflow_id", "model"])
 
-    res = ch_client.query("SELECT workflow_id, batch_params FROM batches_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT workflow_id, run_params FROM runs_table ORDER BY inserted_at")
     rows = res.result_rows
     assert len(rows) == 2
     for row in rows:
@@ -1019,11 +1019,11 @@ def test_write_batch_cols_mix_reserved_and_unreserved(td, ch_client, sample_date
 
 
 # =============================================================================
-# write() — batch_cols: validation errors
+# write() — run_cols: validation errors
 # =============================================================================
 
-def test_write_batch_cols_missing_column_raises(td, sample_datetime):
-    """batch_cols referencing a column absent from the DataFrame raises ValueError."""
+def test_write_run_cols_missing_column_raises(td, sample_datetime):
+    """run_cols referencing a column absent from the DataFrame raises ValueError."""
     td.create_series("power", unit="dimensionless")
 
     df = pd.DataFrame({
@@ -1032,12 +1032,12 @@ def test_write_batch_cols_missing_column_raises(td, sample_datetime):
         "value":      [1.0],
     })
 
-    with pytest.raises(ValueError, match="batch_cols column"):
-        td.write(df, batch_cols=["nonexistent_col"])
+    with pytest.raises(ValueError, match="run_cols column"):
+        td.write(df, run_cols=["nonexistent_col"])
 
 
-def test_write_batch_cols_overlaps_label_cols_raises(td, sample_datetime):
-    """batch_cols overlapping with label_cols raises ValueError."""
+def test_write_run_cols_overlaps_label_cols_raises(td, sample_datetime):
+    """run_cols overlapping with label_cols raises ValueError."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -1047,16 +1047,16 @@ def test_write_batch_cols_overlaps_label_cols_raises(td, sample_datetime):
         "value":      [1.0],
     })
 
-    with pytest.raises(ValueError, match="batch_cols and label_cols cannot overlap"):
-        td.write(df, label_cols=["site"], batch_cols=["site"])
+    with pytest.raises(ValueError, match="run_cols and label_cols cannot overlap"):
+        td.write(df, label_cols=["site"], run_cols=["site"])
 
 
 # =============================================================================
-# write() — batch_cols: knowledge_time interactions
+# write() — run_cols: knowledge_time interactions
 # =============================================================================
 
-def test_write_batch_cols_with_knowledge_time_kwarg(td, ch_client, sample_datetime):
-    """knowledge_time kwarg is broadcast to all rows across all batches."""
+def test_write_run_cols_with_knowledge_time_kwarg(td, ch_client, sample_datetime):
+    """knowledge_time kwarg is broadcast to all rows across all runs."""
     td.create_series("power", unit="dimensionless", overlapping=True, retention="medium")
 
     kt = sample_datetime + timedelta(hours=6)
@@ -1070,7 +1070,7 @@ def test_write_batch_cols_with_knowledge_time_kwarg(td, ch_client, sample_dateti
         "value":      [1.0, 2.0],
     })
 
-    td.write(df, batch_cols=["model"], knowledge_time=kt)
+    td.write(df, run_cols=["model"], knowledge_time=kt)
 
     res = ch_client.query("SELECT DISTINCT knowledge_time FROM overlapping_medium")
     rows = res.result_rows
@@ -1081,8 +1081,8 @@ def test_write_batch_cols_with_knowledge_time_kwarg(td, ch_client, sample_dateti
     assert abs((stored_kt - kt).total_seconds()) < 1
 
 
-def test_write_batch_cols_with_per_row_knowledge_time(td, ch_client, sample_datetime):
-    """Per-row knowledge_time column works correctly alongside batch_cols."""
+def test_write_run_cols_with_per_row_knowledge_time(td, ch_client, sample_datetime):
+    """Per-row knowledge_time column works correctly alongside run_cols."""
     td.create_series("power", unit="dimensionless", overlapping=True, retention="medium")
 
     kt_a = sample_datetime + timedelta(hours=6)
@@ -1096,7 +1096,7 @@ def test_write_batch_cols_with_per_row_knowledge_time(td, ch_client, sample_date
         "value":          [1.0, 2.0],
     })
 
-    results = td.write(df, batch_cols=["model"])
+    results = td.write(df, run_cols=["model"])
     assert len(results) == 2
 
     res = ch_client.query("SELECT knowledge_time FROM overlapping_medium ORDER BY knowledge_time")
@@ -1106,7 +1106,7 @@ def test_write_batch_cols_with_per_row_knowledge_time(td, ch_client, sample_date
     assert len(stored_kts) == 2  # two distinct knowledge_times stored
 
 
-def test_write_batch_cols_knowledge_time_kwarg_and_column_raises(td, sample_datetime):
+def test_write_run_cols_knowledge_time_kwarg_and_column_raises(td, sample_datetime):
     """Providing both knowledge_time kwarg and a knowledge_time column raises ValueError."""
     td.create_series("power", unit="dimensionless")
 
@@ -1119,15 +1119,15 @@ def test_write_batch_cols_knowledge_time_kwarg_and_column_raises(td, sample_date
     })
 
     with pytest.raises(ValueError, match="Ambiguous knowledge_time"):
-        td.write(df, batch_cols=["model"], knowledge_time=sample_datetime)
+        td.write(df, run_cols=["model"], knowledge_time=sample_datetime)
 
 
 # =============================================================================
-# write() — batch_cols: overlapping series
+# write() — run_cols: overlapping series
 # =============================================================================
 
-def test_write_batch_cols_overlapping_series(td, ch_client, sample_datetime):
-    """batch_cols creates multiple batches in the overlapping table."""
+def test_write_run_cols_overlapping_series(td, ch_client, sample_datetime):
+    """run_cols creates multiple runs in the overlapping table."""
     td.create_series("forecast", unit="dimensionless", overlapping=True, retention="medium")
 
     kt_ecmwf = sample_datetime + timedelta(hours=6)
@@ -1142,14 +1142,14 @@ def test_write_batch_cols_overlapping_series(td, ch_client, sample_datetime):
         "value":          [10.0, 11.0, 12.0, 13.0],
     })
 
-    results = td.write(df, batch_cols=["model"])
+    results = td.write(df, run_cols=["model"])
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 2
+    assert len({r.run_id for r in results}) == 2
 
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 4
-    res = ch_client.query("SELECT COUNT(*) FROM batches_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
     assert res.result_rows[0][0] == 2
 
 
@@ -1236,21 +1236,21 @@ def test_write_unit_col_and_unit_kwarg_raises(td, sample_datetime):
 # write() — label and routing
 # =============================================================================
 
-def test_write_auto_infers_label_cols_excluding_batch_cols(td, sample_datetime):
-    """label_cols are auto-inferred — batch_cols are excluded from the inferred set."""
+def test_write_auto_infers_label_cols_excluding_run_cols(td, sample_datetime):
+    """label_cols are auto-inferred — run_cols are excluded from the inferred set."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
         "name":       ["power", "power"],
         "site":       ["A", "A"],
-        "model":      ["ECMWF", "GFS"],  # batch_col — should NOT be inferred as label
+        "model":      ["ECMWF", "GFS"],  # run_col — should NOT be inferred as label
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
         "value":      [1.0, 2.0],
     })
 
     # Would raise "No series found" if 'model' were inferred as a label_col,
     # since no series has labels={"site": "A", "model": "ECMWF"}
-    results = td.write(df, batch_cols=["model"])
+    results = td.write(df, run_cols=["model"])
     assert len(results) == 2
 
 
@@ -1365,7 +1365,7 @@ def test_write_series_col_basic(td, ch_client, sample_datetime):
     results = td.write(df, series_col="sid")
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 1
+    assert len({r.run_id for r in results}) == 1
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 4
@@ -1401,8 +1401,8 @@ def test_write_series_col_with_unit_kwarg(td, ch_client, sample_datetime):
     assert abs(res.result_rows[0][0] - 1.0) < 1e-9
 
 
-def test_write_series_col_with_batch_cols(td, ch_client, sample_datetime):
-    """write(series_col=..., batch_cols=...) creates multiple batches."""
+def test_write_series_col_with_run_cols(td, ch_client, sample_datetime):
+    """write(series_col=..., run_cols=...) creates multiple runs."""
     sid = td.create_series("metric", unit="dimensionless", overlapping=True)
 
     df = pd.DataFrame({
@@ -1412,10 +1412,10 @@ def test_write_series_col_with_batch_cols(td, ch_client, sample_datetime):
         "value": [1.0, 2.0],
     })
 
-    results = td.write(df, series_col="sid", batch_cols=["model"])
+    results = td.write(df, series_col="sid", run_cols=["model"])
 
     assert len(results) == 2
-    assert len({r.batch_id for r in results}) == 2
+    assert len({r.run_id for r in results}) == 2
 
 
 def test_write_series_col_mutual_exclusivity_name_col(td, sample_datetime):

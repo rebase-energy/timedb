@@ -4,7 +4,7 @@ Insert pipeline: pure data-transformation engine.
 Converts user-facing input (pd.DataFrame or TimeSeries) into a fully-decorated
 ``pa.Table`` ready for the DB layer.  No database calls, no SDK-level concerns.
 
-All column decoration (batch_id, series_id, knowledge_time) happens in a single
+All column decoration (run_id, series_id, knowledge_time) happens in a single
 Polars ``with_columns()`` Rust pass before ``to_arrow()``.  Zero PyArrow column
 appends.
 """
@@ -124,9 +124,9 @@ def normalize_write_input(
     mapping_df: pl.DataFrame,
     *,
     series_col: Optional[str] = None,
-    batch_id: Optional[str] = None,
-    batch_mapping: Optional[pl.DataFrame] = None,
-    batch_cols: Optional[List[str]] = None,
+    run_id: Optional[str] = None,
+    run_mapping: Optional[pl.DataFrame] = None,
+    run_cols: Optional[List[str]] = None,
     knowledge_time: Optional[datetime] = None,
 ) -> Dict[str, Tuple[pa.Table, Dict[str, Any]]]:
     """Convert a multi-series Polars DataFrame to partitioned Arrow tables.
@@ -156,13 +156,13 @@ def normalize_write_input(
             _retention]`` metadata columns.
         series_col: Column whose values are integer series IDs.  When set,
             the join uses *series_col* instead of *name_col*/*label_cols*.
-        batch_id: UUID batch identifier stamped into every row (single-batch
-            path, mutually exclusive with *batch_mapping*).
-        batch_mapping: Polars DataFrame with columns ``[*batch_cols, "_batch_id"]``
-            for per-row batch stamping (multi-batch path, mutually exclusive
-            with *batch_id*).
-        batch_cols: Columns in *pl_df* used as the join key for *batch_mapping*.
-            Required when *batch_mapping* is provided.
+        run_id: UUID run identifier stamped into every row (single-run
+            path, mutually exclusive with *run_mapping*).
+        run_mapping: Polars DataFrame with columns ``[*run_cols, "_run_id"]``
+            for per-row run stamping (multi-run path, mutually exclusive
+            with *run_id*).
+        run_cols: Columns in *pl_df* used as the join key for *run_mapping*.
+            Required when *run_mapping* is provided.
         knowledge_time: Broadcast knowledge_time for all rows (mutually
             exclusive with a ``knowledge_time`` column in *pl_df*).
 
@@ -222,9 +222,9 @@ def normalize_write_input(
     # Vectorized join: stamp _series_id, _factor, _target_table, routing meta
     joined = pl_df.join(safe_mapping, on=join_on, how="left")
 
-    # ── Multi-batch path: join batch_mapping to stamp per-row batch_id ────────
-    if batch_mapping is not None and batch_cols:
-        joined = joined.join(batch_mapping, on=batch_cols, how="left")
+    # ── Multi-run path: join run_mapping to stamp per-row run_id ────────────
+    if run_mapping is not None and run_cols:
+        joined = joined.join(run_mapping, on=run_cols, how="left")
 
     # ── Prepare knowledge_time literal if not already in data ─────────────────
     kt_col = None
@@ -232,16 +232,16 @@ def normalize_write_input(
         kt = knowledge_time if knowledge_time is not None else datetime.now(timezone.utc)
         kt_col = pl.lit(kt, dtype=pl.Datetime("us", "UTC")).alias("knowledge_time")
 
-    # ── Single Rust pass: batch_id, series_id, knowledge_time, value * factor ─
-    if batch_mapping is not None and batch_cols:
-        # Multi-batch: per-row batch_id from joined _batch_id column
-        batch_id_expr = pl.col("_batch_id").alias("batch_id")
+    # ── Single Rust pass: run_id, series_id, knowledge_time, value * factor ──
+    if run_mapping is not None and run_cols:
+        # Multi-run: per-row run_id from joined _run_id column
+        run_id_expr = pl.col("_run_id").alias("run_id")
     else:
-        # Single-batch: broadcast scalar literal
-        batch_id_expr = pl.lit(str(batch_id)).alias("batch_id")
+        # Single-run: broadcast scalar literal
+        run_id_expr = pl.lit(str(run_id)).alias("run_id")
 
     decoration: List[pl.Expr] = [
-        batch_id_expr,
+        run_id_expr,
         pl.col("_series_id").cast(pl.Int64).alias("series_id"),
         (pl.col("value") * pl.col("_factor")).fill_null(float("nan")),
     ]
@@ -250,7 +250,7 @@ def normalize_write_input(
     joined = joined.with_columns(decoration)
 
     # ── Build final column list with dynamic passthrough ──────────────────────
-    final_cols = ["batch_id", "series_id", "valid_time", "value", "knowledge_time"]
+    final_cols = ["run_id", "series_id", "valid_time", "value", "knowledge_time"]
     for col in _OPTIONAL_PASSTHROUGH:
         if col in pl_df.columns:
             final_cols.append(col)
@@ -298,7 +298,7 @@ def _input_to_polars(
 
     Returns a Polars DataFrame containing only the data columns
     (``valid_time``, optionally ``valid_time_end`` / ``knowledge_time``, ``value``).
-    No metadata columns (``batch_id``, ``series_id``) are added here.
+    No metadata columns (``run_id``, ``series_id``) are added here.
     """
     if isinstance(data, TimeSeries):
         pl_df, _ = data.validate_for_insert()
@@ -331,13 +331,13 @@ def normalize_insert_input(
     series_unit: str,
     *,
     series_id: int,
-    batch_id,
+    run_id,
     knowledge_time: Optional[datetime] = None,
     data_unit: Optional[str] = None,
 ) -> pa.Table:
     """Convert DataFrame or TimeSeries insert input to a fully-decorated ``pa.Table``.
 
-    All column decoration (``batch_id``, ``series_id``, ``knowledge_time``) is
+    All column decoration (``run_id``, ``series_id``, ``knowledge_time``) is
     performed in a single Polars ``with_columns()`` Rust pass before
     ``to_arrow()``.  Zero PyArrow column appends.
 
@@ -345,7 +345,7 @@ def normalize_insert_input(
         data: Input data — ``pd.DataFrame`` or :class:`~timedatamodel.TimeSeries`.
         series_unit: Canonical unit of the target series.
         series_id: Integer series ID to stamp into every row.
-        batch_id: UUID batch identifier to stamp into every row.
+        run_id: UUID run identifier to stamp into every row.
         knowledge_time: Broadcast knowledge_time for all rows.  Mutually
             exclusive with a ``knowledge_time`` column already present in
             *data*.  Defaults to ``now(UTC)`` when neither is provided.
@@ -355,7 +355,7 @@ def normalize_insert_input(
             :class:`~timedatamodel.TimeSeries` (which carries its own unit).
 
     Returns:
-        ``pa.Table`` with columns ``[batch_id, series_id, valid_time,
+        ``pa.Table`` with columns ``[run_id, series_id, valid_time,
         (valid_time_end,) value, knowledge_time]`` ready for insert into ClickHouse.
 
     Raises:
@@ -376,7 +376,7 @@ def normalize_insert_input(
             "Remove the kwarg or the column."
         )
 
-    final_cols = ["batch_id", "series_id", "valid_time", "value", "knowledge_time"]
+    final_cols = ["run_id", "series_id", "valid_time", "value", "knowledge_time"]
     if source_has_vte:
         final_cols.insert(3, "valid_time_end")
 
@@ -386,9 +386,9 @@ def normalize_insert_input(
         kt = knowledge_time if knowledge_time is not None else datetime.now(timezone.utc)
         kt_col = pl.lit(kt, dtype=pl.Datetime("us", "UTC")).alias("knowledge_time")
 
-    # 4. Single Rust pass: stamp batch_id, series_id, fill NaN sentinels, (knowledge_time)
+    # 4. Single Rust pass: stamp run_id, series_id, fill NaN sentinels, (knowledge_time)
     cols_to_add = [
-        pl.lit(str(batch_id)).alias("batch_id"),
+        pl.lit(str(run_id)).alias("run_id"),
         pl.lit(series_id, dtype=pl.Int64).alias("series_id"),
         pl.col("value").fill_null(float("nan")),
     ]
