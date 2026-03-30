@@ -1,6 +1,7 @@
 """Tests for reading flat and overlapping."""
 import pytest
 import pandas as pd
+import polars as pl
 import pyarrow as pa
 import numpy as np
 from datetime import datetime, timezone, timedelta, time
@@ -680,3 +681,168 @@ def test_read_relative_picks_latest_correction(td, sample_datetime):
     assert len(df) == 1
     # Correction (110.0) must win over original (100.0)
     assert df.to_pandas()["value"].iloc[0] == 110.0
+
+
+# =============================================================================
+# Multi-series read via td.read() (manifest-based)
+# =============================================================================
+
+
+def test_read_multi_flat_basic(td, sample_datetime):
+    """td.read() returns long-format data for multiple flat series."""
+    td.create_series("temp", unit="dimensionless", labels={"loc": "A"})
+    td.create_series("temp", unit="dimensionless", labels={"loc": "B"})
+
+    dt = sample_datetime
+    for loc, val in [("A", 10.0), ("B", 20.0)]:
+        df = pd.DataFrame({"valid_time": [dt], "value": [val]})
+        td.get_series("temp").where(loc=loc).insert(df)
+
+    manifest = pl.DataFrame({"name": ["temp", "temp"], "loc": ["A", "B"]})
+    result = td.read(manifest, name_col="name", label_cols=["loc"])
+
+    assert isinstance(result, pl.DataFrame)
+    assert set(result.columns) == {"name", "loc", "unit", "series_id", "valid_time", "value"}
+    assert len(result) == 2
+    assert set(result["loc"].to_list()) == {"A", "B"}
+
+
+def test_read_multi_overlapping_latest(td, sample_datetime):
+    """td.read() with overlapping=False returns latest value per series."""
+    td.create_series("forecast", unit="MW", labels={"site": "X"}, overlapping=True)
+
+    dt = sample_datetime
+    kt1 = dt - timedelta(hours=12)
+    kt2 = dt - timedelta(hours=6)
+
+    for kt, val in [(kt1, 100.0), (kt2, 200.0)]:
+        df = pd.DataFrame({"valid_time": [dt], "value": [val]})
+        td.get_series("forecast").where(site="X").insert(df, knowledge_time=kt)
+
+    manifest = pl.DataFrame({"name": ["forecast"], "site": ["X"]})
+    result = td.read(manifest, name_col="name", label_cols=["site"])
+
+    assert len(result) == 1
+    assert result["value"].to_list()[0] == 200.0  # latest wins
+
+
+def test_read_multi_overlapping_all_versions(td, sample_datetime):
+    """td.read() with overlapping=True returns all forecast versions."""
+    td.create_series("forecast", unit="MW", labels={"site": "X"}, overlapping=True)
+
+    dt = sample_datetime
+    kt1 = dt - timedelta(hours=12)
+    kt2 = dt - timedelta(hours=6)
+
+    for kt, val in [(kt1, 100.0), (kt2, 200.0)]:
+        df = pd.DataFrame({"valid_time": [dt], "value": [val]})
+        td.get_series("forecast").where(site="X").insert(df, knowledge_time=kt)
+
+    manifest = pl.DataFrame({"name": ["forecast"], "site": ["X"]})
+    result = td.read(manifest, name_col="name", label_cols=["site"], overlapping=True)
+
+    assert "knowledge_time" in result.columns
+    assert len(result) == 2  # both versions
+
+
+def test_read_multi_mixed_flat_overlapping(td, sample_datetime):
+    """td.read() with overlapping=True works with mixed flat + overlapping series."""
+    td.create_series("measurement", unit="MW", overlapping=False)
+    td.create_series("forecast", unit="MW", overlapping=True)
+
+    dt = sample_datetime
+    kt = dt - timedelta(hours=6)
+
+    df_flat = pd.DataFrame({"valid_time": [dt], "value": [42.0]})
+    td.get_series("measurement").insert(df_flat)
+
+    df_ol = pd.DataFrame({"valid_time": [dt], "value": [99.0]})
+    td.get_series("forecast").insert(df_ol, knowledge_time=kt)
+
+    manifest = pl.DataFrame({"name": ["measurement", "forecast"]})
+    result = td.read(manifest, name_col="name", label_cols=[], overlapping=True)
+
+    assert len(result) == 2
+    assert "knowledge_time" in result.columns
+    # Flat series returns real knowledge_time (auto-set during insert)
+    flat_row = result.filter(pl.col("name") == "measurement")
+    assert flat_row["knowledge_time"].is_not_null().all()
+
+
+def test_read_multi_include_updates(td, sample_datetime):
+    """td.read() with include_updates=True returns correction chain."""
+    td.create_series("temp", unit="dimensionless", overlapping=False)
+
+    dt = sample_datetime
+    df1 = pd.DataFrame({"valid_time": [dt], "value": [10.0]})
+    td.get_series("temp").insert(df1)
+
+    df2 = pd.DataFrame({"valid_time": [dt], "value": [20.0]})
+    td.get_series("temp").insert(df2)
+
+    manifest = pl.DataFrame({"name": ["temp"]})
+    result = td.read(manifest, name_col="name", label_cols=[], include_updates=True)
+
+    assert "change_time" in result.columns
+    assert len(result) >= 2  # at least 2 corrections
+
+
+def test_read_multi_series_col(td, sample_datetime):
+    """td.read() with series_col routes by integer series ID."""
+    sid = td.create_series("power", unit="MW")
+
+    dt = sample_datetime
+    df = pd.DataFrame({"valid_time": [dt], "value": [50.0]})
+    td.get_series(series_id=sid).insert(df)
+
+    manifest = pl.DataFrame({"sid": [sid]})
+    result = td.read(manifest, series_col="sid")
+
+    assert len(result) == 1
+    assert result["value"].to_list()[0] == 50.0
+
+
+def test_read_multi_no_matching_series_raises(td):
+    """td.read() raises ValueError when manifest has unknown series."""
+    manifest = pl.DataFrame({"name": ["nonexistent"]})
+    with pytest.raises(ValueError, match="No series found"):
+        td.read(manifest, name_col="name", label_cols=[])
+
+
+def test_read_relative_multi_daily(td, sample_datetime):
+    """td.read_relative() with manifest and daily mode."""
+    td.create_series("forecast", unit="MW", labels={"site": "A"}, overlapping=True)
+
+    base = datetime(2025, 1, 2, 0, 0, tzinfo=timezone.utc)
+    kt = datetime(2025, 1, 1, 5, 0, tzinfo=timezone.utc)  # issued at 05:00 on Jan 1
+
+    hours = [base + timedelta(hours=h) for h in range(24)]
+    df = pd.DataFrame({"valid_time": hours, "value": [float(i) for i in range(24)]})
+    td.get_series("forecast").where(site="A").insert(df, knowledge_time=kt)
+
+    manifest = pl.DataFrame({"name": ["forecast"], "site": ["A"]})
+    result = td.read_relative(
+        manifest, name_col="name", label_cols=["site"],
+        days_ahead=1,
+        time_of_day=time(6, 0),
+        start_valid=base,
+        end_valid=base + timedelta(days=1),
+    )
+
+    assert len(result) == 24
+    assert "valid_time" in result.columns
+    assert "value" in result.columns
+
+
+def test_read_relative_multi_flat_raises(td, sample_datetime):
+    """td.read_relative() raises ValueError for flat series."""
+    td.create_series("measurement", unit="MW", overlapping=False)
+
+    manifest = pl.DataFrame({"name": ["measurement"]})
+    with pytest.raises(ValueError, match="overlapping"):
+        td.read_relative(
+            manifest, name_col="name", label_cols=[],
+            days_ahead=1,
+            time_of_day=time(6, 0),
+            start_valid=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )

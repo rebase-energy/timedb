@@ -17,7 +17,6 @@ _CH_INSERT_SETTINGS = {"max_partitions_per_insert_block": 1000}
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def insert_tables(
-    pg_conn,
     ch_client,
     *,
     partitioned: Dict[str, Tuple[pa.Table, Dict[str, Any]]],
@@ -31,7 +30,6 @@ def insert_tables(
     values tables are pure-append with argMax reads for deduplication.
 
     Args:
-        pg_conn: Active psycopg connection (used by the series layer, not here).
         ch_client: clickhouse_connect client for all data writes.
         partitioned: ``{target_table: (arrow_table, routing_dict)}``
         run_contexts: ``{run_id_str: RunContext}`` — all runs present
@@ -59,7 +57,6 @@ def insert_tables(
 
 def insert_table(
     ch_client,
-    pg_conn,
     *,
     table: pa.Table,
     routing: Dict[str, Any],
@@ -72,7 +69,6 @@ def insert_table(
 
     Args:
         ch_client: clickhouse_connect client.
-        pg_conn: psycopg connection (passed through to insert_tables, not used for data).
         table: Fully-decorated Arrow table (must include run_id, series_id, knowledge_time).
         routing: Routing info dict with keys: overlapping (bool), retention (str), table (str).
         run_ctx: Run metadata container.
@@ -86,7 +82,6 @@ def insert_table(
 
     target_table = routing["table"]
     insert_tables(
-        pg_conn,
         ch_client,
         partitioned={target_table: (table, routing)},
         run_contexts={run_ctx.run_id: run_ctx},
