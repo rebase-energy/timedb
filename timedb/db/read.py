@@ -15,6 +15,7 @@ from .. import profiling
 _TS_TYPE = pa.timestamp("us", tz="UTC")
 
 _COL_ARROW_TYPE: Dict[str, pa.DataType] = {
+    "series_id":      pa.int64(),
     "valid_time":     _TS_TYPE,
     "valid_time_end": _TS_TYPE,
     "knowledge_time": _TS_TYPE,
@@ -41,19 +42,7 @@ def _fetch_ch_arrow(
     parameters: dict,
     columns: List[str],
 ) -> pa.Table:
-    """Execute *sql* against ClickHouse and return results as a ``pa.Table``.
-
-    Parameters
-    ----------
-    ch_client:
-        clickhouse_connect Client instance.
-    sql:
-        SQL query with ``{name:Type}`` placeholders.
-    parameters:
-        Query parameter dict.
-    columns:
-        Column names in the order they appear in the SELECT clause.
-    """
+    """Execute *sql* against ClickHouse and return results as a ``pa.Table``."""
     _prof = profiling._enabled
     _t_total = time.perf_counter() if _prof else 0.0
 
@@ -84,11 +73,6 @@ def _fetch_ch_arrow(
 def _to_naive_utc(dt: datetime) -> datetime:
     """Convert to naive UTC so clickhouse-connect doesn't apply server_tz offset.
 
-    clickhouse-connect converts tz-aware datetimes to the server's timezone
-    before sending, but the parameter type hint (e.g. DateTime64(6, 'UTC'))
-    tells ClickHouse to parse the string as UTC.  When server_tz != UTC this
-    causes an offset.  Stripping tzinfo bypasses the conversion.
-
     See https://github.com/ClickHouse/clickhouse-connect/issues/697
     """
     if dt.tzinfo is not None:
@@ -96,16 +80,20 @@ def _to_naive_utc(dt: datetime) -> datetime:
     return dt
 
 
-def _build_ch_where_clause(
-    series_id: int,
+# ---------------------------------------------------------------------------
+# WHERE clause builder
+# ---------------------------------------------------------------------------
+
+def _build_ch_where_clause_multi(
+    series_ids: List[int],
     start_valid: Optional[datetime] = None,
     end_valid: Optional[datetime] = None,
     start_known: Optional[datetime] = None,
     end_known: Optional[datetime] = None,
 ) -> tuple[str, dict]:
-    """Build a ClickHouse WHERE clause with ``{name:Type}`` placeholders."""
-    filters = ["series_id = {series_id:Int64}"]
-    params: dict = {"series_id": series_id}
+    """Build a ClickHouse WHERE clause for multiple series_ids."""
+    filters = ["series_id IN {series_ids:Array(Int64)}"]
+    params: dict = {"series_ids": series_ids}
 
     if start_valid is not None:
         filters.append("valid_time >= {start_valid:DateTime64(6, 'UTC')}")
@@ -124,296 +112,244 @@ def _build_ch_where_clause(
 
 
 # ---------------------------------------------------------------------------
-# Flat reads
+# Multi-series read primitives: 8 functions (4 flat + 4 overlapping) + relative
+#
+# Naming: read_{flat|overlapping}[_history][_updates]_multi
+#   - no suffix:     overlapping=F, include_updates=F  (latest value)
+#   - _history:      overlapping=T, include_updates=F  (all knowledge_time versions)
+#   - _updates:      overlapping=F, include_updates=T  (correction chain for latest)
+#   - _history_updates: overlapping=T, include_updates=T (full audit)
 # ---------------------------------------------------------------------------
 
-def read_flat(
-    ch_client,
-    *,
-    series_id: int,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
+
+# ── Flat reads ────────────────────────────────────────────────────────────────
+
+def read_flat_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """Read latest flat (fact) values.
+    """Flat latest: ``argMax(value, change_time)`` per ``(series_id, valid_time)``.
 
-    Returns the most recent value per valid_time, determined by the highest
-    change_time (last write wins).
-
-    Returns:
-        ``pa.Table`` with columns ``(valid_time, value)``.
+    Returns ``(series_id, valid_time, value)``.
     """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
     )
     sql = f"""
-    SELECT valid_time, argMax(value, change_time) AS value
-    FROM flat
+    SELECT series_id, valid_time, argMax(value, change_time) AS value
+    FROM {table}
     {where}
-    GROUP BY valid_time
-    ORDER BY valid_time
+    GROUP BY series_id, valid_time
+    ORDER BY series_id, valid_time
     """
-    return _fetch_ch_arrow(ch_client, sql, params, ["valid_time", "value"])
+    return _fetch_ch_arrow(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
 
-def read_flat_with_updates(
-    ch_client,
-    *,
-    series_id: int,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
+def read_flat_history_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """Read full correction history for flat series.
+    """Flat with knowledge_time: ``argMax(value, change_time)`` per ``(series_id, knowledge_time, valid_time)``.
 
-    Returns every genuine correction row, filtered with lagInFrame on all
-    mutable columns so that pure-duplicate inserts (same data written twice)
-    are collapsed. Only rows where at least one of value/annotation/tags/
-    changed_by actually changed are returned.
-
-    Returns:
-        ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
+    Returns ``(series_id, knowledge_time, valid_time, value)``.
     """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
     )
     sql = f"""
-    SELECT valid_time, change_time, value, changed_by, annotation
+    SELECT series_id, knowledge_time, valid_time, argMax(value, change_time) AS value
+    FROM {table}
+    {where}
+    GROUP BY series_id, knowledge_time, valid_time
+    ORDER BY series_id, knowledge_time, valid_time
+    """
+    return _fetch_ch_arrow(
+        ch_client, sql, params,
+        ["series_id", "knowledge_time", "valid_time", "value"],
+    )
+
+
+def _read_flat_corrections_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    include_knowledge_time: bool,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Internal: flat correction chain with lagInFrame.
+
+    State tuple includes knowledge_time (a kt change is a meaningful correction
+    for flat series). Output includes knowledge_time only when *include_knowledge_time*.
+    """
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
+    )
+    sql = f"""
+    SELECT series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation
     FROM (
         SELECT *,
-            lagInFrame(tuple(value, annotation, changed_by)) OVER (
+            lagInFrame(tuple(value, knowledge_time, annotation, changed_by)) OVER (
                 PARTITION BY series_id, valid_time
                 ORDER BY change_time ASC
             ) AS prev_state
-        FROM flat
+        FROM {table}
         {where}
     )
     WHERE prev_state IS NULL
-       OR tuple(value, annotation, changed_by) IS DISTINCT FROM prev_state
-    ORDER BY valid_time, change_time
+       OR tuple(value, knowledge_time, annotation, changed_by) IS DISTINCT FROM prev_state
+    ORDER BY series_id, valid_time, change_time
+    """
+    result = _fetch_ch_arrow(
+        ch_client, sql, params,
+        ["series_id", "valid_time", "knowledge_time", "change_time", "value", "changed_by", "annotation"],
+    )
+    if not include_knowledge_time:
+        idx = result.schema.get_field_index("knowledge_time")
+        if idx >= 0:
+            result = result.remove_column(idx)
+    return result
+
+
+def read_flat_updates_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Flat corrections without knowledge_time in output.
+
+    Returns ``(series_id, valid_time, change_time, value, changed_by, annotation)``.
+    """
+    return _read_flat_corrections_multi(
+        ch_client, series_ids=series_ids, table=table,
+        include_knowledge_time=False,
+        start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
+    )
+
+
+def read_flat_history_updates_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Flat corrections with knowledge_time in output.
+
+    Returns ``(series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation)``.
+    """
+    return _read_flat_corrections_multi(
+        ch_client, series_ids=series_ids, table=table,
+        include_knowledge_time=True,
+        start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
+    )
+
+
+# ── Overlapping reads ─────────────────────────────────────────────────────────
+
+def read_overlapping_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Overlapping latest: ``argMax(value, (knowledge_time, change_time))`` per ``(series_id, valid_time)``.
+
+    Returns ``(series_id, valid_time, value)``.
+    """
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
+    )
+    sql = f"""
+    SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
+    FROM {table}
+    {where}
+    GROUP BY series_id, valid_time
+    ORDER BY series_id, valid_time
+    """
+    return _fetch_ch_arrow(ch_client, sql, params, ["series_id", "valid_time", "value"])
+
+
+def read_overlapping_history_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
+) -> pa.Table:
+    """Overlapping history: one row per ``(series_id, knowledge_time, valid_time)``.
+
+    Returns ``(series_id, knowledge_time, valid_time, value)``.
+    """
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
+    )
+    sql = f"""
+    SELECT series_id, knowledge_time, valid_time, argMax(value, change_time) AS value
+    FROM {table}
+    {where}
+    GROUP BY series_id, knowledge_time, valid_time
+    ORDER BY series_id, knowledge_time, valid_time
     """
     return _fetch_ch_arrow(
         ch_client, sql, params,
-        ["valid_time", "change_time", "value", "changed_by", "annotation"],
+        ["series_id", "knowledge_time", "valid_time", "value"],
     )
 
 
-# ---------------------------------------------------------------------------
-# Overlapping reads
-# ---------------------------------------------------------------------------
-
-def read_overlapping_latest(
-    ch_client,
-    *,
-    series_id: int,
-    table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
+def read_overlapping_updates_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """Read latest forecast value per valid_time.
+    """Overlapping corrections for winning forecast: ``dense_rank`` by ``knowledge_time DESC``.
 
-    Uses argMax with tuple comparison: latest knowledge_time wins,
-    then latest change_time as tiebreaker within the same forecast run.
+    Since ``overlapping=False``, knowledge_time is NOT in the output — the winning
+    knowledge_time is used internally but hidden from the result.
 
-    Returns:
-        ``pa.Table`` with columns ``(valid_time, value)``.
+    Returns ``(series_id, valid_time, change_time, value, changed_by, annotation)``.
     """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
     )
     sql = f"""
-    SELECT valid_time, argMax(value, (knowledge_time, change_time)) AS value
-    FROM {table}
-    {where}
-    GROUP BY valid_time
-    ORDER BY valid_time
-    """
-    return _fetch_ch_arrow(ch_client, sql, params, ["valid_time", "value"])
-
-
-def read_overlapping(
-    ch_client,
-    *,
-    series_id: int,
-    table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read forecast history — one row per (knowledge_time, valid_time).
-
-    Returns the latest correction per forecast run × valid_time, hiding the
-    internal correction chain. Use this to see how forecasts evolved across
-    runs without seeing individual manual corrections.
-
-    Returns:
-        ``pa.Table`` with columns ``(knowledge_time, valid_time, value)``.
-    """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-    sql = f"""
-    SELECT knowledge_time, valid_time, argMax(value, change_time) AS value
-    FROM {table}
-    {where}
-    GROUP BY knowledge_time, valid_time
-    ORDER BY knowledge_time, valid_time
-    """
-    return _fetch_ch_arrow(
-        ch_client, sql, params,
-        ["knowledge_time", "valid_time", "value"],
-    )
-
-
-def read_overlapping_relative(
-    ch_client,
-    *,
-    series_id: int,
-    table: str,
-    window_length: timedelta,
-    issue_offset: timedelta,
-    start_window: datetime,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-) -> pa.Table:
-    """Read overlapping values using a per-window knowledge_time cutoff.
-
-    For each valid_time, computes the window it belongs to (aligned to
-    start_window with period window_length), then returns the latest forecast
-    with knowledge_time <= window_start + issue_offset.
-
-    Args:
-        window_length: Length of each window (e.g., timedelta(hours=24)).
-        issue_offset: Offset from window_start for the knowledge_time cutoff.
-                      Negative means before the window starts
-                      (e.g., timedelta(hours=-12) = 12h before window start).
-        start_window: Origin for window alignment (required).
-
-    Returns:
-        ``pa.Table`` with columns ``(valid_time, value)``.
-    """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-    )
-    params.update({
-        "window_secs": int(window_length.total_seconds()),
-        "offset_secs": int(issue_offset.total_seconds()),
-        "start_window": _to_naive_utc(start_window),
-    })
-    sql = f"""
-    SELECT
-        valid_time,
-        argMax(value, (knowledge_time, change_time)) AS value
-    FROM {table}
-    {where}
-      AND knowledge_time <= addSeconds(
-            toStartOfInterval(valid_time,
-                toIntervalSecond({{window_secs:Int64}}),
-                {{start_window:DateTime64(6, 'UTC')}}),
-            {{offset_secs:Int64}})
-    GROUP BY valid_time
-    ORDER BY valid_time
-    """
-    return _fetch_ch_arrow(ch_client, sql, params, ["valid_time", "value"])
-
-
-def read_overlapping_latest_with_updates(
-    ch_client,
-    *,
-    series_id: int,
-    table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read all corrections for the currently winning forecast run per valid_time.
-
-    For each valid_time, identifies the winning knowledge_time (the latest one)
-    via dense_rank(), then returns every correction row for that
-    (valid_time, winning_knowledge_time) pair. This shows who edited the numbers
-    you are currently using, and when, without exposing which knowledge_time won.
-
-    Returns:
-        ``pa.Table`` with columns ``(valid_time, change_time, value, changed_by, annotation)``.
-    """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-    sql = f"""
-    SELECT valid_time, change_time, value, changed_by, annotation
+    SELECT series_id, valid_time, change_time, value, changed_by, annotation
     FROM (
         SELECT *,
             dense_rank() OVER (
-                PARTITION BY valid_time
+                PARTITION BY series_id, valid_time
                 ORDER BY knowledge_time DESC
             ) AS kt_rank
         FROM {table}
         {where}
     )
     WHERE kt_rank = 1
-    ORDER BY valid_time, change_time
+    ORDER BY series_id, valid_time, change_time
     """
     return _fetch_ch_arrow(
         ch_client, sql, params,
-        ["valid_time", "change_time", "value", "changed_by", "annotation"],
+        ["series_id", "valid_time", "change_time", "value", "changed_by", "annotation"],
     )
 
 
-def read_overlapping_with_updates(
-    ch_client,
-    *,
-    series_id: int,
-    table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
+def read_overlapping_history_updates_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+    start_known: Optional[datetime] = None, end_known: Optional[datetime] = None,
 ) -> pa.Table:
-    """Read the full audit log from the overlapping table.
+    """Overlapping full audit: ``lagInFrame`` per ``(series_id, knowledge_time, valid_time)``.
 
-    Returns every genuine correction row using lagInFrame on all mutable columns.
-    Rows where no mutable field changed (pure-duplicate inserts) are filtered out.
-
-    Returns:
-        ``pa.Table`` with columns ``(knowledge_time, change_time, valid_time, value, changed_by, annotation)``.
+    Returns ``(series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation)``.
     """
-    where, params = _build_ch_where_clause(
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+        start_known=start_known, end_known=end_known,
     )
     sql = f"""
-    SELECT knowledge_time, change_time, valid_time, value, changed_by, annotation
+    SELECT series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation
     FROM (
         SELECT *,
             lagInFrame(tuple(value, annotation, changed_by)) OVER (
@@ -425,33 +361,106 @@ def read_overlapping_with_updates(
     )
     WHERE prev_state IS NULL
        OR tuple(value, annotation, changed_by) IS DISTINCT FROM prev_state
-    ORDER BY knowledge_time, change_time, valid_time
+    ORDER BY series_id, valid_time, knowledge_time, change_time
     """
     return _fetch_ch_arrow(
         ch_client, sql, params,
-        ["knowledge_time", "change_time", "valid_time", "value", "changed_by", "annotation"],
+        ["series_id", "valid_time", "knowledge_time", "change_time", "value", "changed_by", "annotation"],
     )
 
 
-def read_runs_for_series(
-    ch_client,
-    *,
-    series_id: int,
-    routing: Dict[str, Any],
-) -> List[Dict]:
-    """Return all runs that contain data for a given series.
+# ── Relative read ─────────────────────────────────────────────────────────────
 
-    Performs a pure ClickHouse JOIN between runs_table and the values table.
+def read_relative_multi(
+    ch_client, *, series_ids: List[int], table: str,
+    window_length: timedelta, issue_offset: timedelta, start_window: datetime,
+    start_valid: Optional[datetime] = None, end_valid: Optional[datetime] = None,
+) -> pa.Table:
+    """Read values with per-window knowledge_time cutoff.
 
-    Args:
-        ch_client: clickhouse_connect Client.
-        series_id: Series ID.
-        routing: Routing dict with keys overlapping (bool) and table (str).
-
-    Returns:
-        List of dicts with keys: run_id, workflow_id, run_start_time,
-        run_finish_time, run_params, inserted_at.
+    Returns ``(series_id, valid_time, value)``.
     """
+    where, params = _build_ch_where_clause_multi(
+        series_ids=series_ids, start_valid=start_valid, end_valid=end_valid,
+    )
+    params.update({
+        "window_secs": int(window_length.total_seconds()),
+        "offset_secs": int(issue_offset.total_seconds()),
+        "start_window": _to_naive_utc(start_window),
+    })
+    sql = f"""
+    SELECT
+        series_id,
+        valid_time,
+        argMax(value, (knowledge_time, change_time)) AS value
+    FROM {table}
+    {where}
+      AND knowledge_time <= addSeconds(
+            toStartOfInterval(valid_time,
+                toIntervalSecond({{window_secs:Int64}}),
+                {{start_window:DateTime64(6, 'UTC')}}),
+            {{offset_secs:Int64}})
+    GROUP BY series_id, valid_time
+    ORDER BY series_id, valid_time
+    """
+    return _fetch_ch_arrow(ch_client, sql, params, ["series_id", "valid_time", "value"])
+
+
+# ---------------------------------------------------------------------------
+# Single-series wrappers
+# ---------------------------------------------------------------------------
+
+def _drop_series_id(table: pa.Table) -> pa.Table:
+    """Remove the series_id column from a multi-series result."""
+    idx = table.schema.get_field_index("series_id")
+    if idx < 0:
+        return table
+    return table.remove_column(idx)
+
+
+def read_flat(ch_client, *, series_id: int, **kw) -> pa.Table:
+    """Read latest flat values. Returns ``(valid_time, value)``."""
+    return _drop_series_id(read_flat_multi(ch_client, series_ids=[series_id], table="flat", **kw))
+
+
+def read_flat_with_updates(ch_client, *, series_id: int, **kw) -> pa.Table:
+    """Read flat correction history. Returns ``(valid_time, change_time, value, changed_by, annotation)``."""
+    return _drop_series_id(read_flat_updates_multi(ch_client, series_ids=[series_id], table="flat", **kw))
+
+
+def read_overlapping_latest(ch_client, *, series_id: int, table: str, **kw) -> pa.Table:
+    """Read latest forecast value per valid_time. Returns ``(valid_time, value)``."""
+    return _drop_series_id(read_overlapping_multi(ch_client, series_ids=[series_id], table=table, **kw))
+
+
+def read_overlapping(ch_client, *, series_id: int, table: str, **kw) -> pa.Table:
+    """Read forecast history. Returns ``(knowledge_time, valid_time, value)``."""
+    return _drop_series_id(read_overlapping_history_multi(ch_client, series_ids=[series_id], table=table, **kw))
+
+
+def read_overlapping_relative(ch_client, *, series_id: int, table: str, **kw) -> pa.Table:
+    """Read with per-window knowledge_time cutoff. Returns ``(valid_time, value)``."""
+    return _drop_series_id(read_relative_multi(ch_client, series_ids=[series_id], table=table, **kw))
+
+
+def read_overlapping_latest_with_updates(ch_client, *, series_id: int, table: str, **kw) -> pa.Table:
+    """Read corrections for winning forecast. Returns ``(valid_time, change_time, value, changed_by, annotation)``."""
+    return _drop_series_id(read_overlapping_updates_multi(ch_client, series_ids=[series_id], table=table, **kw))
+
+
+def read_overlapping_with_updates(ch_client, *, series_id: int, table: str, **kw) -> pa.Table:
+    """Read full audit log. Returns ``(valid_time, knowledge_time, change_time, value, changed_by, annotation)``."""
+    return _drop_series_id(read_overlapping_history_updates_multi(ch_client, series_ids=[series_id], table=table, **kw))
+
+
+# ---------------------------------------------------------------------------
+# Run listing (single-series only)
+# ---------------------------------------------------------------------------
+
+def read_runs_for_series(
+    ch_client, *, series_id: int, routing: Dict[str, Any],
+) -> List[Dict]:
+    """Return all runs that contain data for a given series."""
     data_table = "flat" if not routing["overlapping"] else routing["table"]
     sql = f"""
     SELECT DISTINCT

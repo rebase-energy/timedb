@@ -16,18 +16,16 @@ Data model:
   (list-partitioned by retention) with knowledge_time versioning.
 """
 import atexit
-import os
 import uuid
-import warnings
 from time import perf_counter
-from contextlib import contextmanager
-from typing import Optional, List, Tuple, Dict, Union, Any
+from typing import Optional, List, Dict, Union, Any
 from datetime import datetime, timedelta, timezone, time as dt_time
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 
-from . import db, profiling, insert_pipeline
+from . import db, profiling, insert_pipeline, read_pipeline, write_pipeline
+from .connection import _get_connection, _get_pg_conninfo, _get_ch_url
 from .db.series import SeriesRegistry
 from .types import RunContext, InsertResult, IncompatibleUnitError
 from timedatamodel import TimeSeries, TimeSeriesType
@@ -288,10 +286,10 @@ class SeriesCollection:
         **Single-series reads only.** Collection must resolve to exactly one series.
 
         Args:
-            start_valid: Start of valid time range (optional)
-            end_valid: End of valid time range (optional)
-            start_known: Start of knowledge_time range (optional)
-            end_known: End of knowledge_time range (optional)
+            start_valid: Start of valid time range (inclusive).
+            end_valid: End of valid time range (exclusive).
+            start_known: Start of knowledge_time range (inclusive).
+            end_known: End of knowledge_time range (exclusive).
             overlapping: Controls whether forecast history is exposed (default: False).
 
                 - False: one row per valid_time with the **latest** value — the most
@@ -376,72 +374,24 @@ class SeriesCollection:
         meta = self._registry.get_cached(series_id)
         is_overlapping = meta["overlapping"]
 
-        if overlapping:
-            if not is_overlapping:
-                raise ValueError(
-                    "overlapping=True is not supported for flat series. "
-                    "Flat series have a single value per timestamp with no forecast runs."
-                )
-            if include_updates:
-                table = _read_overlapping_with_updates(
-                    ch_client=self._ch_client,
-                    series_id=series_id,
-                    routing_table=meta["table"],
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                )
-            else:
-                table = _read_overlapping(
-                    ch_client=self._ch_client,
-                    series_id=series_id,
-                    routing_table=meta["table"],
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                )
-        elif include_updates:
-            if is_overlapping:
-                table = _read_overlapping_latest_with_updates(
-                    ch_client=self._ch_client,
-                    series_id=series_id,
-                    routing_table=meta["table"],
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                )
-            else:
-                table = _read_flat_with_updates(
-                    ch_client=self._ch_client,
-                    series_id=series_id,
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                )
-        else:
-            if is_overlapping:
-                table = _read_overlapping_latest(
-                    ch_client=self._ch_client,
-                    series_id=series_id,
-                    routing_table=meta["table"],
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                )
-            else:
-                table = _read_flat(
-                    ch_client=self._ch_client,
-                    series_id=series_id,
-                    start_valid=start_valid,
-                    end_valid=end_valid,
-                    start_known=start_known,
-                    end_known=end_known,
-                )
+        if overlapping and not is_overlapping:
+            raise ValueError(
+                "overlapping=True is not supported for flat series. "
+                "Flat series have a single value per timestamp with no forecast runs."
+            )
+
+        table = read_pipeline._read_multi(
+            self._ch_client,
+            {series_id: meta},
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+            overlapping=overlapping,
+            include_updates=include_updates,
+        )
+        # Drop series_id column — single-series result doesn't need it
+        table = db.read._drop_series_id(table)
 
         ts_type = TimeSeriesType.OVERLAPPING if is_overlapping else TimeSeriesType.FLAT
         _prof = profiling.is_enabled()
@@ -567,16 +517,18 @@ class SeriesCollection:
                 f"Series '{meta['name']}' is a flat series. Use read() instead."
             )
 
-        table = _read_overlapping_relative(
-            ch_client=self._ch_client,
-            series_id=series_id,
-            routing_table=meta["table"],
+        table = read_pipeline._read_relative_multi(
+            self._ch_client,
+            {series_id: meta},
             window_length=window_length,
             issue_offset=issue_offset,
             start_window=start_window,
             start_valid=start_valid,
             end_valid=end_valid,
         )
+        # Drop series_id column — single-series result doesn't need it
+        table = db.read._drop_series_id(table)
+
         _prof = profiling.is_enabled()
         _t0 = perf_counter() if _prof else 0.0
         ts = TimeSeries.from_polars(
@@ -1049,7 +1001,7 @@ class TimeDataClient:
                     f"Columns cannot serve dual roles as run dimension and series label."
                 )
 
-        return _write(
+        return write_pipeline._write(
             df,
             name_col=name_col,
             label_cols=label_cols,
@@ -1061,61 +1013,193 @@ class TimeDataClient:
             run_start_time=run_start_time,
             run_finish_time=run_finish_time,
             run_params=run_params,
+            make_run_context=_make_run_context,
+            ch_client=self._ch_client,
+            _pool=self._pool,
+        )
+
+    def read(
+        self,
+        manifest: Union[pd.DataFrame, pl.DataFrame],
+        name_col: Optional[str] = None,
+        label_cols: Optional[List[str]] = None,
+        series_col: Optional[str] = None,
+        *,
+        start_valid: Optional[datetime] = None,
+        end_valid: Optional[datetime] = None,
+        start_known: Optional[datetime] = None,
+        end_known: Optional[datetime] = None,
+        overlapping: bool = False,
+        include_updates: bool = False,
+    ) -> pl.DataFrame:
+        """
+        Read multi-series data using a manifest DataFrame.
+
+        The manifest specifies which series to read using the same routing
+        columns as :meth:`write`: either *name_col*/*label_cols* (resolve by
+        name and labels) or *series_col* (route by integer series ID).
+        The two modes are mutually exclusive.
+
+        All series must already exist — unknown identities raise a
+        :class:`ValueError`.
+
+        Args:
+            manifest: DataFrame (Pandas or Polars) specifying which series to
+                read.  Each unique combination of routing columns identifies
+                one series.
+            name_col: Column whose values map to ``series_table.name``.
+                Defaults to ``"name"`` when *series_col* is not set.
+                Mutually exclusive with *series_col*.
+            label_cols: Columns whose values map to ``series_table.labels``.
+                If ``None`` (default), inferred as all columns not in
+                *name_col* and not reserved columns.
+                Pass ``[]`` explicitly for series with no labels.
+                Mutually exclusive with *series_col*.
+            series_col: Column whose values are integer ``series_table.series_id``
+                values.  Bypasses name/label resolution.
+                Mutually exclusive with *name_col* and *label_cols*.
+            start_valid: Start of valid time range (inclusive).
+            end_valid: End of valid time range (exclusive).
+            start_known: Start of knowledge_time range (inclusive).
+            end_known: End of knowledge_time range (exclusive).
+            overlapping: Controls whether forecast history is exposed.
+
+                - False (default): one row per (series_id, valid_time) with the
+                  latest value.
+                - True: one row per (series_id, knowledge_time, valid_time).
+                  Overlapping series return all versions; flat series return one
+                  version per valid_time with knowledge_time populated.
+            include_updates: If True, expose the correction chain.
+
+        Returns:
+            ``pl.DataFrame`` in long/tidy format with columns:
+            ``[name_col, *label_cols, "unit", "series_id", <data_columns>]``.
+
+            Data columns depend on *overlapping* and *include_updates*:
+
+            +--------------+-----------------+-------------------------------------+
+            | overlapping  | include_updates | Data columns                        |
+            +==============+=================+=====================================+
+            | False        | False (default) | valid_time, value                   |
+            +--------------+-----------------+-------------------------------------+
+            | False        | True            | valid_time, change_time, value,     |
+            |              |                 | changed_by, annotation              |
+            +--------------+-----------------+-------------------------------------+
+            | True         | False           | knowledge_time, valid_time, value   |
+            +--------------+-----------------+-------------------------------------+
+            | True         | True            | knowledge_time, change_time,        |
+            |              |                 | valid_time, value, changed_by,      |
+            |              |                 | annotation                          |
+            +--------------+-----------------+-------------------------------------+
+
+            For mixed flat + overlapping reads with ``overlapping=True``, both
+            flat and overlapping series include ``knowledge_time``.
+
+        Raises:
+            ValueError: If *series_col* is used together with *name_col* or
+                *label_cols*.
+            ValueError: If no series match the manifest.
+
+        Example:
+            >>> manifest = pl.DataFrame({
+            ...     "metric": ["wind_power", "wind_power", "solar_power"],
+            ...     "site": ["Gotland", "Oslo", "Gotland"],
+            ... })
+            >>> df = td.read(manifest, name_col="metric", label_cols=["site"],
+            ...              start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc))
+        """
+        return read_pipeline._read(
+            manifest,
+            name_col=name_col,
+            label_cols=label_cols,
+            series_col=series_col,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            start_known=start_known,
+            end_known=end_known,
+            overlapping=overlapping,
+            include_updates=include_updates,
+            ch_client=self._ch_client,
+            _pool=self._pool,
+        )
+
+    def read_relative(
+        self,
+        manifest: Union[pd.DataFrame, pl.DataFrame],
+        name_col: Optional[str] = None,
+        label_cols: Optional[List[str]] = None,
+        series_col: Optional[str] = None,
+        *,
+        window_length: Optional[timedelta] = None,
+        issue_offset: Optional[timedelta] = None,
+        start_window: Optional[datetime] = None,
+        start_valid: Optional[datetime] = None,
+        end_valid: Optional[datetime] = None,
+        days_ahead: Optional[int] = None,
+        time_of_day: Optional[dt_time] = None,
+    ) -> pl.DataFrame:
+        """
+        Read multi-series overlapping data with per-window knowledge_time cutoff.
+
+        Same manifest routing as :meth:`read`.  All matched series must be
+        overlapping (versioned) — flat series raise :class:`ValueError`.
+
+        **Low-level mode** — full control over window shape and offset:
+
+        Args:
+            manifest: DataFrame specifying which series to read.
+            name_col: Column mapping to series name.
+            label_cols: Columns mapping to series labels.
+            series_col: Column with integer series IDs.
+            window_length: Length of each window (e.g., ``timedelta(hours=24)``).
+            issue_offset: Offset from window_start for the knowledge_time cutoff.
+            start_window: Origin for window alignment.  Defaults to *start_valid*.
+            start_valid: Start of valid time range (inclusive).
+            end_valid: End of valid time range (exclusive).
+
+        **Daily shorthand mode** — fixed 1-day windows:
+
+        Args:
+            days_ahead: Calendar days before the window the forecast must be issued.
+            time_of_day: Latest time of day on the issue day (UTC).
+            start_valid: Start of valid time range (required in daily mode).
+            end_valid: End of valid time range (optional).
+
+        Returns:
+            ``pl.DataFrame`` with columns
+            ``[name_col, *label_cols, "unit", "series_id", valid_time, value]``.
+
+        Raises:
+            ValueError: If any matched series is flat.
+            ValueError: If parameters are missing or modes are mixed.
+
+        Example:
+            >>> df = td.read_relative(
+            ...     manifest, name_col="metric", label_cols=["site"],
+            ...     days_ahead=1, time_of_day=dt_time(6, 0),
+            ...     start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            ... )
+        """
+        return read_pipeline._read_relative(
+            manifest,
+            name_col=name_col,
+            label_cols=label_cols,
+            series_col=series_col,
+            window_length=window_length,
+            issue_offset=issue_offset,
+            start_window=start_window,
+            start_valid=start_valid,
+            end_valid=end_valid,
+            days_ahead=days_ahead,
+            time_of_day=time_of_day,
             ch_client=self._ch_client,
             _pool=self._pool,
         )
 
 
-
 # =============================================================================
 # Internal helper functions (not part of public API)
 # =============================================================================
-
-def _get_pg_conninfo() -> str:
-    """Get PostgreSQL connection string from environment variables."""
-    conninfo = os.environ.get("TIMEDB_PG_DSN") or os.environ.get("DATABASE_URL")
-    if not conninfo:
-        raise ValueError(
-            "PostgreSQL connection not configured. Set TIMEDB_PG_DSN environment variable."
-        )
-    return conninfo
-
-
-def _get_ch_url() -> str:
-    """Get ClickHouse DSN from environment variables."""
-    ch_url = os.environ.get("TIMEDB_CH_URL")
-    if not ch_url:
-        raise ValueError(
-            "ClickHouse connection not configured. Set TIMEDB_CH_URL environment variable."
-        )
-    return ch_url
-
-
-@contextmanager
-def _get_connection(_pool: Optional[ConnectionPool] = None, conninfo: Optional[str] = None):
-    """
-    Context manager that yields a database connection.
-    
-    Uses connection pool if available, otherwise creates a new connection.
-    
-    Args:
-        _pool: Optional connection pool
-        conninfo: Optional connection string (fetched via _get_pg_conninfo() if not provided)
-    
-    Yields:
-        psycopg.Connection
-    """
-    if _pool is not None:
-        with _pool.connection() as conn:
-            yield conn
-    else:
-        if conninfo is None:
-            conninfo = _get_pg_conninfo()
-        with psycopg.connect(conninfo) as conn:
-            yield conn
-
-
-
 
 def _create(pg_conninfo: Optional[str] = None, ch_url: Optional[str] = None) -> None:
     """Create the database schema in PostgreSQL and ClickHouse."""
@@ -1168,149 +1252,9 @@ def _delete(pg_conninfo: Optional[str] = None, ch_url: Optional[str] = None) -> 
     )
 
 
-def _read_flat(
-    ch_client,
-    series_id: int,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read flat values for a single series."""
-    return db.read.read_flat(
-        ch_client,
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-
-def _read_overlapping_latest(
-    ch_client,
-    series_id: int,
-    routing_table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read latest overlapping values for a single series."""
-    return db.read.read_overlapping_latest(
-        ch_client,
-        series_id=series_id,
-        table=routing_table,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-
-def _read_overlapping_with_updates(
-    ch_client,
-    series_id: int,
-    routing_table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read all overlapping versions for a single series."""
-    return db.read.read_overlapping_with_updates(
-        ch_client,
-        series_id=series_id,
-        table=routing_table,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-
-def _read_overlapping(
-    ch_client,
-    series_id: int,
-    routing_table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read overlapping forecast history (latest correction per knowledge_time × valid_time)."""
-    return db.read.read_overlapping(
-        ch_client,
-        series_id=series_id,
-        table=routing_table,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-
-def _read_overlapping_latest_with_updates(
-    ch_client,
-    series_id: int,
-    routing_table: str,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read all corrections for the winning knowledge_time per valid_time."""
-    return db.read.read_overlapping_latest_with_updates(
-        ch_client,
-        series_id=series_id,
-        table=routing_table,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-
-def _read_flat_with_updates(
-    ch_client,
-    series_id: int,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-    start_known: Optional[datetime] = None,
-    end_known: Optional[datetime] = None,
-) -> pa.Table:
-    """Read flat values with change_time, changed_by, annotation columns."""
-    return db.read.read_flat_with_updates(
-        ch_client,
-        series_id=series_id,
-        start_valid=start_valid,
-        end_valid=end_valid,
-        start_known=start_known,
-        end_known=end_known,
-    )
-
-
-def _read_overlapping_relative(
-    ch_client,
-    series_id: int,
-    routing_table: str,
-    window_length: timedelta,
-    issue_offset: timedelta,
-    start_window: datetime,
-    start_valid: Optional[datetime] = None,
-    end_valid: Optional[datetime] = None,
-) -> pa.Table:
-    """Read overlapping values with per-window knowledge_time cutoff."""
-    return db.read.read_overlapping_relative(
-        ch_client,
-        series_id=series_id,
-        table=routing_table,
-        window_length=window_length,
-        issue_offset=issue_offset,
-        start_window=start_window,
-        start_valid=start_valid,
-        end_valid=end_valid,
-    )
+# NOTE: Multi-series read/write orchestration moved to read_pipeline.py and write_pipeline.py
+# _read_multi, _read_relative_multi, _resolve_manifest, _build_read_result, _read, _read_relative → read_pipeline
+# _write, _build_multi_run_contexts → write_pipeline
 
 
 def _make_run_context(
@@ -1374,294 +1318,13 @@ def _insert(
     if profiling._enabled:
         profiling._record(profiling.PHASE_INSERT_NORMALIZE, perf_counter() - _t_normalize)
 
-    with _get_connection(_pool) as conn:
-        db.insert.insert_table(ch_client, conn, table=table, routing=routing, run_ctx=run_ctx)
+    db.insert.insert_table(ch_client, table=table, routing=routing, run_ctx=run_ctx)
 
     return InsertResult(
         run_id=uuid.UUID(run_ctx.run_id),
         workflow_id=run_ctx.workflow_id,
         series_id=series_id,
     )
-
-
-def _build_multi_run_contexts(
-    pl_df: pl.DataFrame,
-    run_cols: List[str],
-    *,
-    global_workflow_id: Optional[str],
-    global_run_start_time: Optional[datetime],
-    global_run_finish_time: Optional[datetime],
-    global_run_params: Optional[dict],
-) -> Tuple[Dict[str, RunContext], pl.DataFrame]:
-    run_ctx_map: Dict[str, RunContext] = {}
-    run_rows: List[dict] = []
-    for row in pl_df.select(run_cols).unique().rows(named=True):
-        rid = str(uuid7())
-        r_start = row.get("run_start_time", global_run_start_time) or datetime.now(timezone.utc)
-        if r_start.tzinfo is None:
-            raise ValueError("run_start_time must be timezone-aware")
-        unreserved = {k: v for k, v in row.items() if k not in _WRITE_RUN_RESERVED_COLS}
-        run_ctx_map[rid] = RunContext(
-            run_id=rid,
-            workflow_id=row.get("workflow_id", global_workflow_id) or "sdk-workflow",
-            run_start_time=r_start,
-            run_finish_time=row.get("run_finish_time", global_run_finish_time),
-            run_params={**(global_run_params or {}), **unreserved} or None,
-        )
-        run_rows.append({**row, "_run_id": rid})
-    schema = {**{col: pl_df.schema[col] for col in run_cols}, "_run_id": pl.String}
-    return run_ctx_map, pl.DataFrame(run_rows, schema=schema)
-
-
-def _write(
-    df: Union[pd.DataFrame, pl.DataFrame],
-    name_col: Optional[str],
-    label_cols: List[str],
-    run_cols: Optional[List[str]] = None,
-    series_col: Optional[str] = None,
-    *,
-    knowledge_time: Optional[datetime] = None,
-    data_unit: Optional[str] = None,
-    workflow_id: Optional[str] = None,
-    run_start_time: Optional[datetime] = None,
-    run_finish_time: Optional[datetime] = None,
-    run_params: Optional[dict] = None,
-    ch_client=None,
-    _pool: Optional[ConnectionPool] = None,
-) -> List[InsertResult]:
-    """
-    Core multi-series write implementation.
-
-    Accepts long-format data (all routing info in columns), resolves series
-    identities, builds a vectorized Polars mapping, and inserts all partitions
-    in one atomic transaction.
-
-    Args:
-        df: Long-format DataFrame with routing columns, ``valid_time``,
-            ``value``, and optional audit columns.
-        name_col: Column whose values map to ``series_table.name``.
-            ``None`` when *series_col* is used.
-        label_cols: Columns whose values map to ``series_table.labels``.
-        run_cols: Columns that define run identity (provenance).
-        series_col: Column whose values are integer series IDs.  When set,
-            bypasses name/label resolution and only validates IDs exist.
-        knowledge_time: Broadcast knowledge_time (mutually exclusive with a
-            ``knowledge_time`` column in *df*).
-        data_unit: Unit of the incoming values for pint conversion.
-        workflow_id, run_start_time, run_finish_time, run_params:
-            Global run metadata (defaults for each run).
-        _pool: Optional connection pool.
-
-    Returns:
-        List of :class:`InsertResult`, one per unique (series_id, run_id) pair.
-
-    Raises:
-        ValueError: If any (name, labels) combination or series ID has no
-            matching series.
-        IncompatibleUnitError: If *data_unit* is incompatible with any series unit.
-    """
-
-    t_write_start = perf_counter()
-
-    if run_start_time is not None and run_start_time.tzinfo is None:
-        raise ValueError("run_start_time must be timezone-aware")
-
-    # ── Normalize to Polars immediately ──────────────────────────────────────
-    pl_df = pl.from_pandas(df) if isinstance(df, pd.DataFrame) else df
-
-    # ── Detect per-row unit column ────────────────────────────────────────────
-    has_unit_col = "unit" in pl_df.columns
-    if has_unit_col and pl_df["unit"].null_count() > 0:
-        raise ValueError(
-            "The 'unit' column contains null values. "
-            "Every row must specify a unit. Use 'dimensionless' for unit-free values."
-        )
-
-    # ── Resolve series and build mapping DataFrame ─────────────────────────────
-    t_resolve_start = perf_counter()
-    registry = SeriesRegistry()
-
-    if series_col is not None:
-        # ── Fast path: series_col provides IDs directly ──────────────────
-        pl_df = pl_df.with_columns(pl.col(series_col).cast(pl.Int64))
-        identity_cols = [series_col]
-        mapping_keys_cols = [series_col] + (["unit"] if has_unit_col else [])
-        unique_df = pl_df.select(mapping_keys_cols).unique()
-        mapping_combos = unique_df.to_dicts()
-        unique_sids = pl_df[series_col].unique().to_list()
-
-        with _get_connection(_pool) as conn:
-            found_ids = db.series.resolve_series_by_ids(conn, unique_sids, registry)
-        profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
-
-        if missing := [sid for sid in unique_sids if sid not in found_ids]:
-            raise ValueError(
-                f"No series found for {len(missing)} series_id(s): {missing}"
-            )
-
-        mapping_rows: Dict[str, list] = {
-            series_col: [],
-            "_series_id": [], "_unit": [], "_factor": [],
-            "_target_table": [], "_overlapping": [], "_retention": [],
-        }
-        if has_unit_col:
-            mapping_rows["unit"] = []
-
-        for row in mapping_combos:
-            sid = row[series_col]
-            meta = registry.get_cached(sid)
-            series_unit = meta["unit"]
-            incoming_unit = row["unit"] if has_unit_col else (data_unit or "dimensionless")
-
-            factor = insert_pipeline._compute_unit_factor(incoming_unit, series_unit)
-            if factor is None and incoming_unit == "dimensionless" and series_unit != "dimensionless":
-                warnings.warn(
-                    f"Inserting dimensionless values into series with unit '{series_unit}' "
-                    f"(series_id={sid}). Values stored as-is without conversion.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-
-            mapping_rows[series_col].append(sid)
-            if has_unit_col:
-                mapping_rows["unit"].append(row["unit"])
-            mapping_rows["_series_id"].append(sid)
-            mapping_rows["_unit"].append(series_unit)
-            mapping_rows["_factor"].append(factor if factor is not None else 1.0)
-            mapping_rows["_target_table"].append(meta["table"])
-            mapping_rows["_overlapping"].append(meta["overlapping"])
-            mapping_rows["_retention"].append(meta["retention"])
-
-    else:
-        # ── Standard path: resolve by name + labels ──────────────────────
-        identity_cols = [name_col] + label_cols
-        mapping_keys_cols = identity_cols + (["unit"] if has_unit_col else [])
-        unique_df = pl_df.select(mapping_keys_cols).unique()
-        mapping_combos = unique_df.to_dicts()
-        identity_df = unique_df.select(identity_cols).unique() if has_unit_col else unique_df
-        identities = [(row[0], dict(zip(label_cols, row[1:]))) for row in identity_df.iter_rows()]
-
-        with _get_connection(_pool) as conn:
-            found = db.series.resolve_series(conn, identities, registry)
-        profiling._record(profiling.PHASE_WRITE_SERIES_RESOLVE, perf_counter() - t_resolve_start)
-
-        if missing := [
-            f"name={n!r}, labels={l!r}"
-            for n, l in identities
-            if db.series._make_series_key(n.strip(), l) not in found
-        ]:
-            raise ValueError(
-                f"No series found for {len(missing)} identity combination(s):\n"
-                + "\n".join(f"  {m}" for m in missing)
-            )
-
-        mapping_rows: Dict[str, list] = {
-            name_col: [], **{lc: [] for lc in label_cols},
-            "_series_id": [], "_unit": [], "_factor": [],
-            "_target_table": [], "_overlapping": [], "_retention": [],
-        }
-        if has_unit_col:
-            mapping_rows["unit"] = []
-
-        for row in mapping_combos:
-            name = row[name_col]
-            labels = {k: row[k] for k in label_cols}
-            sid = found[db.series._make_series_key(name.strip(), labels)]
-            meta = registry.get_cached(sid)
-            series_unit = meta["unit"]
-            incoming_unit = row["unit"] if has_unit_col else (data_unit or "dimensionless")
-
-            factor = insert_pipeline._compute_unit_factor(incoming_unit, series_unit)
-            if factor is None and incoming_unit == "dimensionless" and series_unit != "dimensionless":
-                warnings.warn(
-                    f"Inserting dimensionless values into series with unit '{series_unit}' "
-                    f"(name={name!r}, labels={labels!r}). Values stored as-is without conversion.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-
-            mapping_rows[name_col].append(name)
-            for lc in label_cols:
-                mapping_rows[lc].append(labels.get(lc))
-            if has_unit_col:
-                mapping_rows["unit"].append(row["unit"])
-            mapping_rows["_series_id"].append(sid)
-            mapping_rows["_unit"].append(series_unit)
-            mapping_rows["_factor"].append(factor if factor is not None else 1.0)
-            mapping_rows["_target_table"].append(meta["table"])
-            mapping_rows["_overlapping"].append(meta["overlapping"])
-            mapping_rows["_retention"].append(meta["retention"])
-
-    # Derive routing col types from pl_df.schema (labels can be any type).
-    _mapping_schema = {col: pl_df.schema[col] for col in mapping_keys_cols}
-    _mapping_schema.update({
-        "_series_id": pl.Int64,
-        "_unit": pl.String,
-        "_factor": pl.Float64,
-        "_target_table": pl.String,
-        "_overlapping": pl.Boolean,
-        "_retention": pl.String,
-    })
-    mapping_df = pl.DataFrame(mapping_rows, schema=_mapping_schema)
-
-    # ── Build run context(s) and normalize/partition ─────────────────────────
-    t_normalize_start = perf_counter()
-    if run_cols:
-        run_ctx_map, run_mapping_df = _build_multi_run_contexts(
-            pl_df=pl_df,
-            run_cols=run_cols,
-            global_workflow_id=workflow_id,
-            global_run_start_time=run_start_time,
-            global_run_finish_time=run_finish_time,
-            global_run_params=run_params,
-        )
-        partitioned = insert_pipeline.normalize_write_input(
-            pl_df,
-            name_col=name_col,
-            label_cols=label_cols,
-            series_col=series_col,
-            mapping_df=mapping_df,
-            run_mapping=run_mapping_df,
-            run_cols=run_cols,
-            knowledge_time=knowledge_time,
-        )
-        result_df = (
-            pl_df.select(identity_cols + run_cols).unique()
-            .join(mapping_df.select(identity_cols + ["_series_id"]), on=identity_cols)
-            .join(run_mapping_df.select(run_cols + ["_run_id"]), on=run_cols)
-            .select(["_series_id", "_run_id"])
-            .unique()
-        )
-    else:
-        single_run_ctx = _make_run_context(workflow_id, run_start_time, run_finish_time, run_params)
-        run_ctx_map = {single_run_ctx.run_id: single_run_ctx}
-        partitioned = insert_pipeline.normalize_write_input(
-            pl_df,
-            name_col=name_col,
-            label_cols=label_cols,
-            series_col=series_col,
-            mapping_df=mapping_df,
-            run_id=single_run_ctx.run_id,
-            knowledge_time=knowledge_time,
-        )
-        result_df = mapping_df.select(["_series_id", pl.lit(single_run_ctx.run_id).alias("_run_id")]).unique()
-    profiling._record(profiling.PHASE_WRITE_NORMALIZE, perf_counter() - t_normalize_start)
-
-    # ── Insert all partitions ─────────────────────────────────────────────────
-    with _get_connection(_pool) as conn:
-        db.insert.insert_tables(conn, ch_client, partitioned=partitioned, run_contexts=run_ctx_map)
-
-    # ── Build results: one InsertResult per (series_id, run_id) pair ──────────
-    results = [
-        InsertResult(
-            series_id=sid,
-            run_id=uuid.UUID(rid),
-            workflow_id=run_ctx_map[rid].workflow_id,
-        )
-        for sid, rid in result_df.iter_rows()
-    ]
-    profiling._record(profiling.PHASE_WRITE_TOTAL, perf_counter() - t_write_start)
-    return results
 
 
 def _list_runs(

@@ -787,6 +787,119 @@ Window Jan 2 00:00 + (6h − 24h) = **Jan 1 06:00** — only forecasts issued by
 
 Returns a ``TimeSeries`` with ``SIMPLE`` shape — identical to ``read()``. Call ``.to_pandas()`` for a DataFrame with ``valid_time`` index and ``value`` column.
 
+Multi-Series Read
+-----------------
+
+For bulk reads across many series at once, use the module-level ``td.read()`` method.
+It mirrors ``td.write()``: you pass a **manifest DataFrame** specifying which series
+to read, and get back a long-format ``pl.DataFrame`` with data for all matched series.
+
+``read()`` — manifest-based multi-series read
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The manifest contains routing columns (name + labels, or series IDs) — exactly like
+the input to ``write()``, but without the data columns:
+
+.. code-block:: python
+
+   import polars as pl
+   from datetime import datetime, timezone
+
+   manifest = pl.DataFrame({
+       "metric": ["wind_power", "wind_power", "solar_power"],
+       "site": ["Gotland", "Oslo", "Gotland"],
+   })
+
+   df = td.read(
+       manifest,
+       name_col="metric",
+       label_cols=["site"],
+       start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc),
+       end_valid=datetime(2026, 4, 1, tzinfo=timezone.utc),
+   )
+
+Returns a ``pl.DataFrame`` with columns:
+``[metric, site, unit, series_id, valid_time, value]``.
+
+**Fast path — route by series ID:**
+
+.. code-block:: python
+
+   fast = pl.DataFrame({"sid": [1, 2, 3]})
+   df = td.read(fast, series_col="sid")
+
+**With overlapping history:**
+
+.. code-block:: python
+
+   df = td.read(manifest, name_col="metric", label_cols=["site"], overlapping=True)
+   # Columns: metric | site | unit | series_id | knowledge_time | valid_time | value
+   # Both flat and overlapping series include knowledge_time; only overlapping series return multiple versions per valid_time.
+
+**With correction chain:**
+
+.. code-block:: python
+
+   df = td.read(manifest, name_col="metric", label_cols=["site"], include_updates=True)
+   # Adds: change_time, changed_by, annotation columns
+
+Full signature:
+
+.. code-block:: python
+
+   df = td.read(
+       manifest,                 # pl.DataFrame or pd.DataFrame (routing columns only)
+       name_col=None,            # defaults to "name"; mutually exclusive with series_col
+       label_cols=None,          # None → inferred; [] → no labels; mutually exclusive with series_col
+       series_col=None,          # route by series ID; mutually exclusive with name_col/label_cols
+       *,
+       start_valid=None,         # valid time range (inclusive/exclusive)
+       end_valid=None,
+       start_known=None,         # knowledge_time range (overlapping only)
+       end_known=None,
+       overlapping=False,        # True → all forecast versions for overlapping series
+       include_updates=False,    # True → correction chain
+   )  # -> pl.DataFrame
+
+Also available as ``td_client.read(...)``.
+
+``read_relative()`` — manifest-based relative read
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Multi-series version of ``SeriesCollection.read_relative()``. Same manifest routing,
+same window parameters. All matched series must be overlapping.
+
+.. code-block:: python
+
+   from datetime import time
+
+   df = td.read_relative(
+       manifest,
+       name_col="metric",
+       label_cols=["site"],
+       days_ahead=1,
+       time_of_day=time(6, 0),
+       start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc),
+       end_valid=datetime(2026, 3, 31, tzinfo=timezone.utc),
+   )
+   # Returns: metric | site | unit | series_id | valid_time | value
+
+Full signature:
+
+.. code-block:: python
+
+   df = td.read_relative(
+       manifest,
+       name_col=None, label_cols=None, series_col=None,
+       *,
+       # Low-level mode:
+       window_length=None, issue_offset=None, start_window=None,
+       # Daily shorthand mode (mutually exclusive with low-level):
+       days_ahead=None, time_of_day=None,
+       # Shared:
+       start_valid=None, end_valid=None,
+   )  # -> pl.DataFrame
+
 Getting Series Metadata
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -842,68 +955,6 @@ Each dict contains:
 - **run_start_time** / **run_finish_time** (datetime or None): User-supplied time range
 - **run_params** (dict or None): Arbitrary metadata from insert
 - **inserted_at** (datetime): When the run was written to the DB
-
-Updating Records
-----------------
-
-Update records for both flat and overlapping series. Flat series are updated in-place.
-For overlapping series, each update inserts a correction row that **preserves the
-original** ``knowledge_time`` and stamps ``change_time = now()``, so the forecast
-run identity is unchanged while the full correction history remains queryable:
-
-.. code-block:: python
-
-   updates = [
-       {
-           "valid_time": datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
-           "value": 150.0,
-           "annotation": "Manually corrected",
-           "tags": ["reviewed"],
-       }
-   ]
-
-   result = td.get_series("wind_forecast").where(site="offshore_1").update_records(updates)
-
-``update_records()`` is single-series only — the same constraint as ``read()`` and ``insert()``.
-The collection must resolve to exactly one series; use ``.where()`` filters to narrow it down if needed.
-
-The function returns a list of updated records:
-
-.. code-block:: python
-
-   [
-       {
-           "series_id": 123,
-           "valid_time": datetime(...),
-           "value": 150.0,
-           ...
-       },
-       ...
-   ]
-
-For overlapping series, you can target a specific forecast run by including:
-
-- ``knowledge_time``: Target the exact forecast run by knowledge_time
-- (neither): Target the globally latest version
-
-Tri-state field semantics:
-
-- **Omit a field**: Leave it unchanged
-- **Set to None**: Explicitly clear the field
-- **Set to a value**: Update to that value
-
-Example:
-
-.. code-block:: python
-
-   # Clear annotation, update value, leave tags unchanged
-   result = td.get_series("power").update_records([
-       {
-           "valid_time": datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
-           "value": 200.0,
-           "annotation": None,
-       }
-   ])
 
 Error Handling
 --------------
