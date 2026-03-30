@@ -129,7 +129,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
         overlapping=True, retention="medium",
     )
 
-    # Insert first batch
+    # Insert first run
     knowledge_time_1 = sample_datetime
     df1 = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -137,7 +137,7 @@ def test_read_overlapping_all_versions_via_sdk(td, sample_datetime):
     })
     td.get_series("wind_forecast").insert(data=df1, knowledge_time=knowledge_time_1)
 
-    # Insert second batch (revision) for the same valid times
+    # Insert second run (revision) for the same valid times
     knowledge_time_2 = sample_datetime + timedelta(hours=1)
     df2 = pd.DataFrame({
         "valid_time": [sample_datetime, sample_datetime + timedelta(hours=1)],
@@ -260,7 +260,7 @@ def test_read_relative_basic_via_sdk(td, sample_datetime):
     assert isinstance(result, TimeSeries)
     assert len(result) == 3
     assert result.shape == DataShape.SIMPLE
-    # Values should come from the early batch (10, 11, 12), not the late batch (99)
+    # Values should come from the early run (10, 11, 12), not the late run (99)
     assert list(result.to_pandas()["value"]) == [10.0, 11.0, 12.0]
 
 
@@ -425,7 +425,7 @@ def test_read_relative_db_layer(td, ch_client, sample_datetime):
 # =============================================================================
 
 def test_read_relative_daily_basic(td, sample_datetime):
-    """days_ahead + time_of_day shorthand selects the correct forecast batch."""
+    """days_ahead + time_of_day shorthand selects the correct forecast run."""
     td.create_series("wind_forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
@@ -566,7 +566,7 @@ def test_read_include_updates_overlapping(td, sample_datetime):
     td.create_series("forecast", unit="dimensionless",
                      overlapping=True, retention="medium")
 
-    # Insert two batches (two knowledge_times)
+    # Insert two runs (two knowledge_times)
     kt_old = sample_datetime
     kt_new = sample_datetime + timedelta(hours=1)
 
@@ -579,7 +579,7 @@ def test_read_include_updates_overlapping(td, sample_datetime):
         knowledge_time=kt_new,
     )
 
-    # Apply a correction to the winning (newer) batch via write() (supports audit columns)
+    # Apply a correction to the winning (newer) run via write() (supports audit columns)
     td.write(
         pd.DataFrame({
             "name": ["forecast"],

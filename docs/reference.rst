@@ -113,7 +113,7 @@ Key Endpoints
 
 .. py:function:: POST /series/many
 
-   Batch get-or-create multiple series in a single round-trip. Returns ``series_ids``
+   Bulk get-or-create multiple series in a single round-trip. Returns ``series_ids``
    in the same order as the input list.
 
    **Request body:**
@@ -140,7 +140,7 @@ Key Endpoints
 
    Insert time series data for a single series identified by ``name``+``labels`` or
    ``series_id``. The series must already exist. Flat series are inserted directly
-   (``batch_id`` is null); overlapping series create a versioned batch.
+   (``run_id`` is null); overlapping series create a versioned run.
 
    **JSON** (``Content-Type: application/json``):
 
@@ -158,22 +158,22 @@ Key Endpoints
 
    **Fields:** ``name`` · ``labels`` · ``series_id`` (alternative to name+labels) ·
    ``knowledge_time`` (defaults to now) · ``workflow_id`` (default ``"api-workflow"``) ·
-   ``batch_params`` (dict, optional) · ``data`` (list of ``{valid_time, value, valid_time_end?}``)
+   ``run_params`` (dict, optional) · ``data`` (list of ``{valid_time, value, valid_time_end?}``)
 
    **Response:**
 
    .. code-block:: json
 
-      {"batch_id": "019d29d5-0885-7068-ab2d-7758a9b41723", "series_id": 1, "rows_inserted": 24}
+      {"run_id": "019d29d5-0885-7068-ab2d-7758a9b41723", "series_id": 1, "rows_inserted": 24}
 
-   ``batch_id`` is ``null`` for flat (non-overlapping) series.
+   ``run_id`` is ``null`` for flat (non-overlapping) series.
 
    **Arrow IPC stream** (``Content-Type: application/vnd.apache.arrow.stream``):
 
    Send a Polars/PyArrow IPC stream as the request body. Required columns:
    ``valid_time`` (``timestamp[us, UTC]``), ``value`` (``float64``).
    Optional columns: ``valid_time_end``, ``knowledge_time``.
-   Series identity and batch metadata are passed as query parameters (same names as JSON fields).
+   Series identity and run metadata are passed as query parameters (same names as JSON fields).
 
    .. code-block:: python
 
@@ -198,8 +198,8 @@ Key Endpoints
    - ``series_col`` (str, optional): column whose values are integer series IDs — bypasses name/label resolution (mutually exclusive with ``name_col``/``label_cols``)
    - ``knowledge_time`` (datetime, optional): broadcast knowledge_time for all rows
    - ``unit`` (str, optional): incoming unit — auto-converted to each series' canonical unit
-   - ``batch_cols`` (str, optional): comma-separated columns that define separate batches
-   - ``workflow_id``, ``batch_start_time``, ``batch_finish_time``, ``batch_params`` (optional)
+   - ``run_cols`` (str, optional): comma-separated columns that define separate runs
+   - ``workflow_id``, ``run_start_time``, ``run_finish_time``, ``run_params`` (optional)
 
    **JSON** (``Content-Type: application/json``):
 
@@ -214,13 +214,13 @@ Key Endpoints
 
    Send a table with ``valid_time``, ``value``, and routing columns as a Polars/PyArrow IPC stream.
 
-   **Response:** list of insert results, one per unique ``(series_id, batch_id)``:
+   **Response:** list of insert results, one per unique ``(series_id, run_id)``:
 
    .. code-block:: json
 
       [
-        {"batch_id": "019d29d5-...", "series_id": 1, "workflow_id": "api-workflow"},
-        {"batch_id": "019d29d5-...", "series_id": 2, "workflow_id": "api-workflow"}
+        {"run_id": "019d29d5-...", "series_id": 1, "workflow_id": "api-workflow"},
+        {"run_id": "019d29d5-...", "series_id": 2, "workflow_id": "api-workflow"}
       ]
 
 .. py:function:: GET /values

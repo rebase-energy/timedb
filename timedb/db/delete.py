@@ -19,7 +19,7 @@ _PG_DROP_STATEMENTS = [
     # Current series table
     "DROP TABLE IF EXISTS series_table CASCADE",
     # Legacy PG tables (clean up if they exist from old schema)
-    "DROP TABLE IF EXISTS batches_table CASCADE",
+    "DROP TABLE IF EXISTS runs_table CASCADE",
     "DROP TABLE IF EXISTS overlapping_short CASCADE",
     "DROP TABLE IF EXISTS overlapping_medium CASCADE",
     "DROP TABLE IF EXISTS overlapping_long CASCADE",
@@ -34,7 +34,7 @@ _CH_DROP_TABLES = [
     "overlapping_medium",
     "overlapping_short",
     "flat",
-    "batches_table",
+    "runs_table",
 ]
 
 _MAX_RETRIES = 3
@@ -47,7 +47,7 @@ def delete_schema(pg_conninfo: str, ch_url: str) -> None:
 
     Args:
         pg_conninfo: PostgreSQL connection string (drops series_table).
-        ch_url: ClickHouse DSN (drops batches_table, flat, overlapping_*).
+        ch_url: ClickHouse DSN (drops runs_table, flat, overlapping_*).
     """
     # PostgreSQL
     with psycopg.connect(pg_conninfo, autocommit=True) as conn:

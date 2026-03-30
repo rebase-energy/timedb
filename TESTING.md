@@ -89,13 +89,13 @@ Fixtures are defined in `conftest.py`:
 
 - `test_db_conninfo`: Provides the test database connection string
 - `clean_db`: Creates a fresh schema in both PostgreSQL and ClickHouse for each test
-- `sample_batch_id`: Generates a UUID for test runs
+- `sample_run_id`: Generates a UUID for test runs
 - `sample_workflow_id`: Provides a test workflow ID
 - `sample_datetime`: Provides a sample datetime for testing
 
 ### Schema
 
-The PostgreSQL schema is defined in `pg_create_tables.sql` (series_table). The ClickHouse schema is defined in `ch_create_tables.sql` (batches_table, flat, overlapping_short/medium/long). It supports inserts, reads, and updates with full temporal versioning.
+The PostgreSQL schema is defined in `pg_create_tables.sql` (series_table). The ClickHouse schema is defined in `ch_create_tables.sql` (runs_table, flat, overlapping_short/medium/long). It supports inserts, reads, and updates with full temporal versioning.
 
 Used by: `create`, `insert`, `read`, `update` modules and all test files.
 
@@ -104,7 +104,7 @@ Used by: `create`, `insert`, `read`, `update` modules and all test files.
 ### Basic Test Structure
 
 ```python
-def test_feature_name(clean_db, sample_batch_id, sample_workflow_id, sample_datetime):
+def test_feature_name(clean_db, sample_run_id, sample_workflow_id, sample_datetime):
     """Test description."""
     # Your test code here
     pass
@@ -134,7 +134,7 @@ def test_insert_flat_point_in_time(td, clean_db, sample_datetime):
     })
 
     result = td.get_series("power").insert(df=df)
-    assert result.batch_id is None
+    assert result.run_id is None
 
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:

@@ -123,8 +123,8 @@ Parameters:
 Returns the ``series_id`` integer. The fluent API handles series resolution automatically
 via ``.where()``.
 
-Batch Series Creation
-~~~~~~~~~~~~~~~~~~~~~
+Bulk Series Creation
+~~~~~~~~~~~~~~~~~~~~
 
 Use ``create_series_many()`` to create many series in a single database round-trip:
 
@@ -203,7 +203,7 @@ Then insert data:
    )
 
    result = td.get_series("wind_power").where(site="offshore_1").insert(ts)
-   # result.batch_id  — uuid.UUID
+   # result.run_id  — uuid.UUID
    # result.series_id — int
 
 .. note::
@@ -239,13 +239,13 @@ insert). Passing the kwarg *and* a column simultaneously raises ``ValueError``:
        unit="MW",
    )
    result = td.get_series("wind_power").where(site="offshore_1").insert(ts_versioned)
-   print(result.batch_id)  # uuid.UUID — one batch per insert() call
+   print(result.run_id)  # uuid.UUID — one run per insert() call
 
 .. note::
 
-   One batch is created per ``insert()`` call regardless of how many unique
+   One run is created per ``insert()`` call regardless of how many unique
    ``knowledge_time`` values are in the data. The ``knowledge_time`` column is stored
-   per-row in the flat and overlapping tables and does not affect the batch count.
+   per-row in the flat and overlapping tables and does not affect the run count.
 
 Full insert signature:
 
@@ -256,9 +256,9 @@ Full insert signature:
        knowledge_time=None,    # Broadcast knowledge_time; mutually exclusive with column
        unit=None,              # Incoming unit for DataFrame path (pint conversion applied)
        workflow_id=None,       # Optional, defaults to "sdk-workflow"
-       batch_start_time=None,  # Optional, defaults to now()
-       batch_finish_time=None, # Optional
-       batch_params=None,      # Optional dict of metadata
+       run_start_time=None,  # Optional, defaults to now()
+       run_finish_time=None, # Optional
+       run_params=None,      # Optional dict of metadata
    )
 
 Production Ingestion
@@ -298,7 +298,7 @@ One row per value. Every row encodes its full series identity in columns.
 **Auto-detection rules** for ``label_cols`` when omitted: every column not in the
 reserved set and not ``name_col`` becomes a label. The reserved set is:
 ``valid_time``, ``value``, ``knowledge_time``, ``valid_time_end``, ``change_time``,
-``changed_by``, ``annotation``, ``series_id``, ``batch_id``, ``unit``.
+``changed_by``, ``annotation``, ``series_id``, ``run_id``, ``unit``.
 
 **Pattern 1 — broadcast** ``knowledge_time`` **(kwarg):** same timestamp for every row:
 
@@ -343,12 +343,12 @@ column yourself.
    wind_power  | Gotland | T01     | 2025-01-01 00:15:00+00:00 | 2025-03-02 10:00:00+00:00 | 2025-03-02 09:00:00+00:00 |  5.1
    ...
 
-**Pattern 4 — multiple batches per call** ``(batch_cols)``**:** pass ``batch_cols`` to
-commit multiple provenance batches in one atomic transaction. Every unique combination of
-values in those columns becomes a distinct batch record.
+**Pattern 4 — multiple runs per call** ``(run_cols)``**:** pass ``run_cols`` to
+commit multiple provenance runs in one atomic transaction. Every unique combination of
+values in those columns becomes a distinct run record.
 
-*With unreserved columns* (e.g. ``model``) — values are packed into ``batch_params`` JSON
-on each batch record:
+*With unreserved columns* (e.g. ``model``) — values are packed into ``run_params`` JSON
+on each run record:
 
 .. code-block:: text
 
@@ -364,16 +364,16 @@ on each batch record:
 
    results = td.write(
        df,
-       batch_cols=["model"],          # one batch per unique model value
+       run_cols=["model"],          # one run per unique model value
        knowledge_time=datetime(2025, 1, 1, 6, tzinfo=timezone.utc),
        workflow_id="nightly-forecast",
    )
-   # batch_params = {"model": "ECMWF"} stored for the ECMWF batch, etc.
+   # run_params = {"model": "ECMWF"} stored for the ECMWF run, etc.
    # len(results) == num_series × num_models
 
-*With reserved columns* (``workflow_id``, ``batch_start_time``, ``batch_finish_time``) —
-values are written directly to the native ``batches_table`` fields, not packed into
-``batch_params``:
+*With reserved columns* (``workflow_id``, ``run_start_time``, ``run_finish_time``) —
+values are written directly to the native ``runs_table`` fields, not packed into
+``run_params``:
 
 .. code-block:: text
 
@@ -385,8 +385,8 @@ values are written directly to the native ``batches_table`` fields, not packed i
 
 .. code-block:: python
 
-   results = td.write(df, batch_cols=["workflow_id"])
-   # Two distinct batches, each with its own workflow_id stored natively in batches_table.
+   results = td.write(df, run_cols=["workflow_id"])
+   # Two distinct runs, each with its own workflow_id stored natively in runs_table.
 
 **Pattern 5 — per-row unit conversion** ``(unit column)``**:** include a ``"unit"``
 column to apply different conversion factors to individual rows in the same payload.
@@ -428,7 +428,7 @@ read→write round-trip), bypass name/label resolution entirely:
    # Validates that series IDs 42 and 17 exist, then inserts directly.
    # Mutually exclusive with name_col and label_cols.
 
-All other options (``unit``, ``batch_cols``, ``knowledge_time``, etc.) work
+All other options (``unit``, ``run_cols``, ``knowledge_time``, etc.) work
 identically in both routing modes.
 
 Full signature:
@@ -439,30 +439,30 @@ Full signature:
        df,                       # pd.DataFrame or pl.DataFrame
        name_col=None,            # defaults to "name"; mutually exclusive with series_col
        label_cols=None,          # None → inferred; [] → no labels; mutually exclusive with series_col
-       batch_cols=None,          # columns that define batch identity (provenance)
+       run_cols=None,          # columns that define run identity (provenance)
        series_col=None,          # route by series ID; mutually exclusive with name_col/label_cols
        *,
        knowledge_time=None,      # broadcast; mutually exclusive with column
        unit=None,                # broadcast unit; mutually exclusive with unit column
-       workflow_id=None,         # default workflow_id (overridden by batch_cols)
-       batch_start_time=None,
-       batch_finish_time=None,
-       batch_params=None,        # base dict; per-batch unreserved cols merged on top
-   )  # -> List[InsertResult], one per unique (series_id, batch_id)
+       workflow_id=None,         # default workflow_id (overridden by run_cols)
+       run_start_time=None,
+       run_finish_time=None,
+       run_params=None,        # base dict; per-run unreserved cols merged on top
+   )  # -> List[InsertResult], one per unique (series_id, run_id)
 
 Also available as a ``TimeDataClient`` method: ``td_client.write(...)``.
 
 Returns a list of :class:`~timedb.InsertResult` objects, one per unique
-``(series_id, batch_id)`` pair. Without ``batch_cols`` this is one per series;
-with ``batch_cols`` it is N×M (N unique batch combinations × M series).
+``(series_id, run_id)`` pair. Without ``run_cols`` this is one per series;
+with ``run_cols`` it is N×M (N unique run combinations × M series).
 
 Raises:
 
 - ``ValueError``: if ``name_col`` is not found in the DataFrame
 - ``ValueError``: if any ``(name, labels)`` combination has no matching series
 - ``ValueError``: if ``valid_time`` or ``value`` columns are missing
-- ``ValueError``: if ``batch_cols`` contains columns not present in the DataFrame
-- ``ValueError``: if ``batch_cols`` overlaps with ``label_cols``
+- ``ValueError``: if ``run_cols`` contains columns not present in the DataFrame
+- ``ValueError``: if ``run_cols`` overlaps with ``label_cols``
 - ``ValueError``: if both a ``"unit"`` column and the ``unit=`` kwarg are provided
 - ``IncompatibleUnitError``: if any incoming unit is incompatible with a series unit
 
@@ -705,7 +705,7 @@ Example: Analyzing forecast revisions:
 
    ts_versioned = TimeSeries.from_pandas(pd.DataFrame(rows), unit="MW")
    result = td.get_series("power").insert(ts_versioned)
-   print(result.batch_id)  # uuid.UUID — one batch for all 4 forecast runs
+   print(result.run_id)  # uuid.UUID — one run for all 4 forecast runs
 
    # Read forecast history — VERSIONED shape, one row per (knowledge_time, valid_time)
    ts_history = td.get_series("power").read(
@@ -814,34 +814,34 @@ List unique label values and count series in a collection:
    # Filter progressively
    t01_collection = collection.where(turbine="T01")
 
-Getting Batch History
-~~~~~~~~~~~~~~~~~~~~~
+Getting Run History
+~~~~~~~~~~~~~~~~~~~
 
-Use ``list_batches()`` to inspect all batches written for a series.  Each insert
-call creates one batch, so this gives you a full history of data loads ordered
+Use ``list_runs()`` to inspect all runs written for a series.  Each insert
+call creates one run, so this gives you a full history of data loads ordered
 by most recent first.  Single-series only — use ``.where()`` to narrow down
 to a single series if needed.
 
 .. code-block:: python
 
-   batches = td.get_series("wind_forecast").where(site="offshore_1").list_batches()
+   runs = td.get_series("wind_forecast").where(site="offshore_1").list_runs()
    # [
-   #   {'batch_id': UUID('...'), 'workflow_id': 'forecast-run-v2',
-   #    'batch_start_time': datetime(...), 'batch_finish_time': datetime(...),
-   #    'batch_params': {'model': 'nwp'}, 'inserted_at': datetime(...)},
-   #   {'batch_id': UUID('...'), 'workflow_id': 'forecast-run-v1',
-   #    'batch_start_time': None, 'batch_finish_time': None,
-   #    'batch_params': None, 'inserted_at': datetime(...)},
+   #   {'run_id': UUID('...'), 'workflow_id': 'forecast-run-v2',
+   #    'run_start_time': datetime(...), 'run_finish_time': datetime(...),
+   #    'run_params': {'model': 'nwp'}, 'inserted_at': datetime(...)},
+   #   {'run_id': UUID('...'), 'workflow_id': 'forecast-run-v1',
+   #    'run_start_time': None, 'run_finish_time': None,
+   #    'run_params': None, 'inserted_at': datetime(...)},
    #   ...
    # ]
 
 Each dict contains:
 
-- **batch_id** (uuid.UUID): Unique batch identifier (UUIDv7, embeds insert timestamp)
+- **run_id** (uuid.UUID): Unique run identifier (UUIDv7, embeds insert timestamp)
 - **workflow_id** (str or None): Workflow tag set at insert time
-- **batch_start_time** / **batch_finish_time** (datetime or None): User-supplied time range
-- **batch_params** (dict or None): Arbitrary metadata from insert
-- **inserted_at** (datetime): When the batch was written to the DB
+- **run_start_time** / **run_finish_time** (datetime or None): User-supplied time range
+- **run_params** (dict or None): Arbitrary metadata from insert
+- **inserted_at** (datetime): When the run was written to the DB
 
 Updating Records
 ----------------
@@ -1019,7 +1019,7 @@ A complete workflow from setup to analysis:
    result = td.get_series("wind_power").where(site="Gotland").insert(
        ts_versioned, workflow_id="forecast-run-1"
    )
-   print(result.batch_id)  # uuid.UUID — one batch for both forecast runs
+   print(result.run_id)  # uuid.UUID — one run for both forecast runs
 
    # 4. Read latest forecast — SIMPLE shape TimeSeries
    ts_latest = td.get_series("wind_power").where(site="Gotland").read()
@@ -1049,6 +1049,6 @@ A complete workflow from setup to analysis:
        long_df,
        knowledge_time=datetime(2025, 1, 1, 6, tzinfo=timezone.utc),
    )
-   print(f"{len(results)} series written, batch_id={results[0].batch_id}")
+   print(f"{len(results)} series written, run_id={results[0].run_id}")
 
 
