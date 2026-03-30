@@ -257,7 +257,7 @@ def create_series(
     series_specs: List[Dict[str, Any]],
 ) -> List[int]:
     """
-    Batch get-or-create for multiple series in one round-trip.
+    Bulk get-or-create for multiple series in one round-trip.
 
     Returns series_ids in the same order as the input. Each spec is a dict
     with ``name`` (required) and optional ``unit``, ``labels``, ``description``,

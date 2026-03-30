@@ -135,7 +135,7 @@ class InsertRequest(BaseModel):
         series_id: Direct series_id (alternative to name+labels)
         workflow_id: Workflow identifier (defaults to 'api-workflow')
         knowledge_time: Time of knowledge (defaults to now(), important for overlapping series)
-        batch_params: Custom parameters to store with the batch
+        run_params: Custom parameters to store with the run
         data: Array of data points to insert
     """
     name: Optional[str] = Field(None, description="Series name (resolve by name+labels)")
@@ -143,13 +143,13 @@ class InsertRequest(BaseModel):
     series_id: Optional[int] = Field(None, description="Direct series_id (alternative to name+labels)")
     workflow_id: str = Field(default="api-workflow", description="Workflow identifier")
     knowledge_time: Optional[datetime] = Field(None, description="Time of knowledge (defaults to now())")
-    batch_params: Optional[Dict[str, Any]] = Field(None, description="Custom batch parameters")
+    run_params: Optional[Dict[str, Any]] = Field(None, description="Custom run parameters")
     data: List[DataPoint] = Field(default_factory=list, description="Data points to insert")
 
 
 class InsertResponse(BaseModel):
     """Response after inserting data."""
-    batch_id: Optional[uuid.UUID] = Field(None, description="Batch UUID")
+    run_id: Optional[uuid.UUID] = Field(None, description="Run UUID")
     series_id: int
     rows_inserted: int
 
@@ -175,12 +175,12 @@ class CreateSeriesResponse(BaseModel):
 
 
 class CreateSeriesManyRequest(BaseModel):
-    """Request to batch-create multiple time series."""
+    """Request to bulk-create multiple time series."""
     series: List[CreateSeriesRequest]
 
 
 class CreateSeriesManyResponse(BaseModel):
-    """Response after batch-creating series. series_ids are in the same order as the input."""
+    """Response after bulk-creating series. series_ids are in the same order as the input."""
     series_ids: List[int]
 
 
@@ -223,7 +223,7 @@ async def root():
             "write_values": "POST /write - Insert multi-series data in long format (JSON or Arrow IPC stream)",
             "read_values": "GET /values - Read time series values (JSON or Arrow IPC stream)",
             "create_series": "POST /series - Create a new time series",
-            "create_series_many": "POST /series/many - Batch create multiple series",
+            "create_series_many": "POST /series/many - Bulk create multiple series",
             "list_series": "GET /series - List/filter time series",
             "series_labels": "GET /series/labels - List unique label values",
             "series_count": "GET /series/count - Count matching series",
@@ -265,7 +265,7 @@ async def insert_values(
     labels: Optional[str] = Query(None, description="[Arrow] Labels JSON, e.g. '{\"site\":\"Gotland\"}'"),
     workflow_id: str = Query("api-workflow", description="[Arrow] Workflow identifier"),
     knowledge_time: Optional[datetime] = Query(None, description="[Arrow] Knowledge time (defaults to now)"),
-    batch_params: Optional[str] = Query(None, description="[Arrow] Batch params JSON"),
+    run_params: Optional[str] = Query(None, description="[Arrow] Run params JSON"),
 ):
     """
     Insert time series data for a single series.
@@ -275,13 +275,13 @@ async def insert_values(
 
     **Arrow IPC stream** (`Content-Type: application/vnd.apache.arrow.stream`):
     Send a raw Arrow IPC stream as the body. Identify the series and provide
-    batch metadata via query parameters. The Arrow table must have at least
+    run metadata via query parameters. The Arrow table must have at least
     `valid_time` (timestamp[us,UTC]) and `value` (float64) columns.
     Optional columns: `valid_time_end`, `knowledge_time`.
 
     Routing is automatic:
-    - Flat series: no batch created (batch_id=null in response)
-    - Overlapping series: batch created with knowledge_time tracking
+    - Flat series: no run created (run_id=null in response)
+    - Overlapping series: run created with knowledge_time tracking
     """
     try:
         td = _get_client(request)
@@ -296,7 +296,7 @@ async def insert_values(
                 )
             label_filters = _parse_labels(labels)
             kt = _ensure_tz(knowledge_time)
-            bp = json.loads(batch_params) if batch_params else None
+            bp = json.loads(run_params) if run_params else None
 
             body = await request.body()
             arrow_table = _parse_arrow_body(body)
@@ -309,8 +309,8 @@ async def insert_values(
                 if label_filters:
                     collection = collection.where(**label_filters)
 
-            result = collection.insert(df, knowledge_time=kt, workflow_id=workflow_id, batch_params=bp)
-            return InsertResponse(batch_id=result.batch_id, series_id=result.series_id, rows_inserted=len(df))
+            result = collection.insert(df, knowledge_time=kt, workflow_id=workflow_id, run_params=bp)
+            return InsertResponse(run_id=result.run_id, series_id=result.series_id, rows_inserted=len(df))
 
         else:
             # --- JSON path ---
@@ -359,10 +359,10 @@ async def insert_values(
                 df,
                 knowledge_time=kt,
                 workflow_id=request_body.workflow_id,
-                batch_params=request_body.batch_params,
+                run_params=request_body.run_params,
             )
             return InsertResponse(
-                batch_id=result.batch_id,
+                run_id=result.run_id,
                 series_id=result.series_id,
                 rows_inserted=len(request_body.data),
             )
@@ -458,13 +458,13 @@ async def write_values(
         description="Comma-separated label column names. Omit to auto-infer (mutually exclusive with series_col).",
     ),
     series_col: Optional[str] = Query(None, description="Column whose values are integer series IDs (bypasses name/label resolution, mutually exclusive with name_col/label_cols)"),
-    batch_cols: Optional[str] = Query(None, description="Comma-separated batch column names"),
+    run_cols: Optional[str] = Query(None, description="Comma-separated run column names"),
     knowledge_time: Optional[datetime] = Query(None, description="Broadcast knowledge_time for all rows"),
     unit: Optional[str] = Query(None, description="Unit of incoming values (auto-converts to canonical unit)"),
     workflow_id: Optional[str] = Query(None, description="Workflow identifier"),
-    batch_start_time: Optional[datetime] = Query(None, description="Batch start time"),
-    batch_finish_time: Optional[datetime] = Query(None, description="Batch finish time"),
-    batch_params: Optional[str] = Query(None, description="Batch params JSON string"),
+    run_start_time: Optional[datetime] = Query(None, description="Run start time"),
+    run_finish_time: Optional[datetime] = Query(None, description="Run finish time"),
+    run_params: Optional[str] = Query(None, description="Run params JSON string"),
 ):
     """
     Insert multi-series data in long/tidy format.
@@ -485,7 +485,7 @@ async def write_values(
     ]
     ```
 
-    Returns a list of insert results, one per unique (series_id, batch_id) combination.
+    Returns a list of insert results, one per unique (series_id, run_id) combination.
     """
     try:
         td = _get_client(request)
@@ -495,13 +495,13 @@ async def write_values(
         parsed_label_cols = (
             [c.strip() for c in label_cols.split(",") if c.strip()] if label_cols is not None else None
         )
-        parsed_batch_cols = (
-            [c.strip() for c in batch_cols.split(",") if c.strip()] if batch_cols is not None else None
+        parsed_run_cols = (
+            [c.strip() for c in run_cols.split(",") if c.strip()] if run_cols is not None else None
         )
-        bp = json.loads(batch_params) if batch_params else None
+        bp = json.loads(run_params) if run_params else None
         kt = _ensure_tz(knowledge_time)
-        bst = _ensure_tz(batch_start_time)
-        bft = _ensure_tz(batch_finish_time)
+        bst = _ensure_tz(run_start_time)
+        bft = _ensure_tz(run_finish_time)
 
         if ARROW_CONTENT_TYPE in content_type:
             body = await request.body()
@@ -524,18 +524,18 @@ async def write_values(
             name_col=name_col,
             label_cols=parsed_label_cols,
             series_col=series_col,
-            batch_cols=parsed_batch_cols,
+            run_cols=parsed_run_cols,
             knowledge_time=kt,
             unit=unit,
             workflow_id=workflow_id,
-            batch_start_time=bst,
-            batch_finish_time=bft,
-            batch_params=bp,
+            run_start_time=bst,
+            run_finish_time=bft,
+            run_params=bp,
         )
 
         return [
             {
-                "batch_id": str(r.batch_id) if r.batch_id else None,
+                "run_id": str(r.run_id) if r.run_id else None,
                 "series_id": r.series_id,
                 "workflow_id": r.workflow_id,
             }
@@ -579,7 +579,7 @@ async def create_series(request_body: CreateSeriesRequest, request: Request):
 @app.post("/series/many", response_model=CreateSeriesManyResponse)
 async def create_series_many(request_body: CreateSeriesManyRequest, request: Request):
     """
-    Batch get-or-create multiple time series in a single round-trip.
+    Bulk get-or-create multiple time series in a single round-trip.
 
     Returns series_ids in the same order as the input list.
     """

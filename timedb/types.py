@@ -12,21 +12,21 @@ class IncompatibleUnitError(ValueError):
 
 class InsertResult(NamedTuple):
     """Result from insert — returned to the user."""
-    batch_id: uuid.UUID
+    run_id: uuid.UUID
     workflow_id: Optional[str]
     series_id: int
 
 
 @dataclass
-class BatchContext:
-    """Internal container for batch metadata passed to the DB layer.
+class RunContext:
+    """Internal container for run metadata passed to the DB layer.
 
-    Holds everything needed for INSERT INTO batches_table.
-    batch_id is stored as str (the form PostgreSQL and Arrow expect).
-    batch_params is the raw dict; callers serialize to JSON at the point of use.
+    Holds everything needed for INSERT INTO runs_table.
+    run_id is stored as str (the form PostgreSQL and Arrow expect).
+    run_params is the raw dict; callers serialize to JSON at the point of use.
     """
-    batch_id: str
+    run_id: str
     workflow_id: Optional[str]
-    batch_start_time: Optional[datetime]
-    batch_finish_time: Optional[datetime]
-    batch_params: Optional[Dict]
+    run_start_time: Optional[datetime]
+    run_finish_time: Optional[datetime]
+    run_params: Optional[Dict]

@@ -16,7 +16,7 @@ def create_schema(
     Create the TimeDB schema in both databases.
 
     - PostgreSQL: series_table (series metadata, labels, routing)
-    - ClickHouse: batches_table, flat, overlapping_short/medium/long
+    - ClickHouse: runs_table, flat, overlapping_short/medium/long
 
     Idempotent — safe to run multiple times (uses IF NOT EXISTS).
 
@@ -33,7 +33,7 @@ def create_schema(
         conn.commit()
     print("  ✓ PostgreSQL: series_table")
 
-    # ClickHouse: batches_table + values tables
+    # ClickHouse: runs_table + values tables
     ch_client = clickhouse_connect.get_client(dsn=ch_url)
     for statement in DDL_CH.split(";"):
         statement = statement.strip()
@@ -44,7 +44,7 @@ def create_schema(
         if not non_comment:
             continue
         ch_client.command(statement)
-    print("  ✓ ClickHouse: batches_table, flat, overlapping_short/medium/long")
+    print("  ✓ ClickHouse: runs_table, flat, overlapping_short/medium/long")
 
     print("✓ Schema created successfully")
 

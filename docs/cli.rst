@@ -107,7 +107,7 @@ Options:
 
 **WARNING**: This will delete ALL timedb tables and their data, including:
 
-- ``batches_table``
+- ``runs_table``
 - ``series_table``
 - ``flat``
 - ``overlapping_short``, ``overlapping_medium``, ``overlapping_long``

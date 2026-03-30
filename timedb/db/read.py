@@ -22,11 +22,11 @@ _COL_ARROW_TYPE: Dict[str, pa.DataType] = {
     "value":          pa.float64(),
     "changed_by":     pa.string(),
     "annotation":     pa.string(),
-    "batch_id":       pa.string(),
+    "run_id":         pa.string(),
     "workflow_id":    pa.string(),
-    "batch_start_time":  _TS_TYPE,
-    "batch_finish_time": _TS_TYPE,
-    "batch_params":   pa.string(),
+    "run_start_time":    _TS_TYPE,
+    "run_finish_time":   _TS_TYPE,
+    "run_params":     pa.string(),
     "inserted_at":    _TS_TYPE,
 }
 
@@ -433,15 +433,15 @@ def read_overlapping_with_updates(
     )
 
 
-def read_batches_for_series(
+def read_runs_for_series(
     ch_client,
     *,
     series_id: int,
     routing: Dict[str, Any],
 ) -> List[Dict]:
-    """Return all batches that contain data for a given series.
+    """Return all runs that contain data for a given series.
 
-    Performs a pure ClickHouse JOIN between batches_table and the values table.
+    Performs a pure ClickHouse JOIN between runs_table and the values table.
 
     Args:
         ch_client: clickhouse_connect Client.
@@ -449,24 +449,24 @@ def read_batches_for_series(
         routing: Routing dict with keys overlapping (bool) and table (str).
 
     Returns:
-        List of dicts with keys: batch_id, workflow_id, batch_start_time,
-        batch_finish_time, batch_params, inserted_at.
+        List of dicts with keys: run_id, workflow_id, run_start_time,
+        run_finish_time, run_params, inserted_at.
     """
     data_table = "flat" if not routing["overlapping"] else routing["table"]
     sql = f"""
     SELECT DISTINCT
-        b.batch_id,
+        b.run_id,
         b.workflow_id,
-        b.batch_start_time,
-        b.batch_finish_time,
-        b.batch_params,
+        b.run_start_time,
+        b.run_finish_time,
+        b.run_params,
         b.inserted_at
-    FROM batches_table b FINAL
-    JOIN {data_table} f ON f.batch_id = b.batch_id
+    FROM runs_table b FINAL
+    JOIN {data_table} f ON f.run_id = b.run_id
     WHERE f.series_id = {{series_id:Int64}}
     ORDER BY b.inserted_at DESC
     """
     result = ch_client.query(sql, parameters={"series_id": series_id})
-    columns = ["batch_id", "workflow_id", "batch_start_time", "batch_finish_time",
-               "batch_params", "inserted_at"]
+    columns = ["run_id", "workflow_id", "run_start_time", "run_finish_time",
+               "run_params", "inserted_at"]
     return [dict(zip(columns, row)) for row in result.result_rows]

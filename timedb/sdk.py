@@ -29,7 +29,7 @@ import pyarrow as pa
 
 from . import db, profiling, insert_pipeline
 from .db.series import SeriesRegistry
-from .types import BatchContext, InsertResult, IncompatibleUnitError
+from .types import RunContext, InsertResult, IncompatibleUnitError
 from timedatamodel import TimeSeries, TimeSeriesType
 
 try:
@@ -191,10 +191,10 @@ class SeriesCollection:
         self,
         data: Union[pd.DataFrame, pl.DataFrame, "TimeSeries"],
         workflow_id: Optional[str] = None,
-        batch_start_time: Optional[datetime] = None,
-        batch_finish_time: Optional[datetime] = None,
+        run_start_time: Optional[datetime] = None,
+        run_finish_time: Optional[datetime] = None,
         knowledge_time: Optional[datetime] = None,
-        batch_params: Optional[dict] = None,
+        run_params: Optional[dict] = None,
         unit: Optional[str] = None,
     ) -> InsertResult:
         """
@@ -229,20 +229,20 @@ class SeriesCollection:
         Args:
             data: TimeSeries or DataFrame with time series data
             workflow_id: Workflow identifier (optional)
-            batch_start_time: Start time (optional)
-            batch_finish_time: Finish time (optional)
+            run_start_time: Start time (optional)
+            run_finish_time: Finish time (optional)
             knowledge_time: Time of knowledge broadcast to all rows (optional).
                 Defaults to ``now()`` when neither this kwarg nor a
                 ``knowledge_time`` column is present in the data.
-            batch_params: Batch parameters (optional)
+            run_params: Run parameters (optional)
             unit: Unit of the incoming ``pd.DataFrame`` values (optional).
                 When provided, values are converted from this unit to the
                 series' canonical unit before insert.  Ignored for
                 :class:`~timedatamodel.TimeSeries` (which carries its own unit).
 
         Returns:
-            InsertResult with batch_id (uuid.UUID), workflow_id, series_id.
-            One batch is always created per insert() call regardless of how
+            InsertResult with run_id (uuid.UUID), workflow_id, series_id.
+            One run is always created per insert() call regardless of how
             many unique knowledge_times are in the data.
 
         Raises:
@@ -261,9 +261,9 @@ class SeriesCollection:
             routing=routing,
             knowledge_time=knowledge_time,
             workflow_id=workflow_id,
-            batch_start_time=batch_start_time,
-            batch_finish_time=batch_finish_time,
-            batch_params=batch_params,
+            run_start_time=run_start_time,
+            run_finish_time=run_finish_time,
+            run_params=run_params,
             data_unit=unit,
             ch_client=self._ch_client,
             _pool=self._pool,
@@ -641,28 +641,28 @@ class SeriesCollection:
                 })
         return result
 
-    def list_batches(self) -> List[Dict[str, Any]]:
-        """List all batches that contain data for this series.
+    def list_runs(self) -> List[Dict[str, Any]]:
+        """List all runs that contain data for this series.
 
         **Single-series only.**  Results are ordered by ``inserted_at`` DESC
-        (most recent batch first).
+        (most recent run first).
 
         Returns:
             List of dicts, each containing:
 
-            - **batch_id** (uuid.UUID): Unique batch identifier
+            - **run_id** (uuid.UUID): Unique run identifier
             - **workflow_id** (str or None): Workflow tag set at insert time
-            - **batch_start_time** (datetime or None): User-supplied batch start
-            - **batch_finish_time** (datetime or None): User-supplied batch finish
-            - **batch_params** (dict or None): Arbitrary metadata from insert
-            - **inserted_at** (datetime): When the batch was created in the DB
+            - **run_start_time** (datetime or None): User-supplied run start
+            - **run_finish_time** (datetime or None): User-supplied run finish
+            - **run_params** (dict or None): Arbitrary metadata from insert
+            - **inserted_at** (datetime): When the run was created in the DB
 
         Example:
-            >>> sc.list_batches()
+            >>> sc.list_runs()
             [
-                {'batch_id': UUID('...'), 'workflow_id': 'sdk-workflow',
-                 'batch_start_time': None, 'batch_finish_time': None,
-                 'batch_params': None, 'inserted_at': datetime(...)},
+                {'run_id': UUID('...'), 'workflow_id': 'sdk-workflow',
+                 'run_start_time': None, 'run_finish_time': None,
+                 'run_params': None, 'inserted_at': datetime(...)},
                 ...
             ]
 
@@ -671,7 +671,7 @@ class SeriesCollection:
         """
         series_id = self._get_single_id()
         routing = self._get_series_routing(series_id)
-        return _list_batches(ch_client=self._ch_client, series_id=series_id, routing=routing)
+        return _list_runs(ch_client=self._ch_client, series_id=series_id, routing=routing)
 
     def count(self) -> int:
         """Count how many series match the current filters."""
@@ -684,9 +684,9 @@ class SeriesCollection:
         )
 
 
-_WRITE_BATCH_RESERVED_COLS = frozenset({
-    # Columns that map to native batches_table fields when used in batch_cols
-    "workflow_id", "batch_start_time", "batch_finish_time",
+_WRITE_RUN_RESERVED_COLS = frozenset({
+    # Columns that map to native runs_table fields when used in run_cols
+    "workflow_id", "run_start_time", "run_finish_time",
 })
 
 _WRITE_RESERVED_COLS = frozenset({
@@ -695,11 +695,11 @@ _WRITE_RESERVED_COLS = frozenset({
     # Optional passthrough columns (forwarded to DB)
     "knowledge_time", "valid_time_end", "change_time", "changed_by", "annotation",
     # TimeDB-internal columns that appear in round-trip DataFrames (read → write)
-    "series_id", "batch_id",
+    "series_id", "run_id",
     # Series metadata — not a label dimension
     "unit",
-    # Batch metadata columns — never auto-inferred as label dimensions
-    *_WRITE_BATCH_RESERVED_COLS,
+    # Run metadata columns — never auto-inferred as label dimensions
+    *_WRITE_RUN_RESERVED_COLS,
 })
 
 
@@ -876,7 +876,7 @@ class TimeDataClient:
 
     def create_series_many(self, series: List[Dict[str, Any]]) -> List[int]:
         """
-        Batch get-or-create multiple series in one round-trip.
+        Bulk get-or-create multiple series in one round-trip.
 
         Args:
             series (list[dict]): Each dict may contain:
@@ -905,15 +905,15 @@ class TimeDataClient:
         df: Union[pd.DataFrame, pl.DataFrame],
         name_col: Optional[str] = None,
         label_cols: Optional[List[str]] = None,
-        batch_cols: Optional[List[str]] = None,
+        run_cols: Optional[List[str]] = None,
         series_col: Optional[str] = None,
         *,
         knowledge_time: Optional[datetime] = None,
         unit: Optional[str] = None,
         workflow_id: Optional[str] = None,
-        batch_start_time: Optional[datetime] = None,
-        batch_finish_time: Optional[datetime] = None,
-        batch_params: Optional[dict] = None,
+        run_start_time: Optional[datetime] = None,
+        run_finish_time: Optional[datetime] = None,
+        run_params: Optional[dict] = None,
     ) -> List[InsertResult]:
         """
         Insert multi-series data in long/tidy format.
@@ -939,42 +939,42 @@ class TimeDataClient:
             label_cols: Columns whose values map to ``series_table.labels``.
                 If ``None`` (default), inferred as all columns not in
                 :data:`_WRITE_RESERVED_COLS`, not *name_col*, and not
-                *batch_cols*.  Pass ``[]`` explicitly for series with no labels.
+                *run_cols*.  Pass ``[]`` explicitly for series with no labels.
                 Mutually exclusive with *series_col*.
             series_col: Column whose values are integer ``series_table.series_id``
                 values.  When set, bypasses name/label resolution and only
                 validates that the IDs exist.  Mutually exclusive with
                 *name_col* and *label_cols*.
-            batch_cols: Columns that define batch identity (provenance).  Each
-                unique combination of values becomes a distinct batch in the
+            run_cols: Columns that define run identity (provenance).  Each
+                unique combination of values becomes a distinct run in the
                 database.  Three routing rules apply:
 
-                - Columns named ``workflow_id``, ``batch_start_time``, or
-                  ``batch_finish_time`` map to the corresponding native
-                  ``batches_table`` fields, overriding the same-named kwargs.
-                - All other columns are packed into ``batch_params`` JSON,
-                  merged on top of any global *batch_params* kwarg.
-                - Any field absent from *batch_cols* falls back to the
+                - Columns named ``workflow_id``, ``run_start_time``, or
+                  ``run_finish_time`` map to the corresponding native
+                  ``runs_table`` fields, overriding the same-named kwargs.
+                - All other columns are packed into ``run_params`` JSON,
+                  merged on top of any global *run_params* kwarg.
+                - Any field absent from *run_cols* falls back to the
                   corresponding kwarg (or its default).
 
-                Example — one batch per model run::
+                Example — one run per model::
 
-                    td.write(df, batch_cols=["model"], workflow_id="nightly")
+                    td.write(df, run_cols=["model"], workflow_id="nightly")
             knowledge_time: Broadcast knowledge_time for all rows (mutually
                 exclusive with a ``knowledge_time`` column in *df*).
             unit: Unit of the incoming values.  When provided, values are
                 converted from this unit to each series' canonical unit via pint.
-            workflow_id: Global batch workflow identifier (default for all
-                batches when *batch_cols* does not include ``workflow_id``).
-            batch_start_time: Global batch start time.
-            batch_finish_time: Global batch finish time.
-            batch_params: Global batch params dict — base for any per-batch
-                merge when *batch_cols* contains unreserved columns.
+            workflow_id: Global run workflow identifier (default for all
+                runs when *run_cols* does not include ``workflow_id``).
+            run_start_time: Global run start time.
+            run_finish_time: Global run finish time.
+            run_params: Global run params dict — base for any per-run
+                merge when *run_cols* contains unreserved columns.
 
         Returns:
-            List of :class:`InsertResult`, one per unique (series_id, batch_id)
-            combination.  Without *batch_cols* this is one per series; with
-            *batch_cols* it is N×M where N is the number of unique batch
+            List of :class:`InsertResult`, one per unique (series_id, run_id)
+            combination.  Without *run_cols* this is one per series; with
+            *run_cols* it is N×M where N is the number of unique run
             combinations and M is the number of series.
 
         Raises:
@@ -983,8 +983,8 @@ class TimeDataClient:
             ValueError: If *series_col* is used together with *name_col* or
                 *label_cols*.
             ValueError: If ``valid_time`` or ``value`` columns are missing.
-            ValueError: If *batch_cols* contains columns not present in *df*.
-            ValueError: If *batch_cols* overlaps with *label_cols*.
+            ValueError: If *run_cols* contains columns not present in *df*.
+            ValueError: If *run_cols* overlaps with *label_cols*.
             IncompatibleUnitError: If *unit* is incompatible with any series unit.
 
         Example:
@@ -1026,41 +1026,41 @@ class TimeDataClient:
                 "Use the column for per-row units, or the kwarg to broadcast a single unit."
             )
 
-        # Validate batch_cols exist in the DataFrame
-        if batch_cols is not None:
-            missing_batch_cols = [c for c in batch_cols if c not in all_cols]
-            if missing_batch_cols:
+        # Validate run_cols exist in the DataFrame
+        if run_cols is not None:
+            missing_run_cols = [c for c in run_cols if c not in all_cols]
+            if missing_run_cols:
                 raise ValueError(
-                    f"batch_cols column(s) not found in DataFrame: {missing_batch_cols}. "
+                    f"run_cols column(s) not found in DataFrame: {missing_run_cols}. "
                     f"Available columns: {all_cols}"
                 )
 
         if series_col is None and label_cols is None:
-            exclude = _WRITE_RESERVED_COLS | set(batch_cols or [])
+            exclude = _WRITE_RESERVED_COLS | set(run_cols or [])
             label_cols = [c for c in all_cols if c not in exclude and c != name_col]
 
-        # Validate no overlap between batch_cols and label_cols
-        if batch_cols is not None:
-            overlap = set(batch_cols) & set(label_cols)
+        # Validate no overlap between run_cols and label_cols
+        if run_cols is not None:
+            overlap = set(run_cols) & set(label_cols)
             if overlap:
                 raise ValueError(
-                    f"batch_cols and label_cols cannot overlap. "
+                    f"run_cols and label_cols cannot overlap. "
                     f"Column(s) {sorted(overlap)} appear in both. "
-                    f"Columns cannot serve dual roles as batch dimension and series label."
+                    f"Columns cannot serve dual roles as run dimension and series label."
                 )
 
         return _write(
             df,
             name_col=name_col,
             label_cols=label_cols,
-            batch_cols=batch_cols,
+            run_cols=run_cols,
             series_col=series_col,
             knowledge_time=knowledge_time,
             data_unit=unit,
             workflow_id=workflow_id,
-            batch_start_time=batch_start_time,
-            batch_finish_time=batch_finish_time,
-            batch_params=batch_params,
+            run_start_time=run_start_time,
+            run_finish_time=run_finish_time,
+            run_params=run_params,
             ch_client=self._ch_client,
             _pool=self._pool,
         )
@@ -1129,7 +1129,7 @@ def _create_series_many(
     series_specs: List[Dict[str, Any]],
     conninfo: Optional[str] = None,
 ) -> List[int]:
-    """Core batch get-or-create. Single DB round-trip."""
+    """Core bulk get-or-create. Single DB round-trip."""
     if conninfo is None:
         conninfo = _get_pg_conninfo()
     try:
@@ -1313,22 +1313,22 @@ def _read_overlapping_relative(
     )
 
 
-def _make_batch_context(
+def _make_run_context(
     workflow_id: Optional[str],
-    batch_start_time: Optional[datetime],
-    batch_finish_time: Optional[datetime],
-    batch_params: Optional[dict],
-) -> BatchContext:
-    """Create a BatchContext with a fresh UUIDv7 batch_id and sensible defaults."""
-    start = batch_start_time if batch_start_time is not None else datetime.now(timezone.utc)
+    run_start_time: Optional[datetime],
+    run_finish_time: Optional[datetime],
+    run_params: Optional[dict],
+) -> RunContext:
+    """Create a RunContext with a fresh UUIDv7 run_id and sensible defaults."""
+    start = run_start_time if run_start_time is not None else datetime.now(timezone.utc)
     if start.tzinfo is None:
-        raise ValueError("batch_start_time must be timezone-aware")
-    return BatchContext(
-        batch_id=str(uuid7()),
+        raise ValueError("run_start_time must be timezone-aware")
+    return RunContext(
+        run_id=str(uuid7()),
         workflow_id=workflow_id if workflow_id is not None else "sdk-workflow",
-        batch_start_time=start,
-        batch_finish_time=batch_finish_time,
-        batch_params=batch_params,
+        run_start_time=start,
+        run_finish_time=run_finish_time,
+        run_params=run_params,
     )
 
 
@@ -1339,9 +1339,9 @@ def _insert(
     routing: Dict[str, Any],
     knowledge_time: Optional[datetime] = None,
     workflow_id: Optional[str] = None,
-    batch_start_time: Optional[datetime] = None,
-    batch_finish_time: Optional[datetime] = None,
-    batch_params: Optional[dict] = None,
+    run_start_time: Optional[datetime] = None,
+    run_finish_time: Optional[datetime] = None,
+    run_params: Optional[dict] = None,
     data_unit: Optional[str] = None,
     ch_client=None,
     _pool: Optional[ConnectionPool] = None,
@@ -1349,8 +1349,8 @@ def _insert(
     """
     Normalize, decorate, and insert time series data into the database.
 
-    Generates a UUIDv7 ``batch_id`` here (SDK layer owns the ID), then delegates
-    to :func:`insert_pipeline.normalize_insert_input` which stamps ``batch_id``,
+    Generates a UUIDv7 ``run_id`` here (SDK layer owns the ID), then delegates
+    to :func:`insert_pipeline.normalize_insert_input` which stamps ``run_id``,
     ``series_id``, and ``knowledge_time`` into the Polars DataFrame in a single
     Rust pass before converting to Arrow.  The resulting ``pa.Table`` contains
     all columns and is passed directly to :func:`db.insert.insert_table`.
@@ -1360,14 +1360,14 @@ def _insert(
     if routing is None:
         raise ValueError("routing must be provided")
 
-    batch_ctx = _make_batch_context(workflow_id, batch_start_time, batch_finish_time, batch_params)
+    run_ctx = _make_run_context(workflow_id, run_start_time, run_finish_time, run_params)
 
     _t_normalize = perf_counter() if profiling._enabled else 0.0
     table = insert_pipeline.normalize_insert_input(
         data,
         series_unit,
         series_id=series_id,
-        batch_id=batch_ctx.batch_id,
+        run_id=run_ctx.run_id,
         knowledge_time=knowledge_time,
         data_unit=data_unit,
     )
@@ -1375,57 +1375,57 @@ def _insert(
         profiling._record(profiling.PHASE_INSERT_NORMALIZE, perf_counter() - _t_normalize)
 
     with _get_connection(_pool) as conn:
-        db.insert.insert_table(ch_client, conn, table=table, routing=routing, batch_ctx=batch_ctx)
+        db.insert.insert_table(ch_client, conn, table=table, routing=routing, run_ctx=run_ctx)
 
     return InsertResult(
-        batch_id=uuid.UUID(batch_ctx.batch_id),
-        workflow_id=batch_ctx.workflow_id,
+        run_id=uuid.UUID(run_ctx.run_id),
+        workflow_id=run_ctx.workflow_id,
         series_id=series_id,
     )
 
 
-def _build_multi_batch_contexts(
+def _build_multi_run_contexts(
     pl_df: pl.DataFrame,
-    batch_cols: List[str],
+    run_cols: List[str],
     *,
     global_workflow_id: Optional[str],
-    global_batch_start_time: Optional[datetime],
-    global_batch_finish_time: Optional[datetime],
-    global_batch_params: Optional[dict],
-) -> Tuple[Dict[str, BatchContext], pl.DataFrame]:
-    batch_ctx_map: Dict[str, BatchContext] = {}
-    batch_rows: List[dict] = []
-    for row in pl_df.select(batch_cols).unique().rows(named=True):
-        bid = str(uuid7())
-        b_start = row.get("batch_start_time", global_batch_start_time) or datetime.now(timezone.utc)
-        if b_start.tzinfo is None:
-            raise ValueError("batch_start_time must be timezone-aware")
-        unreserved = {k: v for k, v in row.items() if k not in _WRITE_BATCH_RESERVED_COLS}
-        batch_ctx_map[bid] = BatchContext(
-            batch_id=bid,
+    global_run_start_time: Optional[datetime],
+    global_run_finish_time: Optional[datetime],
+    global_run_params: Optional[dict],
+) -> Tuple[Dict[str, RunContext], pl.DataFrame]:
+    run_ctx_map: Dict[str, RunContext] = {}
+    run_rows: List[dict] = []
+    for row in pl_df.select(run_cols).unique().rows(named=True):
+        rid = str(uuid7())
+        r_start = row.get("run_start_time", global_run_start_time) or datetime.now(timezone.utc)
+        if r_start.tzinfo is None:
+            raise ValueError("run_start_time must be timezone-aware")
+        unreserved = {k: v for k, v in row.items() if k not in _WRITE_RUN_RESERVED_COLS}
+        run_ctx_map[rid] = RunContext(
+            run_id=rid,
             workflow_id=row.get("workflow_id", global_workflow_id) or "sdk-workflow",
-            batch_start_time=b_start,
-            batch_finish_time=row.get("batch_finish_time", global_batch_finish_time),
-            batch_params={**(global_batch_params or {}), **unreserved} or None,
+            run_start_time=r_start,
+            run_finish_time=row.get("run_finish_time", global_run_finish_time),
+            run_params={**(global_run_params or {}), **unreserved} or None,
         )
-        batch_rows.append({**row, "_batch_id": bid})
-    schema = {**{col: pl_df.schema[col] for col in batch_cols}, "_batch_id": pl.String}
-    return batch_ctx_map, pl.DataFrame(batch_rows, schema=schema)
+        run_rows.append({**row, "_run_id": rid})
+    schema = {**{col: pl_df.schema[col] for col in run_cols}, "_run_id": pl.String}
+    return run_ctx_map, pl.DataFrame(run_rows, schema=schema)
 
 
 def _write(
     df: Union[pd.DataFrame, pl.DataFrame],
     name_col: Optional[str],
     label_cols: List[str],
-    batch_cols: Optional[List[str]] = None,
+    run_cols: Optional[List[str]] = None,
     series_col: Optional[str] = None,
     *,
     knowledge_time: Optional[datetime] = None,
     data_unit: Optional[str] = None,
     workflow_id: Optional[str] = None,
-    batch_start_time: Optional[datetime] = None,
-    batch_finish_time: Optional[datetime] = None,
-    batch_params: Optional[dict] = None,
+    run_start_time: Optional[datetime] = None,
+    run_finish_time: Optional[datetime] = None,
+    run_params: Optional[dict] = None,
     ch_client=None,
     _pool: Optional[ConnectionPool] = None,
 ) -> List[InsertResult]:
@@ -1442,18 +1442,18 @@ def _write(
         name_col: Column whose values map to ``series_table.name``.
             ``None`` when *series_col* is used.
         label_cols: Columns whose values map to ``series_table.labels``.
-        batch_cols: Columns that define batch identity (provenance).
+        run_cols: Columns that define run identity (provenance).
         series_col: Column whose values are integer series IDs.  When set,
             bypasses name/label resolution and only validates IDs exist.
         knowledge_time: Broadcast knowledge_time (mutually exclusive with a
             ``knowledge_time`` column in *df*).
         data_unit: Unit of the incoming values for pint conversion.
-        workflow_id, batch_start_time, batch_finish_time, batch_params:
-            Global batch metadata (defaults for each batch).
+        workflow_id, run_start_time, run_finish_time, run_params:
+            Global run metadata (defaults for each run).
         _pool: Optional connection pool.
 
     Returns:
-        List of :class:`InsertResult`, one per unique (series_id, batch_id) pair.
+        List of :class:`InsertResult`, one per unique (series_id, run_id) pair.
 
     Raises:
         ValueError: If any (name, labels) combination or series ID has no
@@ -1463,8 +1463,8 @@ def _write(
 
     t_write_start = perf_counter()
 
-    if batch_start_time is not None and batch_start_time.tzinfo is None:
-        raise ValueError("batch_start_time must be timezone-aware")
+    if run_start_time is not None and run_start_time.tzinfo is None:
+        raise ValueError("run_start_time must be timezone-aware")
 
     # ── Normalize to Polars immediately ──────────────────────────────────────
     pl_df = pl.from_pandas(df) if isinstance(df, pd.DataFrame) else df
@@ -1604,16 +1604,16 @@ def _write(
     })
     mapping_df = pl.DataFrame(mapping_rows, schema=_mapping_schema)
 
-    # ── Build batch context(s) and normalize/partition ────────────────────────
+    # ── Build run context(s) and normalize/partition ─────────────────────────
     t_normalize_start = perf_counter()
-    if batch_cols:
-        batch_ctx_map, batch_mapping_df = _build_multi_batch_contexts(
+    if run_cols:
+        run_ctx_map, run_mapping_df = _build_multi_run_contexts(
             pl_df=pl_df,
-            batch_cols=batch_cols,
+            run_cols=run_cols,
             global_workflow_id=workflow_id,
-            global_batch_start_time=batch_start_time,
-            global_batch_finish_time=batch_finish_time,
-            global_batch_params=batch_params,
+            global_run_start_time=run_start_time,
+            global_run_finish_time=run_finish_time,
+            global_run_params=run_params,
         )
         partitioned = insert_pipeline.normalize_write_input(
             pl_df,
@@ -1621,53 +1621,53 @@ def _write(
             label_cols=label_cols,
             series_col=series_col,
             mapping_df=mapping_df,
-            batch_mapping=batch_mapping_df,
-            batch_cols=batch_cols,
+            run_mapping=run_mapping_df,
+            run_cols=run_cols,
             knowledge_time=knowledge_time,
         )
         result_df = (
-            pl_df.select(identity_cols + batch_cols).unique()
+            pl_df.select(identity_cols + run_cols).unique()
             .join(mapping_df.select(identity_cols + ["_series_id"]), on=identity_cols)
-            .join(batch_mapping_df.select(batch_cols + ["_batch_id"]), on=batch_cols)
-            .select(["_series_id", "_batch_id"])
+            .join(run_mapping_df.select(run_cols + ["_run_id"]), on=run_cols)
+            .select(["_series_id", "_run_id"])
             .unique()
         )
     else:
-        single_batch_ctx = _make_batch_context(workflow_id, batch_start_time, batch_finish_time, batch_params)
-        batch_ctx_map = {single_batch_ctx.batch_id: single_batch_ctx}
+        single_run_ctx = _make_run_context(workflow_id, run_start_time, run_finish_time, run_params)
+        run_ctx_map = {single_run_ctx.run_id: single_run_ctx}
         partitioned = insert_pipeline.normalize_write_input(
             pl_df,
             name_col=name_col,
             label_cols=label_cols,
             series_col=series_col,
             mapping_df=mapping_df,
-            batch_id=single_batch_ctx.batch_id,
+            run_id=single_run_ctx.run_id,
             knowledge_time=knowledge_time,
         )
-        result_df = mapping_df.select(["_series_id", pl.lit(single_batch_ctx.batch_id).alias("_batch_id")]).unique()
+        result_df = mapping_df.select(["_series_id", pl.lit(single_run_ctx.run_id).alias("_run_id")]).unique()
     profiling._record(profiling.PHASE_WRITE_NORMALIZE, perf_counter() - t_normalize_start)
 
     # ── Insert all partitions ─────────────────────────────────────────────────
     with _get_connection(_pool) as conn:
-        db.insert.insert_tables(conn, ch_client, partitioned=partitioned, batch_contexts=batch_ctx_map)
+        db.insert.insert_tables(conn, ch_client, partitioned=partitioned, run_contexts=run_ctx_map)
 
-    # ── Build results: one InsertResult per (series_id, batch_id) pair ────────
+    # ── Build results: one InsertResult per (series_id, run_id) pair ──────────
     results = [
         InsertResult(
             series_id=sid,
-            batch_id=uuid.UUID(bid),
-            workflow_id=batch_ctx_map[bid].workflow_id,
+            run_id=uuid.UUID(rid),
+            workflow_id=run_ctx_map[rid].workflow_id,
         )
-        for sid, bid in result_df.iter_rows()
+        for sid, rid in result_df.iter_rows()
     ]
     profiling._record(profiling.PHASE_WRITE_TOTAL, perf_counter() - t_write_start)
     return results
 
 
-def _list_batches(
+def _list_runs(
     ch_client,
     series_id: int,
     routing: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """List batches for a series. Wrapper around db.read.read_batches_for_series."""
-    return db.read.read_batches_for_series(ch_client, series_id=series_id, routing=routing)
+    """List runs for a series. Wrapper around db.read.read_runs_for_series."""
+    return db.read.read_runs_for_series(ch_client, series_id=series_id, routing=routing)

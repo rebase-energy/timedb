@@ -22,7 +22,7 @@ from typing import Dict
 # ── Insert phase constants ────────────────────────────────────────────────────
 
 PHASE_INSERT_NORMALIZE      = "insert.normalize"       # normalize_insert_input() — Polars preparation in _insert()
-PHASE_INSERT_BATCH_METADATA = "insert.batch_metadata"  # _insert_batch_metadata() — CH insert for batch records
+PHASE_INSERT_RUN_METADATA = "insert.run_metadata"  # _insert_run_metadata() — CH insert for run records
 PHASE_INSERT_ARROW          = "insert.arrow"           # ch_client.insert_arrow() — bulk Arrow transfer to ClickHouse
 PHASE_INSERT_TOTAL          = "insert.total"           # Full insert_tables() wall time
 

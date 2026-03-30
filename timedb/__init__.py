@@ -19,7 +19,7 @@ Explicit client usage (for custom connection settings):
 
 Environment variables:
     TIMEDB_PG_DSN  - PostgreSQL connection string (series_table)
-    TIMEDB_CH_URL  - ClickHouse DSN (batches + all values tables)
+    TIMEDB_CH_URL  - ClickHouse DSN (runs + all values tables)
 """
 
 from dotenv import load_dotenv, find_dotenv
@@ -72,7 +72,7 @@ def create_series(name, unit="dimensionless", labels=None, description=None,
 
 
 def create_series_many(series):
-    """Batch get-or-create multiple series. See :meth:`TimeDataClient.create_series_many`."""
+    """Bulk get-or-create multiple series. See :meth:`TimeDataClient.create_series_many`."""
     return _get_default_client().create_series_many(series)
 
 
@@ -81,15 +81,15 @@ def get_series(name=None, unit=None, series_id=None):
     return _get_default_client().get_series(name, unit=unit, series_id=series_id)
 
 
-def write(df, name_col="name", label_cols=None, batch_cols=None, *, knowledge_time=None,
-          unit=None, workflow_id=None, batch_start_time=None, batch_finish_time=None,
-          batch_params=None):
+def write(df, name_col="name", label_cols=None, run_cols=None, *, knowledge_time=None,
+          unit=None, workflow_id=None, run_start_time=None, run_finish_time=None,
+          run_params=None):
     """Insert multi-series long-format data. See :meth:`TimeDataClient.write`."""
     return _get_default_client().write(
-        df, name_col, label_cols, batch_cols,
+        df, name_col, label_cols, run_cols,
         knowledge_time=knowledge_time, unit=unit, workflow_id=workflow_id,
-        batch_start_time=batch_start_time, batch_finish_time=batch_finish_time,
-        batch_params=batch_params,
+        run_start_time=run_start_time, run_finish_time=run_finish_time,
+        run_params=run_params,
     )
 
 

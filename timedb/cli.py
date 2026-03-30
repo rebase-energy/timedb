@@ -8,7 +8,7 @@ Provides administrative and operational commands for managing timedb:
 
 Environment:
     - TIMEDB_PG_DSN or DATABASE_URL: PostgreSQL connection string (series_table)
-    - TIMEDB_CH_URL: ClickHouse DSN (batches + values tables)
+    - TIMEDB_CH_URL: ClickHouse DSN (runs + values tables)
     - Typical usage: timedb --help
 
 Examples:
@@ -177,7 +177,7 @@ def delete_tables(
         console.print(Panel(
             "[bold red]WARNING: This will delete ALL timedb tables and data![/bold red]\n\n"
             "PostgreSQL:  series_table\n"
-            "ClickHouse:  batches_table, flat, overlapping_short/medium/long",
+            "ClickHouse:  runs_table, flat, overlapping_short/medium/long",
             title="Destructive Operation",
             border_style="red",
         ))
