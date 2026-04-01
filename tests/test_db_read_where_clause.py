@@ -28,6 +28,5 @@ def test_build_where_clause_with_time_filters():
     assert "valid_time >= {start_valid:DateTime64(6, 'UTC')}" in where
     assert "valid_time < {end_valid:DateTime64(6, 'UTC')}" in where
     assert params["series_ids"] == [1]
-    # _build_ch_where_clause_multi strips tzinfo via _to_naive_utc
-    assert params["start_valid"] == start.replace(tzinfo=None)
-    assert params["end_valid"] == end.replace(tzinfo=None)
+    assert params["start_valid"] == start
+    assert params["end_valid"] == end
