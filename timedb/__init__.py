@@ -93,6 +93,22 @@ def write(df, name_col="name", label_cols=None, run_cols=None, *, knowledge_time
     )
 
 
+def read(manifest, name_col=None, label_cols=None, series_col=None, **kwargs):
+    """Read multi-series data via manifest. See :meth:`TimeDataClient.read`."""
+    return _get_default_client().read(
+        manifest, name_col=name_col, label_cols=label_cols,
+        series_col=series_col, **kwargs,
+    )
+
+
+def read_relative(manifest, name_col=None, label_cols=None, series_col=None, **kwargs):
+    """Read multi-series relative data via manifest. See :meth:`TimeDataClient.read_relative`."""
+    return _get_default_client().read_relative(
+        manifest, name_col=name_col, label_cols=label_cols,
+        series_col=series_col, **kwargs,
+    )
+
+
 __all__ = [
     # SDK
     'TimeDataClient',
@@ -105,6 +121,8 @@ __all__ = [
     'create_series_many',
     'get_series',
     'write',
+    'read',
+    'read_relative',
     # Profiling
     'profiling',
     # TimeSeries container

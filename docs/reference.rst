@@ -29,6 +29,13 @@ Multi-Series Write
 
 .. autofunction:: timedb.write
 
+Multi-Series Read
+'''''''''''''''''
+
+.. autofunction:: timedb.read
+
+.. autofunction:: timedb.read_relative
+
 Main Client
 ~~~~~~~~~~~
 
@@ -254,6 +261,67 @@ Key Endpoints
 
       response = requests.get(url, params=params,
                               headers={"Accept": "application/vnd.apache.arrow.stream"})
+      df = pl.read_ipc_stream(response.content)
+
+.. py:function:: POST /read
+
+   Read multi-series data using a manifest DataFrame. Mirrors ``POST /write`` for reads.
+
+   The manifest specifies which series to read using routing columns
+   (``name_col``/``label_cols`` or ``series_col``).
+
+   **Query parameters:**
+
+   - ``name_col`` (str, default ``None`` → ``"name"``): column whose values are series names (mutually exclusive with ``series_col``)
+   - ``label_cols`` (str): comma-separated label column names, e.g. ``"site,turbine"`` (mutually exclusive with ``series_col``)
+   - ``series_col`` (str, optional): column whose values are integer series IDs (mutually exclusive with ``name_col``/``label_cols``)
+   - ``start_valid`` · ``end_valid`` — valid time range (ISO datetime)
+   - ``start_known`` · ``end_known`` — knowledge_time range (overlapping series only)
+   - ``overlapping`` (bool, default ``false``) — return all forecast versions for overlapping series; flat series unaffected
+   - ``include_updates`` (bool, default ``false``) — expose correction chain
+
+   **JSON** (``Content-Type: application/json``):
+
+   .. code-block:: json
+
+      [
+        {"metric": "wind_power", "site": "Gotland"},
+        {"metric": "wind_power", "site": "Oslo"}
+      ]
+
+   **Arrow IPC stream** (``Content-Type: application/vnd.apache.arrow.stream``):
+
+   Send a manifest table with only routing columns as a Polars/PyArrow IPC stream.
+
+   **Response** (same format as ``GET /values``):
+
+   .. code-block:: json
+
+      {
+        "count": 1000,
+        "data": [
+          {"metric": "wind_power", "site": "Gotland", "unit": "MW", "series_id": 1, "valid_time": "2025-01-01T00:00:00+0000", "value": 52.0},
+          {"metric": "wind_power", "site": "Oslo", "unit": "MW", "series_id": 2, "valid_time": "2025-01-01T00:00:00+0000", "value": 31.5}
+        ]
+      }
+
+   **Arrow IPC stream** (``Accept: application/vnd.apache.arrow.stream``):
+
+   .. code-block:: python
+
+      import io, polars as pl
+
+      buf = io.BytesIO()
+      manifest.write_ipc_stream(buf)
+      response = requests.post(
+          "http://localhost:8000/read",
+          params={"name_col": "metric", "label_cols": "site"},
+          data=buf.getvalue(),
+          headers={
+              "Content-Type": "application/vnd.apache.arrow.stream",
+              "Accept": "application/vnd.apache.arrow.stream",
+          },
+      )
       df = pl.read_ipc_stream(response.content)
 
 .. py:function:: GET /series

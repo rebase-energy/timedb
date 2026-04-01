@@ -221,7 +221,8 @@ async def root():
         "endpoints": {
             "insert_values": "POST /values - Insert single-series data (JSON or Arrow IPC stream)",
             "write_values": "POST /write - Insert multi-series data in long format (JSON or Arrow IPC stream)",
-            "read_values": "GET /values - Read time series values (JSON or Arrow IPC stream)",
+            "read_values": "GET /values - Read single-series values (JSON or Arrow IPC stream)",
+            "read_multi": "POST /read - Read multi-series data via manifest (JSON or Arrow IPC stream)",
             "create_series": "POST /series - Create a new time series",
             "create_series_many": "POST /series/many - Bulk create multiple series",
             "list_series": "GET /series - List/filter time series",
@@ -441,6 +442,106 @@ async def read_values(
         records = df_pl.to_dicts()
 
         return {"count": len(records), "data": records}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading values: {str(e)}")
+
+
+@app.post("/read")
+async def read_multi(
+    request: Request,
+    name_col: Optional[str] = Query(None, description="Column whose values map to series name (defaults to 'name', mutually exclusive with series_col)"),
+    label_cols: Optional[str] = Query(
+        None,
+        description="Comma-separated label column names. Omit to auto-infer (mutually exclusive with series_col).",
+    ),
+    series_col: Optional[str] = Query(None, description="Column whose values are integer series IDs (bypasses name/label resolution, mutually exclusive with name_col/label_cols)"),
+    start_valid: Optional[datetime] = Query(None, description="Start of valid time range (ISO format)"),
+    end_valid: Optional[datetime] = Query(None, description="End of valid time range (ISO format)"),
+    start_known: Optional[datetime] = Query(None, description="Start of knowledge_time range (ISO format)"),
+    end_known: Optional[datetime] = Query(None, description="End of knowledge_time range (ISO format)"),
+    overlapping: bool = Query(False, description="Return all forecast versions for overlapping series. Flat series are unaffected."),
+    include_updates: bool = Query(False, description="Expose the correction chain with change_time, changed_by, and annotation."),
+):
+    """
+    Read multi-series data using a manifest DataFrame.
+
+    The manifest specifies which series to read using the same routing columns
+    as ``POST /write``: either *name_col*/*label_cols* (resolve by name and
+    labels) or *series_col* (route by integer series ID).
+
+    **Arrow IPC stream** (`Content-Type: application/vnd.apache.arrow.stream`):
+    Send a manifest as Arrow IPC stream body. The manifest should contain only
+    routing columns (name + labels, or series_id).
+    Client: ``manifest.write_ipc_stream(buf)`` (Polars).
+
+    **JSON** (`Content-Type: application/json`):
+    Send a list of row dicts, e.g.:
+    ```json
+    [
+      {"metric": "wind_power", "site": "Gotland"},
+      {"metric": "wind_power", "site": "Oslo"}
+    ]
+    ```
+
+    Set ``Accept: application/vnd.apache.arrow.stream`` to receive an Arrow IPC
+    stream instead of JSON.
+
+    Returns a long-format DataFrame with columns:
+    ``[name_col, *label_cols, unit, series_id, <data_columns>]``.
+    """
+    try:
+        td = _get_client(request)
+        content_type = request.headers.get("content-type", "application/json")
+
+        parsed_label_cols = (
+            [c.strip() for c in label_cols.split(",") if c.strip()] if label_cols is not None else None
+        )
+
+        sv = _ensure_tz(start_valid)
+        ev = _ensure_tz(end_valid)
+        sk = _ensure_tz(start_known)
+        ek = _ensure_tz(end_known)
+
+        if ARROW_CONTENT_TYPE in content_type:
+            body = await request.body()
+            arrow_table = _parse_arrow_body(body)
+            manifest = pl.from_arrow(arrow_table)
+        else:
+            json_data = await request.json()
+            if not isinstance(json_data, list):
+                raise HTTPException(status_code=422, detail="JSON body must be a list of row dicts.")
+            manifest = pl.DataFrame(json_data)
+
+        result_df = td.read(
+            manifest,
+            name_col=name_col,
+            label_cols=parsed_label_cols,
+            series_col=series_col,
+            start_valid=sv,
+            end_valid=ev,
+            start_known=sk,
+            end_known=ek,
+            overlapping=overlapping,
+            include_updates=include_updates,
+        )
+
+        accept = request.headers.get("accept", "application/json")
+        if ARROW_CONTENT_TYPE in accept:
+            return _to_arrow_response(result_df.to_arrow())
+
+        if result_df.is_empty():
+            return {"count": 0, "data": []}
+
+        dt_cols = [c for c, t in zip(result_df.columns, result_df.dtypes) if isinstance(t, pl.Datetime)]
+        result_df = result_df.with_columns([pl.col(c).dt.to_string("%Y-%m-%dT%H:%M:%S%z") for c in dt_cols])
+        records = result_df.to_dicts()
+
+        return {"count": len(records), "data": records}
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
