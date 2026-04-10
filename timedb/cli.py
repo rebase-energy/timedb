@@ -7,7 +7,7 @@ Provides administrative and operational commands for managing timedb:
 - api: Run the REST API server
 
 Environment:
-    - TIMEDB_PG_DSN or DATABASE_URL: PostgreSQL connection string (series_table)
+    - TIMEDB_PG_DSN or DATABASE_URL: PostgreSQL connection string (series)
     - TIMEDB_CH_URL: ClickHouse DSN (runs + values tables)
     - Typical usage: timedb --help
 
@@ -117,7 +117,7 @@ def create_tables(
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
 ):
     """
-    Create timedb tables in PostgreSQL (series_table) and ClickHouse (values tables).
+    Create timedb tables in PostgreSQL (series) and ClickHouse (values tables).
 
     Examples:
         timedb create tables --pg-dsn postgresql://user:pass@localhost/mydb --ch-url clickhouse://localhost/timedb
@@ -176,8 +176,8 @@ def delete_tables(
     if not yes:
         console.print(Panel(
             "[bold red]WARNING: This will delete ALL timedb tables and data![/bold red]\n\n"
-            "PostgreSQL:  series_table\n"
-            "ClickHouse:  runs_table, flat, overlapping_short/medium/long",
+            "PostgreSQL:  series\n"
+            "ClickHouse:  runs, flat, overlapping_short/medium/long",
             title="Destructive Operation",
             border_style="red",
         ))

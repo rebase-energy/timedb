@@ -70,9 +70,9 @@ def normalize_write_input(
     Args:
         pl_df: Input data as a Polars DataFrame.  Must contain ``valid_time``
             and ``value`` columns plus routing columns.
-        name_col: Column in *pl_df* that maps to ``series_table.name``.
+        name_col: Column in *pl_df* that maps to ``series.name``.
             ``None`` when *series_col* is used.
-        label_cols: Columns in *pl_df* that map to ``series_table.labels``.
+        label_cols: Columns in *pl_df* that map to ``series.labels``.
         mapping_df: Flat routing table keyed on routing columns with
             ``[_series_id, _unit, _factor, _target_table, _overlapping,
             _retention]`` metadata columns.

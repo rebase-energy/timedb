@@ -34,7 +34,7 @@ def test_insert_flat_creates_run(td, ch_client, sample_datetime):
     assert res.result_rows[0][0] == 2
 
     # Verify one run was created
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
 
     # Verify no rows in any overlapping table
@@ -65,7 +65,7 @@ def test_insert_flat_with_knowledge_time(td, ch_client, sample_datetime):
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 1
 
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
 
 
@@ -441,7 +441,7 @@ def test_insert_versioned_single_kt(td, ch_client, sample_datetime):
 
     assert isinstance(result.run_id, uuid.UUID)
 
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 2
@@ -473,7 +473,7 @@ def test_insert_versioned_multi_kt(td, ch_client, sample_datetime):
     assert isinstance(result.run_id, uuid.UUID)
 
     # One run per insert() call regardless of unique knowledge_time count
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 5
@@ -550,7 +550,7 @@ def test_insert_df_with_kt_column_overlapping(td, ch_client, sample_datetime):
     assert isinstance(result.run_id, uuid.UUID)
 
     # One run per insert() call
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 3
@@ -610,7 +610,7 @@ def test_write_long_format_pandas(td, ch_client, sample_datetime):
     td.create_series("sensor_b", unit="dimensionless")
 
     df = pd.DataFrame({
-        "metric": ["sensor_a", "sensor_a", "sensor_b", "sensor_b"],
+        "name": ["sensor_a", "sensor_a", "sensor_b", "sensor_b"],
         "valid_time": [
             sample_datetime,
             sample_datetime + timedelta(hours=1),
@@ -620,14 +620,14 @@ def test_write_long_format_pandas(td, ch_client, sample_datetime):
         "value": [1.0, 2.0, 3.0, 4.0],
     })
 
-    results = td.write(df, name_col="metric")
+    results = td.write(df, name_col="name")
 
     assert len(results) == 2
     assert len({r.run_id for r in results}) == 1  # one run for all
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 4
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
 
 
@@ -637,7 +637,7 @@ def test_write_long_format_polars(td, ch_client, sample_datetime):
     td.create_series("sensor_b", unit="dimensionless")
 
     df = pl.DataFrame({
-        "metric": ["sensor_a", "sensor_a", "sensor_b", "sensor_b"],
+        "name": ["sensor_a", "sensor_a", "sensor_b", "sensor_b"],
         "valid_time": pl.Series([
             sample_datetime,
             sample_datetime + timedelta(hours=1),
@@ -647,7 +647,7 @@ def test_write_long_format_polars(td, ch_client, sample_datetime):
         "value": pl.Series([1.0, 2.0, 3.0, 4.0], dtype=pl.Float64),
     })
 
-    results = td.write(df, name_col="metric")
+    results = td.write(df, name_col="name")
 
     assert len(results) == 2
     assert len({r.run_id for r in results}) == 1
@@ -662,13 +662,13 @@ def test_write_with_label_cols(td, ch_client, sample_datetime):
     td.create_series("power", unit="dimensionless", labels={"site": "B"})
 
     df = pd.DataFrame({
-        "metric": ["power", "power"],
+        "name": ["power", "power"],
         "site": ["A", "B"],
         "valid_time": [sample_datetime, sample_datetime],
         "value": [10.0, 20.0],
     })
 
-    results = td.write(df, name_col="metric", label_cols=["site"])
+    results = td.write(df, name_col="name", label_cols=["site"])
 
     assert len(results) == 2
 
@@ -679,13 +679,13 @@ def test_write_with_label_cols(td, ch_client, sample_datetime):
 def test_write_missing_series_raises(td, sample_datetime):
     """write() raises ValueError before DB write if any series doesn't exist."""
     df = pd.DataFrame({
-        "metric": ["nonexistent"],
+        "name": ["nonexistent"],
         "valid_time": [sample_datetime],
         "value": [1.0],
     })
 
     with pytest.raises(ValueError, match="No series found"):
-        td.write(df, name_col="metric")
+        td.write(df, name_col="name")
 
 
 def test_write_mixed_flat_overlapping(td, ch_client, sample_datetime):
@@ -694,12 +694,12 @@ def test_write_mixed_flat_overlapping(td, ch_client, sample_datetime):
     td.create_series("ovlp_metric", unit="dimensionless", overlapping=True, retention="medium")
 
     df = pd.DataFrame({
-        "metric": ["flat_metric", "ovlp_metric"],
+        "name": ["flat_metric", "ovlp_metric"],
         "valid_time": [sample_datetime, sample_datetime],
         "value": [1.0, 2.0],
     })
 
-    results = td.write(df, name_col="metric", knowledge_time=sample_datetime)
+    results = td.write(df, name_col="name", knowledge_time=sample_datetime)
 
     assert len(results) == 2
     assert len({r.run_id for r in results}) == 1  # single shared run
@@ -708,7 +708,7 @@ def test_write_mixed_flat_overlapping(td, ch_client, sample_datetime):
     assert res.result_rows[0][0] == 1
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 1
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 1
 
 
@@ -719,13 +719,13 @@ def test_write_unit_incompatible_raises(td, ch_client, sample_datetime):
     td.create_series("power_mw", unit="MW")
 
     df = pd.DataFrame({
-        "metric": ["power_mw"],
+        "name": ["power_mw"],
         "valid_time": [sample_datetime],
         "value": [1.0],
     })
 
     with pytest.raises(IncompatibleUnitError):
-        td.write(df, name_col="metric", unit="kg")
+        td.write(df, name_col="name", unit="kg")
 
     res = ch_client.query("SELECT COUNT(*) FROM flat")
     assert res.result_rows[0][0] == 0
@@ -740,13 +740,13 @@ def test_write_passthrough_change_time(td, ch_client, sample_datetime):
     explicit_ct = sample_datetime - timedelta(days=30)
 
     df = pd.DataFrame({
-        "metric": ["ct_metric"],
+        "name": ["ct_metric"],
         "valid_time": [sample_datetime],
         "value": [42.0],
         "change_time": [explicit_ct],
     })
 
-    td.write(df, name_col="metric")
+    td.write(df, name_col="name")
 
     res = ch_client.query("SELECT change_time FROM flat")
     stored_ct = res.result_rows[0][0]
@@ -760,11 +760,11 @@ def test_write_upsert_stamps_change_time(td, ch_client, sample_datetime):
     series_id = td.create_series("upsert_ct", unit="dimensionless")
 
     vt = sample_datetime
-    df1 = pd.DataFrame({"metric": ["upsert_ct"], "valid_time": [vt], "value": [1.0]})
-    td.write(df1, name_col="metric")
+    df1 = pd.DataFrame({"name": ["upsert_ct"], "valid_time": [vt], "value": [1.0]})
+    td.write(df1, name_col="name")
 
-    df2 = pd.DataFrame({"metric": ["upsert_ct"], "valid_time": [vt], "value": [2.0]})
-    td.write(df2, name_col="metric")
+    df2 = pd.DataFrame({"name": ["upsert_ct"], "valid_time": [vt], "value": [2.0]})
+    td.write(df2, name_col="name")
 
     # Read latest via argMax — should return value 2.0
     result = read.read_flat(ch_client, series_id=series_id)
@@ -777,13 +777,13 @@ def test_write_passthrough_annotation(td, ch_client, sample_datetime):
     td.create_series("ann_metric", unit="dimensionless")
 
     df = pd.DataFrame({
-        "metric": ["ann_metric"],
+        "name": ["ann_metric"],
         "valid_time": [sample_datetime],
         "value": [7.0],
         "annotation": ["corrected value"],
     })
 
-    td.write(df, name_col="metric")
+    td.write(df, name_col="name")
 
     res = ch_client.query("SELECT annotation FROM flat")
     assert len(res.result_rows) > 0
@@ -812,7 +812,7 @@ def test_write_run_cols_unreserved_creates_multiple_runs(td, ch_client, sample_d
     assert len(results) == 2
     assert len({r.run_id for r in results}) == 2  # two distinct runs
 
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 2
 
 
@@ -830,7 +830,7 @@ def test_write_run_cols_unreserved_run_params_json(td, ch_client, sample_datetim
 
     td.write(df, run_cols=["model"])
 
-    res = ch_client.query("SELECT run_params FROM runs_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT run_params FROM runs ORDER BY inserted_at")
     rows = res.result_rows
     stored_models = {json.loads(row[0])["model"] for row in rows}
     assert stored_models == {"ECMWF", "GFS"}
@@ -871,7 +871,7 @@ def test_write_run_cols_shared_workflow_id_kwarg(td, ch_client, sample_datetime)
 
     td.write(df, run_cols=["model"], workflow_id="shared-run")
 
-    res = ch_client.query("SELECT DISTINCT workflow_id FROM runs_table")
+    res = ch_client.query("SELECT DISTINCT workflow_id FROM runs")
     rows = res.result_rows
     assert len(rows) == 1
     assert rows[0][0] == "shared-run"
@@ -891,7 +891,7 @@ def test_write_run_cols_global_run_params_merged(td, ch_client, sample_datetime)
 
     td.write(df, run_cols=["model"], run_params={"source": "nwp"})
 
-    res = ch_client.query("SELECT run_params FROM runs_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT run_params FROM runs ORDER BY inserted_at")
     rows = res.result_rows
     for row in rows:
         params = json.loads(row[0])
@@ -923,16 +923,16 @@ def test_write_run_cols_compound_key(td, ch_client, sample_datetime):
     assert len(results) == 4  # 4 unique (model, run) combos × 1 series
     assert len({r.run_id for r in results}) == 4
 
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 4
 
 
 # =============================================================================
-# write() — run_cols: reserved columns → native runs_table fields
+# write() — run_cols: reserved columns → native runs fields
 # =============================================================================
 
 def test_write_run_cols_reserved_workflow_id_stored_natively(td, ch_client, sample_datetime):
-    """workflow_id in run_cols maps to the native runs_table field, not run_params."""
+    """workflow_id in run_cols maps to the native runs field, not run_params."""
     td.create_series("power", unit="dimensionless", labels={"site": "A"})
 
     df = pd.DataFrame({
@@ -945,7 +945,7 @@ def test_write_run_cols_reserved_workflow_id_stored_natively(td, ch_client, samp
 
     td.write(df, run_cols=["workflow_id"])
 
-    res = ch_client.query("SELECT workflow_id, run_params FROM runs_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT workflow_id, run_params FROM runs ORDER BY inserted_at")
     rows = res.result_rows
     assert len(rows) == 2
     stored_wf_ids = {row[0] for row in rows}
@@ -978,7 +978,7 @@ def test_write_run_cols_reserved_run_start_finish_time(td, ch_client, sample_dat
 
     res = ch_client.query(
         "SELECT run_start_time, run_finish_time, run_params "
-        "FROM runs_table ORDER BY run_start_time"
+        "FROM runs ORDER BY run_start_time"
     )
     rows = res.result_rows
     assert len(rows) == 2
@@ -1007,7 +1007,7 @@ def test_write_run_cols_mix_reserved_and_unreserved(td, ch_client, sample_dateti
 
     td.write(df, run_cols=["workflow_id", "model"])
 
-    res = ch_client.query("SELECT workflow_id, run_params FROM runs_table ORDER BY inserted_at")
+    res = ch_client.query("SELECT workflow_id, run_params FROM runs ORDER BY inserted_at")
     rows = res.result_rows
     assert len(rows) == 2
     for row in rows:
@@ -1149,7 +1149,7 @@ def test_write_run_cols_overlapping_series(td, ch_client, sample_datetime):
 
     res = ch_client.query("SELECT COUNT(*) FROM overlapping_medium")
     assert res.result_rows[0][0] == 4
-    res = ch_client.query("SELECT COUNT(*) FROM runs_table")
+    res = ch_client.query("SELECT COUNT(*) FROM runs")
     assert res.result_rows[0][0] == 2
 
 
@@ -1288,7 +1288,7 @@ def test_write_explicit_empty_label_cols(td, sample_datetime):
 def test_write_name_col_not_in_dataframe_raises(td, sample_datetime):
     """Missing name_col raises ValueError before any DB interaction."""
     df = pd.DataFrame({
-        "metric":     ["power"],
+        "name":     ["power"],
         "valid_time": [sample_datetime],
         "value":      [1.0],
     })
@@ -1403,7 +1403,7 @@ def test_write_series_col_with_unit_kwarg(td, ch_client, sample_datetime):
 
 def test_write_series_col_with_run_cols(td, ch_client, sample_datetime):
     """write(series_col=..., run_cols=...) creates multiple runs."""
-    sid = td.create_series("metric", unit="dimensionless", overlapping=True)
+    sid = td.create_series("name", unit="dimensionless", overlapping=True)
 
     df = pd.DataFrame({
         "sid": [sid, sid],
