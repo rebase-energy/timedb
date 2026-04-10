@@ -16,10 +16,9 @@ _PG_DROP_STATEMENTS = [
     "DROP VIEW IF EXISTS current_values_view CASCADE",
     "DROP VIEW IF EXISTS current_metadata_table CASCADE",
     "DROP VIEW IF EXISTS current_values_table CASCADE",
-    # Current series table
-    "DROP TABLE IF EXISTS series_table CASCADE",
+    # Current series table (public schema)
+    "DROP TABLE IF EXISTS series CASCADE",
     # Legacy PG tables (clean up if they exist from old schema)
-    "DROP TABLE IF EXISTS runs_table CASCADE",
     "DROP TABLE IF EXISTS overlapping_short CASCADE",
     "DROP TABLE IF EXISTS overlapping_medium CASCADE",
     "DROP TABLE IF EXISTS overlapping_long CASCADE",
@@ -34,7 +33,7 @@ _CH_DROP_TABLES = [
     "overlapping_medium",
     "overlapping_short",
     "flat",
-    "runs_table",
+    "runs",
 ]
 
 _MAX_RETRIES = 3
@@ -46,8 +45,8 @@ def delete_schema(pg_conninfo: str, ch_url: str) -> None:
     Drop all TimeDB tables from both PostgreSQL and ClickHouse.
 
     Args:
-        pg_conninfo: PostgreSQL connection string (drops series_table).
-        ch_url: ClickHouse DSN (drops runs_table, flat, overlapping_*).
+        pg_conninfo: PostgreSQL connection string (drops series).
+        ch_url: ClickHouse DSN (drops runs, flat, overlapping_*).
     """
     # PostgreSQL
     with psycopg.connect(pg_conninfo, autocommit=True) as conn:

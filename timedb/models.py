@@ -1,8 +1,8 @@
 """
 SQLAlchemy declarative models for TimeDB PostgreSQL tables.
 
-Only series_table lives in PostgreSQL. All values tables live in ClickHouse
-and are NOT modeled here.
+Only the ``series`` table lives in PostgreSQL (in the public schema).
+All values tables live in ClickHouse and are NOT modeled here.
 
 Usage in an external Alembic-managed monorepo::
 
@@ -25,7 +25,7 @@ class Base(DeclarativeBase):
 
 
 class SeriesTable(Base):
-    __tablename__ = "series_table"
+    __tablename__ = "series"
 
     series_id = sa.Column(
         sa.BigInteger,

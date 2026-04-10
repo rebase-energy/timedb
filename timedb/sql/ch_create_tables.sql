@@ -1,13 +1,13 @@
 -- TimeDB ClickHouse Schema
 -- All values tables and run metadata live here.
--- series_table stays in PostgreSQL.
+-- The series table stays in PostgreSQL (public schema).
 
 -- ============================================================================
 -- 1) RUNS TABLE
 -- ============================================================================
 -- Append-only run metadata. ReplacingMergeTree deduplicates retried inserts.
 
-CREATE TABLE IF NOT EXISTS runs_table (
+CREATE TABLE IF NOT EXISTS runs (
     run_id            String,
     workflow_id       Nullable(String),
     run_start_time    Nullable(DateTime64(6, 'UTC')),

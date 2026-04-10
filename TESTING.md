@@ -95,7 +95,7 @@ Fixtures are defined in `conftest.py`:
 
 ### Schema
 
-The PostgreSQL schema is defined in `pg_create_tables.sql` (series_table). The ClickHouse schema is defined in `ch_create_tables.sql` (runs_table, flat, overlapping_short/medium/long). It supports inserts, reads, and updates with full temporal versioning.
+The PostgreSQL schema is defined in `pg_create_tables.sql` (series). The ClickHouse schema is defined in `ch_create_tables.sql` (runs, flat, overlapping_short/medium/long). It supports inserts, reads, and updates with full temporal versioning.
 
 Used by: `create`, `insert`, `read`, `update` modules and all test files.
 

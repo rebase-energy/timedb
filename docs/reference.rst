@@ -285,8 +285,8 @@ Key Endpoints
    .. code-block:: json
 
       [
-        {"metric": "wind_power", "site": "Gotland"},
-        {"metric": "wind_power", "site": "Oslo"}
+        {"name": "wind_power", "site": "Gotland"},
+        {"name": "wind_power", "site": "Oslo"}
       ]
 
    **Arrow IPC stream** (``Content-Type: application/vnd.apache.arrow.stream``):
@@ -300,8 +300,8 @@ Key Endpoints
       {
         "count": 1000,
         "data": [
-          {"metric": "wind_power", "site": "Gotland", "unit": "MW", "series_id": 1, "valid_time": "2025-01-01T00:00:00+0000", "value": 52.0},
-          {"metric": "wind_power", "site": "Oslo", "unit": "MW", "series_id": 2, "valid_time": "2025-01-01T00:00:00+0000", "value": 31.5}
+          {"name": "wind_power", "site": "Gotland", "unit": "MW", "series_id": 1, "valid_time": "2025-01-01T00:00:00+0000", "value": 52.0},
+          {"name": "wind_power", "site": "Oslo", "unit": "MW", "series_id": 2, "valid_time": "2025-01-01T00:00:00+0000", "value": 31.5}
         ]
       }
 
@@ -315,7 +315,7 @@ Key Endpoints
       manifest.write_ipc_stream(buf)
       response = requests.post(
           "http://localhost:8000/read",
-          params={"name_col": "metric", "label_cols": "site"},
+          params={"name_col": "name", "label_cols": "site"},
           data=buf.getvalue(),
           headers={
               "Content-Type": "application/vnd.apache.arrow.stream",

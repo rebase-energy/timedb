@@ -21,7 +21,7 @@ class InsertResult(NamedTuple):
 class RunContext:
     """Internal container for run metadata passed to the DB layer.
 
-    Holds everything needed for INSERT INTO runs_table.
+    Holds everything needed for INSERT INTO runs.
     run_id is stored as str (the form PostgreSQL and Arrow expect).
     run_params is the raw dict; callers serialize to JSON at the point of use.
     """

@@ -34,10 +34,12 @@ PHASE_WRITE_TOTAL          = "write.total"           # Full _write() wall time (
 
 # ── Read phase constants ──────────────────────────────────────────────────────
 
-PHASE_READ_SQL_EXEC    = "read.sql_exec"     # ch_client.query_arrow() — execution + Arrow transfer in one call
-PHASE_READ_BUILD_ARROW = "read.build_arrow"  # result.select(columns) — Arrow column selection
-PHASE_READ_TO_POLARS   = "read.to_polars"    # pl.from_arrow() at SDK boundary
-PHASE_READ_TOTAL       = "read.total"        # Full _fetch_ch_arrow() wall time
+PHASE_READ_SERIES_RESOLVE = "read.series_resolve"  # _resolve_manifest() — series lookup + registry build
+PHASE_READ_SQL_EXEC       = "read.sql_exec"         # ch_client.query_arrow() — execution + Arrow transfer in one call
+PHASE_READ_BUILD_ARROW    = "read.build_arrow"       # result.select(columns) — Arrow column selection
+PHASE_READ_TO_POLARS      = "read.to_polars"         # pl.from_arrow() at SDK boundary
+PHASE_READ_BUILD_RESULT   = "read.build_result"      # _build_read_result() — join CH data with metadata
+PHASE_READ_TOTAL          = "read.total"              # Full _fetch_ch_arrow() wall time
 
 # ── Internal state ────────────────────────────────────────────────────────────
 
