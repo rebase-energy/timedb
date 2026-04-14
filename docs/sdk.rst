@@ -372,7 +372,7 @@ on each run record:
    # len(results) == num_series × num_models
 
 *With reserved columns* (``workflow_id``, ``run_start_time``, ``run_finish_time``) —
-values are written directly to the native ``runs_table`` fields, not packed into
+values are written directly to the native ``runs`` table fields, not packed into
 ``run_params``:
 
 .. code-block:: text
@@ -386,7 +386,7 @@ values are written directly to the native ``runs_table`` fields, not packed into
 .. code-block:: python
 
    results = td.write(df, run_cols=["workflow_id"])
-   # Two distinct runs, each with its own workflow_id stored natively in runs_table.
+   # Two distinct runs, each with its own workflow_id stored natively in runs.
 
 **Pattern 5 — per-row unit conversion** ``(unit column)``**:** include a ``"unit"``
 column to apply different conversion factors to individual rows in the same payload.
@@ -806,20 +806,20 @@ the input to ``write()``, but without the data columns:
    from datetime import datetime, timezone
 
    manifest = pl.DataFrame({
-       "metric": ["wind_power", "wind_power", "solar_power"],
+       "name": ["wind_power", "wind_power", "solar_power"],
        "site": ["Gotland", "Oslo", "Gotland"],
    })
 
    df = td.read(
        manifest,
-       name_col="metric",
+       name_col="name",
        label_cols=["site"],
        start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc),
        end_valid=datetime(2026, 4, 1, tzinfo=timezone.utc),
    )
 
 Returns a ``pl.DataFrame`` with columns:
-``[metric, site, unit, series_id, valid_time, value]``.
+``[name, site, unit, series_id, valid_time, value]``.
 
 **Fast path — route by series ID:**
 
@@ -832,15 +832,15 @@ Returns a ``pl.DataFrame`` with columns:
 
 .. code-block:: python
 
-   df = td.read(manifest, name_col="metric", label_cols=["site"], overlapping=True)
-   # Columns: metric | site | unit | series_id | knowledge_time | valid_time | value
+   df = td.read(manifest, name_col="name", label_cols=["site"], overlapping=True)
+   # Columns: name | site | unit | series_id | knowledge_time | valid_time | value
    # Both flat and overlapping series include knowledge_time; only overlapping series return multiple versions per valid_time.
 
 **With correction chain:**
 
 .. code-block:: python
 
-   df = td.read(manifest, name_col="metric", label_cols=["site"], include_updates=True)
+   df = td.read(manifest, name_col="name", label_cols=["site"], include_updates=True)
    # Adds: change_time, changed_by, annotation columns
 
 Full signature:
@@ -875,14 +875,14 @@ same window parameters. All matched series must be overlapping.
 
    df = td.read_relative(
        manifest,
-       name_col="metric",
+       name_col="name",
        label_cols=["site"],
        days_ahead=1,
        time_of_day=time(6, 0),
        start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc),
        end_valid=datetime(2026, 3, 31, tzinfo=timezone.utc),
    )
-   # Returns: metric | site | unit | series_id | valid_time | value
+   # Returns: name | site | unit | series_id | valid_time | value
 
 Full signature:
 

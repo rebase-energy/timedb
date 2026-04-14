@@ -75,9 +75,6 @@ Examples:
    # Create basic tables
    timedb create tables
 
-   # Create tables in a specific schema
-   timedb create tables --schema timedb
-
    # Create tables with custom retention periods
    timedb create tables --retention "5 years"
    timedb create tables --retention-short "3 months" --retention-long "10 years"
@@ -107,8 +104,8 @@ Options:
 
 **WARNING**: This will delete ALL timedb tables and their data, including:
 
-- ``runs_table``
-- ``series_table``
+- ``runs``
+- ``series``
 - ``flat``
 - ``overlapping_short``, ``overlapping_medium``, ``overlapping_long``
 - All views

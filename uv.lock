@@ -3200,7 +3200,7 @@ requires-dist = [
     { name = "nbmake", marker = "extra == 'test'", specifier = ">=1.5" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.8" },
     { name = "notebook", marker = "extra == 'notebooks'", specifier = ">=7.5.2" },
-    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pandas", specifier = ">=2.3.0" },
     { name = "pint", marker = "extra == 'notebooks'", specifier = ">=0.23" },
     { name = "pint", marker = "extra == 'pint'", specifier = ">=0.23" },
     { name = "pint", marker = "extra == 'test'", specifier = ">=0.23" },

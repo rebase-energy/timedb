@@ -94,7 +94,7 @@ def _insert_run_metadata(
     ch_client,
     run_contexts: Dict[str, RunContext],
 ) -> None:
-    """Insert run records into ClickHouse runs_table.
+    """Insert run records into ClickHouse runs table.
 
     Uses ReplacingMergeTree semantics — re-inserting an existing run_id is safe.
     """
@@ -120,7 +120,7 @@ def _insert_run_metadata(
         "run_finish_time":  pa.array([r["run_finish_time"] for r in rows], type=pa.timestamp("us", tz="UTC")),
         "run_params":       pa.array([r["run_params"] for r in rows], type=pa.string()),
     })
-    ch_client.insert_arrow("runs_table", run_table)
+    ch_client.insert_arrow("runs", run_table)
 
 
 def _insert_flat(

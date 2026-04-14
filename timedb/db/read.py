@@ -460,7 +460,7 @@ def read_runs_for_series(
         b.run_finish_time,
         b.run_params,
         b.inserted_at
-    FROM runs_table b FINAL
+    FROM runs b FINAL
     JOIN {data_table} f ON f.run_id = b.run_id
     WHERE f.series_id = {{series_id:Int64}}
     ORDER BY b.inserted_at DESC

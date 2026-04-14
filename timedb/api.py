@@ -482,8 +482,8 @@ async def read_multi(
     Send a list of row dicts, e.g.:
     ```json
     [
-      {"metric": "wind_power", "site": "Gotland"},
-      {"metric": "wind_power", "site": "Oslo"}
+      {"name": "wind_power", "site": "Gotland"},
+      {"name": "wind_power", "site": "Oslo"}
     ]
     ```
 
