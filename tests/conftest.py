@@ -31,8 +31,8 @@ def clean_db(test_pg_conninfo, test_ch_url):
     """Create a clean database schema for each test.
 
     Creates:
-    - PostgreSQL: series_table
-    - ClickHouse: runs_table, flat, overlapping_short/medium/long
+    - PostgreSQL: series
+    - ClickHouse: runs, flat, overlapping_short/medium/long
     """
     delete.delete_schema(test_pg_conninfo, test_ch_url)
     create.create_schema(test_pg_conninfo, test_ch_url)

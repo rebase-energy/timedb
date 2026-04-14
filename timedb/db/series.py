@@ -46,12 +46,12 @@ class SeriesRegistry:
         labels: Optional[Dict[str, str]] = None,
         series_id: Optional[int] = None,
     ) -> List[int]:
-        """Query series_table, cache results, return matching series_ids.
+        """Query series, cache results, return matching series_ids.
 
         Builds WHERE clause with name, unit, labels (@> jsonb), series_id.
         Populates self._cache for each returned row.
         """
-        query = "SELECT series_id, name, description, unit, labels, overlapping, retention FROM series_table"
+        query = "SELECT series_id, name, description, unit, labels, overlapping, retention FROM series"
         clauses: list = []
         params: list = []
 
@@ -100,7 +100,7 @@ class SeriesRegistry:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT series_id, name, description, unit, labels, overlapping, retention "
-                "FROM series_table WHERE series_id = ANY(%s)",
+                "FROM series WHERE series_id = ANY(%s)",
                 (missing,),
             )
             for row in cur.fetchall():
@@ -179,7 +179,7 @@ def resolve_series(
     with conn.cursor() as cur:
         cur.execute(
             "SELECT series_id, name, description, unit, labels, overlapping, retention "
-            "FROM series_table WHERE name = ANY(%s)",
+            "FROM series WHERE name = ANY(%s)",
             (names,),
         )
         rows = cur.fetchall()
@@ -229,7 +229,7 @@ def resolve_series_by_ids(
     with conn.cursor() as cur:
         cur.execute(
             "SELECT series_id, name, description, unit, labels, overlapping, retention "
-            "FROM series_table WHERE series_id = ANY(%s)",
+            "FROM series WHERE series_id = ANY(%s)",
             (series_ids,),
         )
         rows = cur.fetchall()
@@ -264,7 +264,7 @@ def create_series(
     ``overlapping``, ``retention``.
 
     Uses ``ON CONFLICT (name, labels) DO UPDATE SET series_id =
-    series_table.series_id`` — a no-op update that forces conflicting rows to
+    series.series_id`` — a no-op update that forces conflicting rows to
     appear in ``RETURNING``, preserving get-or-create semantics for all entries
     regardless of whether they already exist.
 
@@ -315,9 +315,9 @@ def create_series(
 
     with conn.cursor() as cur:
         cur.execute(
-            f"INSERT INTO series_table (name, unit, labels, description, overlapping, retention) "
+            f"INSERT INTO series (name, unit, labels, description, overlapping, retention) "
             f"VALUES {placeholders} "
-            "ON CONFLICT (name, labels) DO UPDATE SET series_id = series_table.series_id "
+            "ON CONFLICT (name, labels) DO UPDATE SET series_id = series.series_id "
             "RETURNING series_id, name, labels",
             flat_params,
         )

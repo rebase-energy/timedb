@@ -53,16 +53,16 @@ def test_build_read_result_with_labels():
         "value": pa.array([42.0], type=pa.float64()),
     })
     mapping_df = pl.DataFrame({
-        "metric": ["wind"],
+        "name": ["wind"],
         "site": ["Gotland"],
         "_series_id": [1],
         "_unit": ["MW"],
         "_table": ["flat"],
         "_overlapping": [False],
     })
-    result = _build_read_result(ch_data, mapping_df, name_col="metric", label_cols=["site"], series_col=None)
+    result = _build_read_result(ch_data, mapping_df, name_col="name", label_cols=["site"], series_col=None)
 
-    assert result.columns == ["metric", "site", "unit", "series_id", "valid_time", "value"]
+    assert result.columns == ["name", "site", "unit", "series_id", "valid_time", "value"]
     assert result["site"].to_list() == ["Gotland"]
 
 

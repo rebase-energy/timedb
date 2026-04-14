@@ -40,14 +40,18 @@ def test_delete_forwards_conninfo(mock_delete, mock_pool, mock_ch):
 @patch("timedb.sdk.clickhouse_connect.get_client")
 @patch("timedb.sdk.ConnectionPool")
 @patch("timedb.sdk._create_series")
-def test_create_series_forwards_conninfo(mock_create_series, mock_pool, mock_ch):
-    """TimeDataClient.create_series() should pass self._conninfo to _create_series()."""
+def test_create_series_uses_pool_connection(mock_create_series, mock_pool, mock_ch):
+    """TimeDataClient.create_series() should use a pool connection, not conninfo."""
     mock_ch.return_value = MagicMock()
     mock_create_series.return_value = 1
+    pool_conn = MagicMock()
+    mock_pool.return_value.connection.return_value.__enter__ = MagicMock(return_value=pool_conn)
+    mock_pool.return_value.connection.return_value.__exit__ = MagicMock(return_value=False)
     client = TimeDataClient(pg_conninfo=CUSTOM_PG_DSN, ch_url=CUSTOM_CH_URL)
     client.create_series("test_series", unit="kWh")
     mock_create_series.assert_called_once()
-    assert mock_create_series.call_args.kwargs["conninfo"] == CUSTOM_PG_DSN
+    assert mock_create_series.call_args.kwargs["conn"] is pool_conn
+    assert "conninfo" not in mock_create_series.call_args.kwargs
     client.close()
 
 

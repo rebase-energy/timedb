@@ -16,6 +16,7 @@ Data model:
   (list-partitioned by retention) with knowledge_time versioning.
 """
 import atexit
+import contextlib
 import uuid
 from time import perf_counter
 from typing import Optional, List, Dict, Union, Any
@@ -637,7 +638,7 @@ class SeriesCollection:
 
 
 _WRITE_RUN_RESERVED_COLS = frozenset({
-    # Columns that map to native runs_table fields when used in run_cols
+    # Columns that map to native runs fields when used in run_cols
     "workflow_id", "run_start_time", "run_finish_time",
 })
 
@@ -705,7 +706,10 @@ class TimeDataClient:
         self._conninfo = pg_conninfo or _get_pg_conninfo()
         self._ch_url = ch_url or _get_ch_url()
         self._ch_client = clickhouse_connect.get_client(dsn=self._ch_url)
-        self._pool = ConnectionPool(self._conninfo, min_size=min_size, max_size=max_size, open=True)
+        self._pool = ConnectionPool(
+            self._conninfo,
+            min_size=min_size, max_size=max_size, open=True,
+        )
         atexit.register(self.close)
 
     def close(self):
@@ -713,6 +717,15 @@ class TimeDataClient:
         if not self._pool.closed:
             self._pool.close()
         self._ch_client.close()
+
+    def connection(self) -> "contextlib.AbstractContextManager[psycopg.Connection]":
+        """Context manager yielding a psycopg connection from the shared pool.
+
+        The connection is returned to the pool on exit — do not close it manually.
+
+        Use this to share the pool with composed clients (e.g. energydb).
+        """
+        return self._pool.connection()
 
     def __enter__(self):
         return self
@@ -761,8 +774,16 @@ class TimeDataClient:
         )
 
     def create(self) -> None:
-        """Create database schema in PostgreSQL (series_table) and ClickHouse (values tables)."""
+        """Create database schema in PostgreSQL (series) and ClickHouse (values tables)."""
         _create(pg_conninfo=self._conninfo, ch_url=self._ch_url)
+
+    def create_clickhouse(self) -> None:
+        """Create ClickHouse tables only (runs, flat, overlapping_*).
+
+        Use this when PostgreSQL tables are managed by Alembic (e.g. in the platform package).
+        """
+        from timedb.db.create import create_clickhouse
+        create_clickhouse(ch_url=self._ch_url)
 
     def delete(self) -> None:
         """Delete database schema from PostgreSQL and ClickHouse."""
@@ -776,6 +797,7 @@ class TimeDataClient:
         description: Optional[str] = None,
         overlapping: bool = False,
         retention: str = "medium",
+        conn=None,
     ) -> int:
         """
         Get-or-create a single time series.
@@ -802,6 +824,11 @@ class TimeDataClient:
                 ``'medium'`` (3 years), or ``'long'`` (5 years).
                 Only applies to overlapping series.
 
+            conn (psycopg.Connection, optional):
+                If provided, uses this connection directly (caller manages
+                the transaction).  Useful for atomic multi-table operations
+                across packages (e.g. energydb's ``apply()``).
+
         Returns:
             int: The ``series_id``. If a series with the same name+labels already
             exists, its existing id is returned (get-or-create semantics).
@@ -816,17 +843,20 @@ class TimeDataClient:
             ...     labels={'site': 'Gotland'}, overlapping=True,
             ... )
         """
+        if conn is None:
+            with self._pool.connection() as c:
+                return _create_series(
+                    name=name, unit=unit, labels=labels,
+                    description=description, overlapping=overlapping,
+                    retention=retention, conn=c,
+                )
         return _create_series(
-            name=name,
-            unit=unit,
-            labels=labels,
-            description=description,
-            overlapping=overlapping,
-            retention=retention,
-            conninfo=self._conninfo,
+            name=name, unit=unit, labels=labels,
+            description=description, overlapping=overlapping,
+            retention=retention, conn=conn,
         )
 
-    def create_series_many(self, series: List[Dict[str, Any]]) -> List[int]:
+    def create_series_many(self, series: List[Dict[str, Any]], conn=None) -> List[int]:
         """
         Bulk get-or-create multiple series in one round-trip.
 
@@ -841,6 +871,10 @@ class TimeDataClient:
                 - **retention** (str, default ``"medium"``): ``'short'``,
                   ``'medium'``, or ``'long'``.
 
+            conn (psycopg.Connection, optional):
+                If provided, uses this connection directly (caller manages
+                the transaction).
+
         Returns:
             List[int]: series_ids in the same order as the input.
 
@@ -850,7 +884,10 @@ class TimeDataClient:
             ...     {"name": "wind_power", "unit": "MW", "labels": {"turbine": "T02"}},
             ... ])
         """
-        return _create_series_many(series, conninfo=self._conninfo)
+        if conn is None:
+            with self._pool.connection() as c:
+                return _create_series_many(series, conn=c)
+        return _create_series_many(series, conn=conn)
 
     def write(
         self,
@@ -885,15 +922,15 @@ class TimeDataClient:
         Args:
             df: Long-format DataFrame (Pandas or Polars) containing routing
                 and data columns.
-            name_col: Column whose values map to ``series_table.name``.
+            name_col: Column whose values map to ``series.name``.
                 Defaults to ``"name"`` when *series_col* is not set.
                 Mutually exclusive with *series_col*.
-            label_cols: Columns whose values map to ``series_table.labels``.
+            label_cols: Columns whose values map to ``series.labels``.
                 If ``None`` (default), inferred as all columns not in
                 :data:`_WRITE_RESERVED_COLS`, not *name_col*, and not
                 *run_cols*.  Pass ``[]`` explicitly for series with no labels.
                 Mutually exclusive with *series_col*.
-            series_col: Column whose values are integer ``series_table.series_id``
+            series_col: Column whose values are integer ``series.series_id``
                 values.  When set, bypasses name/label resolution and only
                 validates that the IDs exist.  Mutually exclusive with
                 *name_col* and *label_cols*.
@@ -903,7 +940,7 @@ class TimeDataClient:
 
                 - Columns named ``workflow_id``, ``run_start_time``, or
                   ``run_finish_time`` map to the corresponding native
-                  ``runs_table`` fields, overriding the same-named kwargs.
+                  ``runs`` fields, overriding the same-named kwargs.
                 - All other columns are packed into ``run_params`` JSON,
                   merged on top of any global *run_params* kwarg.
                 - Any field absent from *run_cols* falls back to the
@@ -940,8 +977,8 @@ class TimeDataClient:
             IncompatibleUnitError: If *unit* is incompatible with any series unit.
 
         Example:
-            >>> # df columns: ['site', 'turbine_id', 'metric', 'valid_time', 'value']
-            >>> td.write(df, name_col="metric", label_cols=["site", "turbine_id"])
+            >>> # df columns: ['site', 'turbine_id', 'name', 'valid_time', 'value']
+            >>> td.write(df, name_col="name", label_cols=["site", "turbine_id"])
         """
         all_cols = list(df.columns)
 
@@ -1047,15 +1084,15 @@ class TimeDataClient:
             manifest: DataFrame (Pandas or Polars) specifying which series to
                 read.  Each unique combination of routing columns identifies
                 one series.
-            name_col: Column whose values map to ``series_table.name``.
+            name_col: Column whose values map to ``series.name``.
                 Defaults to ``"name"`` when *series_col* is not set.
                 Mutually exclusive with *series_col*.
-            label_cols: Columns whose values map to ``series_table.labels``.
+            label_cols: Columns whose values map to ``series.labels``.
                 If ``None`` (default), inferred as all columns not in
                 *name_col* and not reserved columns.
                 Pass ``[]`` explicitly for series with no labels.
                 Mutually exclusive with *series_col*.
-            series_col: Column whose values are integer ``series_table.series_id``
+            series_col: Column whose values are integer ``series.series_id``
                 values.  Bypasses name/label resolution.
                 Mutually exclusive with *name_col* and *label_cols*.
             start_valid: Start of valid time range (inclusive).
@@ -1102,10 +1139,10 @@ class TimeDataClient:
 
         Example:
             >>> manifest = pl.DataFrame({
-            ...     "metric": ["wind_power", "wind_power", "solar_power"],
+            ...     "name": ["wind_power", "wind_power", "solar_power"],
             ...     "site": ["Gotland", "Oslo", "Gotland"],
             ... })
-            >>> df = td.read(manifest, name_col="metric", label_cols=["site"],
+            >>> df = td.read(manifest, name_col="name", label_cols=["site"],
             ...              start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc))
         """
         return read_pipeline._read(
@@ -1175,7 +1212,7 @@ class TimeDataClient:
 
         Example:
             >>> df = td.read_relative(
-            ...     manifest, name_col="metric", label_cols=["site"],
+            ...     manifest, name_col="name", label_cols=["site"],
             ...     days_ahead=1, time_of_day=dt_time(6, 0),
             ...     start_valid=datetime(2026, 3, 1, tzinfo=timezone.utc),
             ... )
@@ -1212,13 +1249,20 @@ def _create(pg_conninfo: Optional[str] = None, ch_url: Optional[str] = None) -> 
 def _create_series_many(
     series_specs: List[Dict[str, Any]],
     conninfo: Optional[str] = None,
+    conn: Optional["psycopg.Connection"] = None,
 ) -> List[int]:
-    """Core bulk get-or-create. Single DB round-trip."""
-    if conninfo is None:
-        conninfo = _get_pg_conninfo()
+    """Core bulk get-or-create. Single DB round-trip.
+
+    If *conn* is provided, uses that connection directly (caller manages
+    the transaction).  Otherwise opens a new connection from *conninfo*.
+    """
     try:
-        with psycopg.connect(conninfo) as conn:
+        if conn is not None:
             return db.series.create_series(conn, series_specs)
+        if conninfo is None:
+            conninfo = _get_pg_conninfo()
+        with psycopg.connect(conninfo) as c:
+            return db.series.create_series(c, series_specs)
     except (errors.UndefinedTable, errors.UndefinedObject) as e:
         raise ValueError(
             "TimeDB tables do not exist. Please create the schema first by running:\n"
@@ -1234,6 +1278,7 @@ def _create_series(
     overlapping: bool = False,
     retention: str = "medium",
     conninfo: Optional[str] = None,
+    conn: Optional["psycopg.Connection"] = None,
 ) -> int:
     """Single-series convenience wrapper around _create_series_many."""
     return _create_series_many(
@@ -1241,6 +1286,7 @@ def _create_series(
           "description": description, "overlapping": overlapping,
           "retention": retention}],
         conninfo=conninfo,
+        conn=conn,
     )[0]
 
 

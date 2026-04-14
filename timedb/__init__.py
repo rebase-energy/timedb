@@ -18,7 +18,7 @@ Explicit client usage (for custom connection settings):
     td.get_series('wind_power').read()
 
 Environment variables:
-    TIMEDB_PG_DSN  - PostgreSQL connection string (series_table)
+    TIMEDB_PG_DSN  - PostgreSQL connection string (series)
     TIMEDB_CH_URL  - ClickHouse DSN (runs + all values tables)
 """
 

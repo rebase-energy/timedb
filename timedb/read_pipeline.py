@@ -6,13 +6,14 @@ batches SQL execution, and assembles the final result by joining data with
 series metadata.
 """
 from datetime import datetime, timedelta, time as dt_time
+from time import perf_counter
 from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 
-from . import db
+from . import db, profiling
 from .connection import _get_connection
 from .db.series import SeriesRegistry
 
@@ -156,6 +157,7 @@ def _resolve_manifest(
         columns plus ``_series_id``, ``_unit``, ``_table``, ``_overlapping``,
         and series_metas maps series_id -> cached metadata dict.
     """
+    _t_resolve = perf_counter()
     all_cols = list(pl_manifest.columns)
     registry = SeriesRegistry()
 
@@ -163,7 +165,10 @@ def _resolve_manifest(
         # Fast path: series IDs
         pl_manifest = pl_manifest.with_columns(pl.col(series_col).cast(pl.Int64))
         unique_sids = pl_manifest[series_col].unique().to_list()
-        identity_cols = [series_col]
+        # When series_col == "series_id", skip the duplicate column —
+        # _series_id will be renamed to "series_id" in the output.
+        include_user_col = series_col != "series_id"
+        identity_cols = [series_col] if include_user_col else []
 
         with _get_connection(_pool) as conn:
             found_ids = db.series.resolve_series_by_ids(conn, unique_sids, registry)
@@ -174,12 +179,14 @@ def _resolve_manifest(
             )
 
         mapping_rows: Dict[str, list] = {
-            series_col: [],
             "_series_id": [], "_unit": [], "_table": [], "_overlapping": [],
         }
+        if include_user_col:
+            mapping_rows[series_col] = []
         for sid in unique_sids:
             meta = registry.get_cached(sid)
-            mapping_rows[series_col].append(sid)
+            if include_user_col:
+                mapping_rows[series_col].append(sid)
             mapping_rows["_series_id"].append(sid)
             mapping_rows["_unit"].append(meta["unit"])
             mapping_rows["_table"].append(meta["table"])
@@ -244,6 +251,7 @@ def _resolve_manifest(
     mapping_df = pl.DataFrame(mapping_rows, schema=_mapping_schema)
     series_metas = {sid: registry.get_cached(sid) for sid in mapping_df["_series_id"].unique().to_list()}
 
+    profiling._record(profiling.PHASE_READ_SERIES_RESOLVE, perf_counter() - _t_resolve)
     return mapping_df, series_metas
 
 
@@ -259,6 +267,7 @@ def _build_read_result(
     series_col: Optional[str],
 ) -> pl.DataFrame:
     """Join CH data with metadata and order columns for the final result."""
+    _t_build = perf_counter()
     ch_df = pl.from_arrow(ch_data)
 
     # Build column order (same logic for empty and non-empty paths)
@@ -266,32 +275,45 @@ def _build_read_result(
         id_cols = [series_col]
     else:
         id_cols = [name_col] + label_cols
-    meta_cols_list = ["unit", "series_id"]
-    data_cols = [c for c in ch_df.columns if c not in id_cols and c not in meta_cols_list]
+    # When series_col == "series_id", it's already in id_cols — don't duplicate in meta
+    meta_cols_list = ["unit"] + (["series_id"] if "series_id" not in id_cols else [])
+    all_output_cols = set(id_cols) | set(meta_cols_list)
+    data_cols = [c for c in ch_df.columns if c not in all_output_cols]
     col_order = id_cols + meta_cols_list + data_cols
 
+    # Select internal columns + user identity columns for the join.
+    # When series_col is used: _series_id is renamed to "series_id" (for the join),
+    # and if series_col != "series_id", the user's column is also included.
+    # When series_col == "series_id", we skip it to avoid duplication with the rename.
+    if series_col and series_col != "series_id":
+        extra_cols = [series_col]
+    elif series_col:
+        extra_cols = []
+    else:
+        extra_cols = [name_col] + label_cols
+
+    select_cols = ["_series_id", "_unit"] + extra_cols
+    rename_map = {"_series_id": "series_id", "_unit": "unit"}
+
     if ch_df.is_empty():
-        meta_for_schema = mapping_df.select(
-            ["_series_id", "_unit"] +
-            ([series_col] if series_col else [name_col] + label_cols)
-        ).rename({"_series_id": "series_id", "_unit": "unit"})
+        meta_for_schema = mapping_df.select(select_cols).rename(rename_map)
         schema = {}
         for c in col_order:
             if c in meta_for_schema.columns:
                 schema[c] = meta_for_schema.schema[c]
             elif c in ch_df.columns:
                 schema[c] = ch_df.schema[c]
+        profiling._record(profiling.PHASE_READ_BUILD_RESULT, perf_counter() - _t_build)
         return pl.DataFrame(schema=schema).head(0)
 
     # Left join: CH data on left, mapping on right (many-to-one, preserves all data rows)
-    meta_for_join = mapping_df.select(
-        ["_series_id", "_unit"] +
-        ([series_col] if series_col else [name_col] + label_cols)
-    ).unique().rename({"_series_id": "series_id", "_unit": "unit"})
+    meta_for_join = mapping_df.select(select_cols).unique().rename(rename_map)
 
     result = ch_df.join(meta_for_join, on="series_id", how="left")
 
-    return result.select(col_order)
+    result = result.select(col_order)
+    profiling._record(profiling.PHASE_READ_BUILD_RESULT, perf_counter() - _t_build)
+    return result
 
 
 # ---------------------------------------------------------------------------
