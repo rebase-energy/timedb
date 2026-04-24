@@ -17,37 +17,37 @@ Usage:
     profiling.disable()
 """
 
-from typing import Dict
 
 # ── Insert phase constants ────────────────────────────────────────────────────
 
-PHASE_INSERT_NORMALIZE      = "insert.normalize"       # normalize_insert_input() — Polars preparation in _insert()
+PHASE_INSERT_NORMALIZE = "insert.normalize"  # normalize_insert_input() — Polars preparation in _insert()
 PHASE_INSERT_RUN_METADATA = "insert.run_metadata"  # _insert_run_metadata() — CH insert for run records
-PHASE_INSERT_ARROW          = "insert.arrow"           # ch_client.insert_arrow() — bulk Arrow transfer to ClickHouse
-PHASE_INSERT_TOTAL          = "insert.total"           # Full insert_tables() wall time
+PHASE_INSERT_ARROW = "insert.arrow"  # ch_client.insert_arrow() — bulk Arrow transfer to ClickHouse
+PHASE_INSERT_TOTAL = "insert.total"  # Full insert_tables() wall time
 
 # ── Write phase constants ─────────────────────────────────────────────────────
 
 PHASE_WRITE_SERIES_RESOLVE = "write.series_resolve"  # resolve_series() DB call (one round-trip for all series)
-PHASE_WRITE_NORMALIZE      = "write.normalize"       # normalize_write_input() Polars join + decorate pass
-PHASE_WRITE_TOTAL          = "write.total"           # Full _write() wall time (excludes SDK overhead above _write)
+PHASE_WRITE_NORMALIZE = "write.normalize"  # normalize_write_input() Polars join + decorate pass
+PHASE_WRITE_TOTAL = "write.total"  # Full _write() wall time (excludes SDK overhead above _write)
 
 # ── Read phase constants ──────────────────────────────────────────────────────
 
 PHASE_READ_SERIES_RESOLVE = "read.series_resolve"  # _resolve_manifest() — series lookup + registry build
-PHASE_READ_SQL_EXEC       = "read.sql_exec"         # ch_client.query_arrow() — execution + Arrow transfer in one call
-PHASE_READ_BUILD_ARROW    = "read.build_arrow"       # result.select(columns) — Arrow column selection
-PHASE_READ_TO_POLARS      = "read.to_polars"         # pl.from_arrow() at SDK boundary
-PHASE_READ_BUILD_RESULT   = "read.build_result"      # _build_read_result() — join CH data with metadata
-PHASE_READ_TOTAL          = "read.total"              # Full _fetch_ch_arrow() wall time
+PHASE_READ_SQL_EXEC = "read.sql_exec"  # ch_client.query_arrow() — execution + Arrow transfer in one call
+PHASE_READ_BUILD_ARROW = "read.build_arrow"  # result.select(columns) — Arrow column selection
+PHASE_READ_TO_POLARS = "read.to_polars"  # pl.from_arrow() at SDK boundary
+PHASE_READ_BUILD_RESULT = "read.build_result"  # _build_read_result() — join CH data with metadata
+PHASE_READ_TOTAL = "read.total"  # Full _fetch_ch_arrow() wall time
 
 # ── Internal state ────────────────────────────────────────────────────────────
 
 _enabled: bool = False
-_timings: Dict[str, float] = {}
+_timings: dict[str, float] = {}
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def enable() -> None:
     """Enable profiling collection. Call before each trial."""
@@ -74,12 +74,13 @@ def is_enabled() -> bool:
     return _enabled
 
 
-def collect() -> Dict[str, float]:
+def collect() -> dict[str, float]:
     """Return a copy of accumulated timings (in seconds)."""
     return dict(_timings)
 
 
 # ── Internal recording (called by DB/SDK layer) ───────────────────────────────
+
 
 def _record(phase: str, elapsed_s: float) -> None:
     """

@@ -1,107 +1,92 @@
 -- TimeDB ClickHouse Schema
--- All values tables and run metadata live here.
--- The series table stays in PostgreSQL (public schema).
+-- One unified events table, one MV that collapses corrections, one tiny
+-- run → series mapping. Run metadata lives in energydb.runs (PostgreSQL).
 
 -- ============================================================================
--- 1) RUNS TABLE
+-- 1) EVENTS — unified time-series store
 -- ============================================================================
--- Append-only run metadata. ReplacingMergeTree deduplicates retried inserts.
+-- Append-only. Reads go through events_by_kt (MV) for aggregation -- the raw
+-- events table is only needed for correction-chain audits.
+--
+-- Partition key: (retention, toYYYYMM(valid_time)) — keeps tiers physically
+-- separate so TTL drops whole partitions, and retention-filtered reads prune
+-- down to one tier.
+--
+-- Sort key: (series_id, valid_time, knowledge_time, change_time) — works for
+-- both flat (one kt per vt, collapses naturally) and overlapping series.
+--
+-- TTL: computed per row by retention. Still drops whole partitions because
+-- (retention, toYYYYMM(valid_time)) aligns TTL boundaries with partitions.
 
-CREATE TABLE IF NOT EXISTS runs (
-    run_id            String,
-    workflow_id       Nullable(String),
-    run_start_time    Nullable(DateTime64(6, 'UTC')),
-    run_finish_time   Nullable(DateTime64(6, 'UTC')),
-    run_params        String DEFAULT '{}',
-    inserted_at       DateTime64(6, 'UTC') DEFAULT now64(6)
+CREATE TABLE IF NOT EXISTS events (
+    series_id      UInt64                                CODEC(Delta, ZSTD(1)),
+    valid_time     DateTime64(6, 'UTC')                  CODEC(DoubleDelta, ZSTD(1)),
+    knowledge_time DateTime64(6, 'UTC')                  CODEC(Delta, ZSTD(1)),
+    change_time    DateTime64(6, 'UTC')                  CODEC(DoubleDelta, ZSTD(1)),
+    value          Float64 DEFAULT nan                   CODEC(Gorilla, ZSTD(1)),
+    valid_time_end DateTime64(6, 'UTC') DEFAULT toDateTime64('2200-01-01 00:00:00', 6, 'UTC')
+                                                         CODEC(DoubleDelta, ZSTD(1)),
+    run_id         UInt64                                CODEC(ZSTD(1)),
+    changed_by     LowCardinality(String),
+    annotation     String                                CODEC(ZSTD(3)),
+    retention      LowCardinality(String)
 )
-ENGINE = ReplacingMergeTree(inserted_at)
-ORDER BY run_id
-SETTINGS index_granularity = 8192;
-
-
--- ============================================================================
--- 2) FLAT (Fact Table)
--- ============================================================================
--- Append-only immutable facts. Use argMax(value, change_time) to read latest.
--- change_time in ORDER BY preserves full correction history.
-
-CREATE TABLE IF NOT EXISTS flat (
-    series_id      Int64                          CODEC(Delta, ZSTD(3)),
-    valid_time     DateTime64(6, 'UTC')           CODEC(DoubleDelta, ZSTD(3)),
-    valid_time_end Nullable(DateTime64(6, 'UTC')) CODEC(DoubleDelta, ZSTD(3)),
-    value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
-    knowledge_time DateTime64(6, 'UTC')           CODEC(DoubleDelta, ZSTD(3)),
-    change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    run_id         String                         CODEC(ZSTD(3)),
-    changed_by     Nullable(String)               CODEC(ZSTD(3)),
-    annotation     Nullable(String)               CODEC(ZSTD(3)),
-    metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(valid_time)
-ORDER BY (series_id, valid_time, change_time)
-SETTINGS index_granularity = 8192;
-
-
--- ============================================================================
--- 3) OVERLAPPING HYPERTABLES (3 Retention Tiers)
--- ============================================================================
--- Pure-append forecast versioning. Use argMax(value, (knowledge_time, change_time))
--- to read the latest forecast. TTL drops old data by valid_time.
-
-CREATE TABLE IF NOT EXISTS overlapping_short (
-    series_id      Int64                          CODEC(Delta, ZSTD(3)),
-    valid_time     DateTime64(6, 'UTC')           CODEC(DoubleDelta, ZSTD(3)),
-    valid_time_end Nullable(DateTime64(6, 'UTC')) CODEC(DoubleDelta, ZSTD(3)),
-    value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
-    knowledge_time DateTime64(6, 'UTC')           CODEC(Delta, ZSTD(3)),
-    change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    run_id         String                         CODEC(ZSTD(3)),
-    changed_by     Nullable(String)               CODEC(ZSTD(3)),
-    annotation     Nullable(String)               CODEC(ZSTD(3)),
-    metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(valid_time)
+ENGINE = MergeTree
+PARTITION BY (retention, toYYYYMM(valid_time))
 ORDER BY (series_id, valid_time, knowledge_time, change_time)
-TTL toDate(valid_time) + INTERVAL 6 MONTH
+TTL toDate(valid_time) + toIntervalDay(
+      multiIf(retention = 'short', 180,
+              retention = 'medium', 1095,
+              1825))
 SETTINGS index_granularity = 8192;
 
 
-CREATE TABLE IF NOT EXISTS overlapping_medium (
-    series_id      Int64                          CODEC(Delta, ZSTD(3)),
-    valid_time     DateTime64(6, 'UTC')           CODEC(DoubleDelta, ZSTD(3)),
-    valid_time_end Nullable(DateTime64(6, 'UTC')) CODEC(DoubleDelta, ZSTD(3)),
-    value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
-    knowledge_time DateTime64(6, 'UTC')           CODEC(Delta, ZSTD(3)),
-    change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    run_id         String                         CODEC(ZSTD(3)),
-    changed_by     Nullable(String)               CODEC(ZSTD(3)),
-    annotation     Nullable(String)               CODEC(ZSTD(3)),
-    metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
+-- ============================================================================
+-- 2) EVENTS_BY_KT — AggregatingMergeTree target for the correction-collapse MV
+-- ============================================================================
+-- One row per (series_id, valid_time, knowledge_time) with an
+-- AggregateFunction(argMax, Float64, DateTime64) state that holds the value of
+-- the latest change_time. Use argMaxMerge(v) at read time.
+
+CREATE TABLE IF NOT EXISTS events_by_kt (
+    retention       LowCardinality(String),
+    series_id       UInt64,
+    valid_time      DateTime64(6, 'UTC'),
+    knowledge_time  DateTime64(6, 'UTC'),
+    v               AggregateFunction(argMax, Float64, DateTime64(6, 'UTC'))
 )
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(valid_time)
-ORDER BY (series_id, valid_time, knowledge_time, change_time)
-TTL toDate(valid_time) + INTERVAL 3 YEAR
+ENGINE = AggregatingMergeTree
+PARTITION BY (retention, toYYYYMM(valid_time))
+ORDER BY (series_id, valid_time, knowledge_time)
+TTL toDate(valid_time) + toIntervalDay(
+      multiIf(retention = 'short', 180,
+              retention = 'medium', 1095,
+              1825))
 SETTINGS index_granularity = 8192;
 
 
-CREATE TABLE IF NOT EXISTS overlapping_long (
-    series_id      Int64                          CODEC(Delta, ZSTD(3)),
-    valid_time     DateTime64(6, 'UTC')           CODEC(DoubleDelta, ZSTD(3)),
-    valid_time_end Nullable(DateTime64(6, 'UTC')) CODEC(DoubleDelta, ZSTD(3)),
-    value          Float64 DEFAULT nan            CODEC(Gorilla, ZSTD(3)),
-    knowledge_time DateTime64(6, 'UTC')           CODEC(Delta, ZSTD(3)),
-    change_time    DateTime64(6, 'UTC') DEFAULT now64(6) CODEC(DoubleDelta, ZSTD(3)),
-    run_id         String                         CODEC(ZSTD(3)),
-    changed_by     Nullable(String)               CODEC(ZSTD(3)),
-    annotation     Nullable(String)               CODEC(ZSTD(3)),
-    metadata       String DEFAULT '{}'            CODEC(ZSTD(3))
+CREATE MATERIALIZED VIEW IF NOT EXISTS events_by_kt_mv TO events_by_kt AS
+SELECT
+    retention,
+    series_id,
+    valid_time,
+    knowledge_time,
+    argMaxState(value, change_time) AS v
+FROM events
+GROUP BY retention, series_id, valid_time, knowledge_time;
+
+
+-- ============================================================================
+-- 3) RUN_SERIES — which runs touched which series
+-- ============================================================================
+-- Tiny mapping table. Replaces the FINAL + DISTINCT join pattern that was used
+-- against the data table for "runs for this series" lookups.
+
+CREATE TABLE IF NOT EXISTS run_series (
+    series_id   UInt64,
+    run_id      UInt64,
+    first_seen  DateTime64(6, 'UTC') DEFAULT now64(6)
 )
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(valid_time)
-ORDER BY (series_id, valid_time, knowledge_time, change_time)
-TTL toDate(valid_time) + INTERVAL 5 YEAR
+ENGINE = ReplacingMergeTree(first_seen)
+ORDER BY (series_id, run_id)
 SETTINGS index_granularity = 8192;
