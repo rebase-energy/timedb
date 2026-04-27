@@ -1,20 +1,16 @@
 """Bitemporal read path for timedb.
 
-All reads query the raw ``events`` table with single-pass aggregation. CH's
-tuple-argMax handles the "latest kt + latest ct" semantic in one GROUP BY.
-
-Output shapes:
+Output shape by flag combination:
 
     include_updates=False, include_knowledge_time=False
-        → (series_id, valid_time, value) — latest value per (sid, vt).
+        (series_id, valid_time, value)
     include_updates=False, include_knowledge_time=True
-        → (series_id, knowledge_time, valid_time, value) — one row per kt.
+        (series_id, knowledge_time, valid_time, value)
     include_updates=True,  include_knowledge_time=False
-        → (series_id, valid_time, change_time, value, changed_by, annotation)
-          correction chain of the winning forecast per (series_id, valid_time).
+        (series_id, valid_time, change_time, value, changed_by, annotation)
     include_updates=True,  include_knowledge_time=True
-        → (series_id, valid_time, knowledge_time, change_time, value,
-           changed_by, annotation) — full bitemporal audit.
+        (series_id, valid_time, knowledge_time, change_time, value,
+         changed_by, annotation)
 """
 
 from __future__ import annotations
@@ -103,35 +99,40 @@ def _where(
 
 
 # ---------------------------------------------------------------------------
-# Aggregate reads (latest + history) on raw events
+# Aggregate reads
 # ---------------------------------------------------------------------------
 
 
 def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
     """Latest value per (series_id, valid_time).
 
-    Tuple-argMax picks the value of the row with the largest
-    ``(knowledge_time, change_time)`` pair — latest issue, latest correction
-    within it. Single-pass aggregation on raw events.
+    The tuple-argMax picks the row with the largest (knowledge_time,
+    change_time) — latest issue, latest correction within it.
     """
+    # GROUP BY columns are a primary-key prefix; optimize_aggregation_in_order
+    # streams the aggregation rather than building a full hash table.
     sql = f"""
     SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
     FROM events
     {where}
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
+    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
 
 def _read_history(ch_client, where: str, params: dict) -> pa.Table:
     """One row per (series_id, knowledge_time, valid_time)."""
+    # No final ORDER BY: emits in primary-key order (sid, vt, kt) directly.
+    # A re-sort to (sid, kt, vt) would buffer the entire result; callers that
+    # need a different order should sort post-aggregation in Polars.
     sql = f"""
     SELECT series_id, knowledge_time, valid_time, argMax(value, change_time) AS value
     FROM events
     {where}
     GROUP BY series_id, valid_time, knowledge_time
-    ORDER BY series_id, knowledge_time, valid_time
+    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(
         ch_client,
@@ -142,20 +143,18 @@ def _read_history(ch_client, where: str, params: dict) -> pa.Table:
 
 
 # ---------------------------------------------------------------------------
-# Raw-events reads (correction audits)
+# Correction-chain reads
 # ---------------------------------------------------------------------------
 
 
 def _read_updates_winning(ch_client, where: str, params: dict) -> pa.Table:
     """Correction chain of the winning forecast per (series_id, valid_time).
 
-    Semi-join rewrite: the inner query scans the sort-key prefix and picks
-    max(knowledge_time) per group; the outer filter is a tuple match against
-    the primary key (seek, not sort). Avoids the window-materialize cost of
-    the old dense_rank() approach.
-
-    Only emits "real" state transitions (lagInFrame distinct-from-prev).
+    Emits only real state transitions (consecutive duplicates collapsed by
+    the lagInFrame distinct-from-previous filter).
     """
+    # Semi-join: the inner query picks max(knowledge_time) per (sid, vt) along
+    # the sort-key prefix; the outer filter is a tuple PK match (seek, not sort).
     sql = f"""
     SELECT series_id, valid_time, change_time, value, changed_by, annotation
     FROM (
@@ -187,11 +186,7 @@ def _read_updates_winning(ch_client, where: str, params: dict) -> pa.Table:
 
 
 def _read_updates_full(ch_client, where: str, params: dict) -> pa.Table:
-    """Full bitemporal audit: every real state transition per (series_id, kt, vt).
-
-    Explicit column projection inside the windowed subquery — ``annotation``
-    and other wide columns aren't dragged through the window when unused.
-    """
+    """Full bitemporal audit: every state transition per (series_id, kt, vt)."""
     sql = f"""
     SELECT series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation
     FROM (
@@ -217,7 +212,7 @@ def _read_updates_full(ch_client, where: str, params: dict) -> pa.Table:
 
 
 # ---------------------------------------------------------------------------
-# Relative read (per-window knowledge_time cutoff)
+# Relative read
 # ---------------------------------------------------------------------------
 
 
@@ -256,12 +251,13 @@ def _read_relative_sql(
             {{offset_secs:Int64}})
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
+    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
 
 # ---------------------------------------------------------------------------
-# Public dispatch
+# Public entry points
 # ---------------------------------------------------------------------------
 
 
