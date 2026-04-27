@@ -1,16 +1,14 @@
 """Bitemporal read path for timedb.
 
-One unified code path. ``include_knowledge_time`` controls whether the output
-collapses to ``(series_id, valid_time)`` or keeps ``knowledge_time`` as a
-dimension. ``include_updates`` switches between the MV-backed "winning value"
-view and the raw-events correction audit.
+All reads query the raw ``events`` table with single-pass aggregation. CH's
+tuple-argMax handles the "latest kt + latest ct" semantic in one GROUP BY.
 
 Output shapes:
 
     include_updates=False, include_knowledge_time=False
-        → (series_id, valid_time, value) — MV-backed latest.
+        → (series_id, valid_time, value) — latest value per (sid, vt).
     include_updates=False, include_knowledge_time=True
-        → (series_id, knowledge_time, valid_time, value) — MV-backed history.
+        → (series_id, knowledge_time, valid_time, value) — one row per kt.
     include_updates=True,  include_knowledge_time=False
         → (series_id, valid_time, change_time, value, changed_by, annotation)
           correction chain of the winning forecast per (series_id, valid_time).
@@ -21,6 +19,7 @@ Output shapes:
 
 from __future__ import annotations
 
+import time as _time
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from datetime import time as dt_time
@@ -28,6 +27,8 @@ from datetime import time as dt_time
 import numpy as np
 import polars as pl
 import pyarrow as pa
+
+from . import profiling
 
 _TS_TYPE = pa.timestamp("us", tz="UTC")
 _COL_ARROW_TYPE: dict[str, pa.DataType] = {
@@ -46,7 +47,14 @@ def _empty(cols: list[str]) -> pa.Table:
 
 
 def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
+    _prof = profiling._enabled
+
+    _t = _time.perf_counter() if _prof else 0.0
     result = ch_client.query_arrow(sql, parameters=params)
+    if _prof:
+        profiling._record(profiling.PHASE_READ_SQL_EXEC, _time.perf_counter() - _t)
+
+    _t = _time.perf_counter() if _prof else 0.0
     table = _empty(cols) if result.num_rows == 0 else result.select(cols)
     if "value" in table.schema.names:
         idx = table.schema.get_field_index("value")
@@ -54,6 +62,8 @@ def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
         mask = np.isnan(arr)
         if mask.any():
             table = table.set_column(idx, "value", pa.array(arr, mask=mask))
+    if _prof:
+        profiling._record(profiling.PHASE_READ_BUILD_ARROW, _time.perf_counter() - _t)
     return table
 
 
@@ -93,26 +103,21 @@ def _where(
 
 
 # ---------------------------------------------------------------------------
-# MV-backed reads (latest + history)
+# Aggregate reads (latest + history) on raw events
 # ---------------------------------------------------------------------------
 
 
 def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
-    """Latest value per (series_id, valid_time) via events_by_kt.
+    """Latest value per (series_id, valid_time).
 
-    Two-stage: inner merges AggregateFunction state per (sid, vt, kt), outer
-    picks the value of the latest knowledge_time per (sid, vt). ClickHouse
-    does not allow one aggregate function nested inside another, so the merge
-    and the argMax must be in separate scopes.
+    Tuple-argMax picks the value of the row with the largest
+    ``(knowledge_time, change_time)`` pair — latest issue, latest correction
+    within it. Single-pass aggregation on raw events.
     """
     sql = f"""
-    SELECT series_id, valid_time, argMax(value, knowledge_time) AS value
-    FROM (
-        SELECT series_id, valid_time, knowledge_time, argMaxMerge(v) AS value
-        FROM events_by_kt
-        {where}
-        GROUP BY series_id, valid_time, knowledge_time
-    )
+    SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
+    FROM events
+    {where}
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
     """
@@ -120,10 +125,10 @@ def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
 
 
 def _read_history(ch_client, where: str, params: dict) -> pa.Table:
-    """One row per (series_id, knowledge_time, valid_time) via events_by_kt."""
+    """One row per (series_id, knowledge_time, valid_time)."""
     sql = f"""
-    SELECT series_id, knowledge_time, valid_time, argMaxMerge(v) AS value
-    FROM events_by_kt
+    SELECT series_id, knowledge_time, valid_time, argMax(value, change_time) AS value
+    FROM events
     {where}
     GROUP BY series_id, valid_time, knowledge_time
     ORDER BY series_id, knowledge_time, valid_time
@@ -241,18 +246,14 @@ def _read_relative_sql(
         }
     )
     sql = f"""
-    SELECT series_id, valid_time, argMax(value, knowledge_time) AS value
-    FROM (
-        SELECT series_id, valid_time, knowledge_time, argMaxMerge(v) AS value
-        FROM events_by_kt
-        {where}
-          AND knowledge_time <= addSeconds(
-                toStartOfInterval(valid_time,
-                    toIntervalSecond({{window_secs:Int64}}),
-                    {{start_window:DateTime64(6, 'UTC')}}),
-                {{offset_secs:Int64}})
-        GROUP BY series_id, valid_time, knowledge_time
-    )
+    SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
+    FROM events
+    {where}
+      AND knowledge_time <= addSeconds(
+            toStartOfInterval(valid_time,
+                toIntervalSecond({{window_secs:Int64}}),
+                {{start_window:DateTime64(6, 'UTC')}}),
+            {{offset_secs:Int64}})
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
     """
@@ -276,6 +277,9 @@ def read(
     include_updates: bool = False,
     include_knowledge_time: bool = False,
 ) -> pl.DataFrame:
+    _prof = profiling._enabled
+    _t_total = _time.perf_counter() if _prof else 0.0
+
     series_ids = list(series_ids)
     if not series_ids:
         return pl.DataFrame()
@@ -302,7 +306,12 @@ def read(
             else _read_latest(ch_client, where, params)
         )
 
+    _t = _time.perf_counter() if _prof else 0.0
     result = pl.from_arrow(arrow)
+    if _prof:
+        profiling._record(profiling.PHASE_READ_TO_POLARS, _time.perf_counter() - _t)
+        profiling._record(profiling.PHASE_READ_TOTAL, _time.perf_counter() - _t_total)
+
     assert isinstance(result, pl.DataFrame)
     return result
 
@@ -349,6 +358,9 @@ def read_relative(
     if not series_ids:
         return pl.DataFrame()
 
+    _prof = profiling._enabled
+    _t_total = _time.perf_counter() if _prof else 0.0
+
     arrow = _read_relative_sql(
         ch_client,
         series_ids=series_ids,
@@ -359,6 +371,12 @@ def read_relative(
         start_valid=start_valid,
         end_valid=end_valid,
     )
+
+    _t = _time.perf_counter() if _prof else 0.0
     result = pl.from_arrow(arrow)
+    if _prof:
+        profiling._record(profiling.PHASE_READ_TO_POLARS, _time.perf_counter() - _t)
+        profiling._record(profiling.PHASE_READ_TOTAL, _time.perf_counter() - _t_total)
+
     assert isinstance(result, pl.DataFrame)
     return result
