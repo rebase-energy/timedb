@@ -7,11 +7,14 @@ resolution — both are the caller's responsibility (energydb).
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 import pandas as pd
 import polars as pl
 from uuid6 import uuid7
+
+from . import profiling
 
 _EVENTS_COLUMNS = [
     "series_id",
@@ -33,8 +36,13 @@ _CH_INSERT_SETTINGS = {"max_partitions_per_insert_block": 1000}
 
 
 def _generate_run_id() -> int:
-    """Client-side UInt64 run id: uuid7 truncated to 64 bits. Sortable by time."""
-    return uuid7().int & ((1 << 64) - 1)
+    """Client-side run id: top 63 bits of a uuid7.
+
+    Time-sortable (uuid7 has the ms timestamp in the high bits) and fits a
+    signed Int64 so the same value passes cleanly through the energydb PG
+    ``BIGINT`` and the timedb CH ``UInt64`` columns.
+    """
+    return uuid7().int >> 65
 
 
 def _validate_columns(df: pl.DataFrame) -> None:
@@ -77,6 +85,10 @@ def write(
     ``(series_id, run_id)`` pairs are also written to ``run_series`` so that
     "which runs touched this series" lookups don't need to scan ``events``.
     """
+    _prof = profiling._enabled
+    _t_total = time.perf_counter() if _prof else 0.0
+    _t_norm = time.perf_counter() if _prof else 0.0
+
     pl_df: pl.DataFrame = pl.from_pandas(df) if isinstance(df, pd.DataFrame) else df
     _validate_columns(pl_df)
 
@@ -127,7 +139,20 @@ def write(
     events_arrow = pl_df.select(events_cols).to_arrow().combine_chunks()
     rs_arrow = pl_df.select(["series_id", "run_id"]).unique().to_arrow().combine_chunks()
 
+    if _prof:
+        profiling._record(profiling.PHASE_WRITE_NORMALIZE, time.perf_counter() - _t_norm)
+
     if events_arrow.num_rows > 0:
+        _t = time.perf_counter() if _prof else 0.0
         ch_client.insert_arrow("events", events_arrow, settings=_CH_INSERT_SETTINGS)
+        if _prof:
+            profiling._record(profiling.PHASE_WRITE_EVENTS_INSERT, time.perf_counter() - _t)
+
     if rs_arrow.num_rows > 0:
+        _t = time.perf_counter() if _prof else 0.0
         ch_client.insert_arrow("run_series", rs_arrow, settings=_CH_INSERT_SETTINGS)
+        if _prof:
+            profiling._record(profiling.PHASE_WRITE_RUN_SERIES_INSERT, time.perf_counter() - _t)
+
+    if _prof:
+        profiling._record(profiling.PHASE_WRITE_TOTAL, time.perf_counter() - _t_total)

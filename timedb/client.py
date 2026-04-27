@@ -30,7 +30,7 @@ def _get_ch_url() -> str:
 
 _DDL = resources.files("timedb").joinpath("sql", "ch_create_tables.sql").read_text(encoding="utf-8")
 
-_CH_TABLES = ["events", "events_by_kt", "events_by_kt_mv", "run_series"]
+_CH_TABLES = ["events", "run_series"]
 
 
 class TimeDBClient:
@@ -43,7 +43,7 @@ class TimeDBClient:
     # ------------------------------------------------------------------
 
     def create(self) -> None:
-        """Create the events table, events_by_kt MV, and run_series mapping."""
+        """Create the events table and run_series mapping."""
         for statement in _DDL.split(";"):
             s = statement.strip()
             if not s:
@@ -54,9 +54,8 @@ class TimeDBClient:
             self._ch.command(s)
 
     def delete(self) -> None:
-        """Drop the MV first, then its target table, then the others."""
-        # Drop in dependency order: MV before its target table.
-        for name in ["events_by_kt_mv", "events_by_kt", "events", "run_series"]:
+        """Drop both CH tables."""
+        for name in _CH_TABLES:
             self._ch.command(f"DROP TABLE IF EXISTS {name}")
 
     # ------------------------------------------------------------------
