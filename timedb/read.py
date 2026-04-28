@@ -99,7 +99,7 @@ def _where(
 
 
 # ---------------------------------------------------------------------------
-# Aggregate reads
+# Latest reads — one row per (series_id, valid_time)
 # ---------------------------------------------------------------------------
 
 
@@ -109,45 +109,17 @@ def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
     The tuple-argMax picks the row with the largest (knowledge_time,
     change_time) — latest issue, latest correction within it.
     """
-    # GROUP BY columns are a primary-key prefix; optimize_aggregation_in_order
-    # streams the aggregation rather than building a full hash table.
     sql = f"""
     SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
     FROM events
     {where}
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
-    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
 
-def _read_history(ch_client, where: str, params: dict) -> pa.Table:
-    """One row per (series_id, knowledge_time, valid_time)."""
-    # No final ORDER BY: emits in primary-key order (sid, vt, kt) directly.
-    # A re-sort to (sid, kt, vt) would buffer the entire result; callers that
-    # need a different order should sort post-aggregation in Polars.
-    sql = f"""
-    SELECT series_id, knowledge_time, valid_time, argMax(value, change_time) AS value
-    FROM events
-    {where}
-    GROUP BY series_id, valid_time, knowledge_time
-    SETTINGS optimize_aggregation_in_order = 1
-    """
-    return _fetch(
-        ch_client,
-        sql,
-        params,
-        ["series_id", "knowledge_time", "valid_time", "value"],
-    )
-
-
-# ---------------------------------------------------------------------------
-# Correction-chain reads
-# ---------------------------------------------------------------------------
-
-
-def _read_updates_winning(ch_client, where: str, params: dict) -> pa.Table:
+def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
     """Correction chain of the winning forecast per (series_id, valid_time).
 
     Emits only real state transitions (consecutive duplicates collapsed by
@@ -185,7 +157,34 @@ def _read_updates_winning(ch_client, where: str, params: dict) -> pa.Table:
     )
 
 
-def _read_updates_full(ch_client, where: str, params: dict) -> pa.Table:
+# ---------------------------------------------------------------------------
+# Overlapping reads — one row per (series_id, valid_time, knowledge_time)
+# ---------------------------------------------------------------------------
+
+
+def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
+    """One row per (series_id, knowledge_time, valid_time)."""
+    # LIMIT 1 BY streams a "first row per group" pass: the input arrives in
+    # (sid, vt, kt, ct) order, the ORDER BY reverses ct so the row with the
+    # largest change_time is the first one seen per (sid, vt, kt) group, and
+    # LIMIT 1 BY emits that and skips the rest. Equivalent to argMax(value,
+    # change_time) GROUP BY (sid, vt, kt), but with no aggregation state.
+    sql = f"""
+    SELECT series_id, knowledge_time, valid_time, value
+    FROM events
+    {where}
+    ORDER BY series_id, valid_time, knowledge_time, change_time DESC
+    LIMIT 1 BY series_id, valid_time, knowledge_time
+    """
+    return _fetch(
+        ch_client,
+        sql,
+        params,
+        ["series_id", "knowledge_time", "valid_time", "value"],
+    )
+
+
+def _read_overlapping_with_changes(ch_client, where: str, params: dict) -> pa.Table:
     """Full bitemporal audit: every state transition per (series_id, kt, vt)."""
     sql = f"""
     SELECT series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation
@@ -251,7 +250,6 @@ def _read_relative_sql(
             {{offset_secs:Int64}})
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
-    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
@@ -291,13 +289,13 @@ def read(
 
     if include_updates:
         arrow = (
-            _read_updates_full(ch_client, where, params)
+            _read_overlapping_with_changes(ch_client, where, params)
             if include_knowledge_time
-            else _read_updates_winning(ch_client, where, params)
+            else _read_latest_with_changes(ch_client, where, params)
         )
     else:
         arrow = (
-            _read_history(ch_client, where, params)
+            _read_overlapping(ch_client, where, params)
             if include_knowledge_time
             else _read_latest(ch_client, where, params)
         )
