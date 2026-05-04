@@ -70,29 +70,12 @@ CLAUDE.md
 docs/_build/
 docs/notebooks
 
-testing_scripts/
-loc_graph.py
-architecture/
-benchmarks/
-benchmark2.0/
-benchmark3.0/
-clickhouse/
-benchmark_many_series/
-examples/pipeline_animation.py
-examples/design_concepts.py
-examples/block_samples.py
-examples/routing_samples.py
-animation.mp4
-examples/value_anim_demo.py
-benchmark4.0/
-storage_benchmark/
-benchmark5.0/
-clickhouse-test/
-storage_benchmark_tsdb/
-benchmark6.0_tsdb/
-benchmark7.0_api/
-ch-issue.py
-benchmark_realistic/
+# =========================
+# Local scratch / benchmarks
+# =========================
+benchmark*/
+clickhouse*/
+storage_benchmark*/
 
 # ClickHouse server data dirs (created when clickhouse-server runs from repo root)
 data/
