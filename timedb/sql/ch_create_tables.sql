@@ -1,12 +1,12 @@
 -- TimeDB ClickHouse Schema
--- One unified events table, one MV that collapses corrections, one tiny
--- run → series mapping. Run metadata lives in energydb.runs (PostgreSQL).
+-- One unified series_values table plus a tiny run → series mapping. Run
+-- metadata lives in energydb.runs (PostgreSQL).
 
 -- ============================================================================
--- 1) EVENTS — unified time-series store
+-- 1) SERIES_VALUES — unified time-series store
 -- ============================================================================
--- Append-only. Reads go through events_by_kt (MV) for aggregation -- the raw
--- events table is only needed for correction-chain audits.
+-- Append-only. Reads aggregate over correction chains directly against this
+-- table -- no MV is needed.
 --
 -- Partition key: (retention, toYYYYMM(valid_time)) — keeps tiers physically
 -- separate so TTL drops whole partitions, and retention-filtered reads prune
@@ -15,10 +15,16 @@
 -- Sort key: (series_id, valid_time, knowledge_time, change_time) — works for
 -- both flat (one kt per vt, collapses naturally) and overlapping series.
 --
--- TTL: computed per row by retention. Still drops whole partitions because
--- (retention, toYYYYMM(valid_time)) aligns TTL boundaries with partitions.
+-- TTL: computed per row by retention, plus a `DELETE WHERE` that excludes the
+-- 'forever' tier from TTL evaluation entirely. Still drops whole partitions
+-- because (retention, toYYYYMM(valid_time)) aligns TTL boundaries with
+-- partitions, and the `retention != 'forever'` predicate prunes 'forever'
+-- partitions from the merge work cheaply. The trailing 1825 in the multiIf
+-- is a type-stabilizer -- it is unreachable because both _VALID_RETENTIONS
+-- (timedb.write) and the PG `valid_retention` CHECK constraint reject any
+-- value outside {short, medium, long, forever}.
 
-CREATE TABLE IF NOT EXISTS events (
+CREATE TABLE IF NOT EXISTS series_values (
     series_id      UInt64                                CODEC(Delta, ZSTD(1)),
     valid_time     DateTime64(6, 'UTC')                  CODEC(DoubleDelta, ZSTD(1)),
     knowledge_time DateTime64(6, 'UTC')                  CODEC(Delta, ZSTD(1)),
@@ -35,9 +41,11 @@ ENGINE = MergeTree
 PARTITION BY (retention, toYYYYMM(valid_time))
 ORDER BY (series_id, valid_time, knowledge_time, change_time)
 TTL toDate(valid_time) + toIntervalDay(
-      multiIf(retention = 'short', 180,
+      multiIf(retention = 'short',  180,
               retention = 'medium', 1095,
+              retention = 'long',   1825,
               1825))
+    DELETE WHERE retention != 'forever'
 SETTINGS index_granularity = 8192;
 
 

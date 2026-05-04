@@ -23,7 +23,7 @@ def test_no_psycopg_pulled_in():
 
 
 def test_no_shape_or_tables_exports():
-    """The Shape enum and TABLES catalog were removed in the unified-events redesign."""
+    """The Shape enum and TABLES catalog were removed in the unified ``series_values`` redesign."""
     import timedb
 
     assert not hasattr(timedb, "TABLES")

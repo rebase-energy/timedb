@@ -1,8 +1,8 @@
 """Bulk write path for timedb.
 
 Stamps defaults for any missing optional columns and issues one Arrow bulk
-insert each into ``events`` and ``run_series``. No run metadata, no identity
-resolution — both are the caller's responsibility (energydb).
+insert each into ``series_values`` and ``run_series``. No run metadata, no
+identity resolution — both are the caller's responsibility (energydb).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from uuid6 import uuid7
 
 from . import profiling
 
-_EVENTS_COLUMNS = [
+_SERIES_VALUES_COLUMNS = [
     "series_id",
     "valid_time",
     "knowledge_time",
@@ -28,6 +28,14 @@ _EVENTS_COLUMNS = [
     "annotation",
     "retention",
 ]
+
+RETENTION_TIERS: frozenset[str] = frozenset({"short", "medium", "long", "forever"})
+"""Public set of valid retention tier names. timedb owns this vocabulary;
+downstream libraries (energydb) consume it via ``from timedb import
+RETENTION_TIERS``."""
+
+_VALID_RETENTIONS = RETENTION_TIERS  # backwards-compat alias for in-module use
+_DEFAULT_RETENTION = "forever"
 
 # Allow inserts that span many monthly partitions (e.g. multi-year backfills).
 # ClickHouse's default of 100 is too tight for a time-series store intentionally
@@ -65,7 +73,7 @@ def write(
     retention: str | None = None,
     knowledge_time: datetime | None = None,
 ) -> None:
-    """Write time-series rows into ``events`` plus their ``run_series`` mapping.
+    """Write time-series rows into ``series_values`` plus their ``run_series`` mapping.
 
     Required columns on ``df``: ``series_id``, ``valid_time``, ``value``.
 
@@ -76,14 +84,15 @@ def write(
         changed_by      — empty string.
         annotation      — empty string.
         valid_time_end  — CH sentinel default ``2200-01-01``.
-        retention       — kwarg; error if neither column nor kwarg is present.
+        retention       — kwarg or column; if neither is present, defaults to
+                          ``"forever"`` (no TTL — appropriate for actuals).
 
     ``retention`` and ``knowledge_time`` cannot be supplied as both column and
     kwarg at once — that's almost always a producer bug; we raise rather than
     guess which takes precedence.
 
     ``(series_id, run_id)`` pairs are also written to ``run_series`` so that
-    "which runs touched this series" lookups don't need to scan ``events``.
+    "which runs touched this series" lookups don't need to scan ``series_values``.
     """
     _prof = profiling._enabled
     _t_total = time.perf_counter() if _prof else 0.0
@@ -98,8 +107,18 @@ def write(
             "Ambiguous retention: df has a 'retention' column and retention "
             "was also passed as a kwarg. Use one or the other."
         )
+    if retention is not None and retention not in _VALID_RETENTIONS:
+        raise ValueError(f"Unknown retention {retention!r}. Valid values: {sorted(_VALID_RETENTIONS)}")
+    if source_has_retention:
+        present = set(pl_df.get_column("retention").unique().to_list())
+        unknown = present - _VALID_RETENTIONS
+        if unknown:
+            raise ValueError(
+                f"Unknown retention values in 'retention' column: {sorted(unknown)}. "
+                f"Valid values: {sorted(_VALID_RETENTIONS)}"
+            )
     if not source_has_retention and retention is None:
-        raise ValueError("retention must be provided as a kwarg or as a 'retention' column.")
+        retention = _DEFAULT_RETENTION
 
     source_has_kt = "knowledge_time" in pl_df.columns
     if source_has_kt and knowledge_time is not None:
@@ -135,18 +154,18 @@ def write(
 
     pl_df = pl_df.with_columns(stamps)
 
-    events_cols = [c for c in _EVENTS_COLUMNS if c in pl_df.columns]
-    events_arrow = pl_df.select(events_cols).to_arrow().combine_chunks()
+    values_cols = [c for c in _SERIES_VALUES_COLUMNS if c in pl_df.columns]
+    values_arrow = pl_df.select(values_cols).to_arrow().combine_chunks()
     rs_arrow = pl_df.select(["series_id", "run_id"]).unique().to_arrow().combine_chunks()
 
     if _prof:
         profiling._record(profiling.PHASE_WRITE_NORMALIZE, time.perf_counter() - _t_norm)
 
-    if events_arrow.num_rows > 0:
+    if values_arrow.num_rows > 0:
         _t = time.perf_counter() if _prof else 0.0
-        ch_client.insert_arrow("events", events_arrow, settings=_CH_INSERT_SETTINGS)
+        ch_client.insert_arrow("series_values", values_arrow, settings=_CH_INSERT_SETTINGS)
         if _prof:
-            profiling._record(profiling.PHASE_WRITE_EVENTS_INSERT, time.perf_counter() - _t)
+            profiling._record(profiling.PHASE_WRITE_SERIES_VALUES_INSERT, time.perf_counter() - _t)
 
     if rs_arrow.num_rows > 0:
         _t = time.perf_counter() if _prof else 0.0

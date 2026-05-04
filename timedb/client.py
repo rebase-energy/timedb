@@ -30,7 +30,7 @@ def _get_ch_url() -> str:
 
 _DDL = resources.files("timedb").joinpath("sql", "ch_create_tables.sql").read_text(encoding="utf-8")
 
-_CH_TABLES = ["events", "run_series"]
+_CH_TABLES = ["series_values", "run_series"]
 
 
 class TimeDBClient:
@@ -43,7 +43,7 @@ class TimeDBClient:
     # ------------------------------------------------------------------
 
     def create(self) -> None:
-        """Create the events table and run_series mapping."""
+        """Create the series_values table and run_series mapping."""
         for statement in _DDL.split(";"):
             s = statement.strip()
             if not s:

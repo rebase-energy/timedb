@@ -44,10 +44,32 @@ def _df(rows=3):
     )
 
 
-def test_requires_retention():
+def test_default_retention_is_forever():
     client = _RecordingClient()
-    with pytest.raises(ValueError, match="retention must be provided"):
-        write(client, _df(), knowledge_time=datetime(2024, 1, 1, tzinfo=UTC))
+    captured: list = []
+
+    def insert_arrow(table, arrow_table, settings=None):  # noqa: ARG001
+        if table == "series_values":
+            captured.append(arrow_table.to_pydict())
+        client.calls.append((table, arrow_table.num_rows))
+
+    client.insert_arrow = insert_arrow  # type: ignore[method-assign]
+    write(client, _df(rows=3), knowledge_time=datetime(2024, 6, 1, tzinfo=UTC))
+    assert captured, "no series_values insert"
+    assert set(captured[0]["retention"]) == {"forever"}
+
+
+def test_rejects_unknown_retention_kwarg():
+    client = _RecordingClient()
+    with pytest.raises(ValueError, match="Unknown retention"):
+        write(client, _df(), retention="bogus", knowledge_time=datetime(2024, 1, 1, tzinfo=UTC))
+
+
+def test_rejects_unknown_retention_column():
+    client = _RecordingClient()
+    df = _df().with_columns(pl.lit("bogus").alias("retention"))
+    with pytest.raises(ValueError, match="Unknown retention values"):
+        write(client, df, knowledge_time=datetime(2024, 1, 1, tzinfo=UTC))
 
 
 def test_rejects_retention_column_and_kwarg():
@@ -86,7 +108,7 @@ def test_rejects_missing_required_columns():
         write(client, df, retention="medium")
 
 
-def test_writes_events_and_run_series():
+def test_writes_series_values_and_run_series():
     client = _RecordingClient()
     write(
         client,
@@ -94,9 +116,8 @@ def test_writes_events_and_run_series():
         retention="medium",
         knowledge_time=datetime(2024, 6, 1, tzinfo=UTC),
     )
-    # one events insert, one run_series insert
     tables = [name for name, _ in client.calls]
-    assert "events" in tables
+    assert "series_values" in tables
     assert "run_series" in tables
     # run_series should have 1 row (one series_id × one run_id)
     rs_rows = next(n for t, n in client.calls if t == "run_series")
@@ -107,7 +128,7 @@ def test_retention_column_accepted():
     client = _RecordingClient()
     df = _df(rows=3).with_columns(pl.lit("short").alias("retention"))
     write(client, df, knowledge_time=datetime(2024, 6, 1, tzinfo=UTC))
-    assert any(t == "events" for t, _ in client.calls)
+    assert any(t == "series_values" for t, _ in client.calls)
 
 
 def test_multiple_run_ids_produces_multiple_run_series_rows():
