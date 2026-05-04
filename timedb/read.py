@@ -111,7 +111,7 @@ def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
     """
     sql = f"""
     SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
-    FROM events
+    FROM series_values
     {where}
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
@@ -136,11 +136,11 @@ def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
                 PARTITION BY series_id, valid_time
                 ORDER BY change_time ASC
             ) AS prev_state
-        FROM events
+        FROM series_values
         {where}
           AND (series_id, valid_time, knowledge_time) IN (
               SELECT series_id, valid_time, max(knowledge_time)
-              FROM events
+              FROM series_values
               {where}
               GROUP BY series_id, valid_time
           )
@@ -171,7 +171,7 @@ def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
     # change_time) GROUP BY (sid, vt, kt), but with no aggregation state.
     sql = f"""
     SELECT series_id, knowledge_time, valid_time, value
-    FROM events
+    FROM series_values
     {where}
     ORDER BY series_id, valid_time, knowledge_time, change_time DESC
     LIMIT 1 BY series_id, valid_time, knowledge_time
@@ -195,7 +195,7 @@ def _read_overlapping_with_changes(ch_client, where: str, params: dict) -> pa.Ta
                 PARTITION BY series_id, knowledge_time, valid_time
                 ORDER BY change_time ASC
             ) AS prev_state
-        FROM events
+        FROM series_values
         {where}
     )
     WHERE prev_state IS NULL
@@ -241,7 +241,7 @@ def _read_relative_sql(
     )
     sql = f"""
     SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
-    FROM events
+    FROM series_values
     {where}
       AND knowledge_time <= addSeconds(
             toStartOfInterval(valid_time,

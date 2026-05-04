@@ -21,7 +21,7 @@ Usage:
 # ── Write phase constants ─────────────────────────────────────────────────────
 
 PHASE_WRITE_NORMALIZE = "write.normalize"  # Polars prep: cast, fill_null, lit stamps
-PHASE_WRITE_EVENTS_INSERT = "write.events_insert"  # CH insert_arrow into events
+PHASE_WRITE_SERIES_VALUES_INSERT = "write.series_values_insert"  # CH insert_arrow into series_values
 PHASE_WRITE_RUN_SERIES_INSERT = "write.run_series_insert"  # CH insert_arrow into run_series
 PHASE_WRITE_TOTAL = "write.total"  # Full td.write() wall time
 
