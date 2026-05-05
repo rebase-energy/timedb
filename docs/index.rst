@@ -3,20 +3,31 @@
 Welcome to TimeDB
 =================
 
-**TimeDB** is an open-source, opinionated time-series database built on top of PostgreSQL and ClickHouse.
+**TimeDB** is a minimal, stateless Python client for storing bitemporal
+time-series data in `ClickHouse <https://clickhouse.com>`_.
 
-It is designed to natively handle **overlapping forecast revisions**, **auditable human-in-the-loop updates**, and **"time-of-knowledge" history**. Using a three-dimensional temporal data model, it provides a seamless workflow through its Python SDK and FastAPI backend.
+It is designed for workflows where forecasts get revised, observations
+get corrected, and historical backtesting requires querying *what was
+known* at any point in time. Series identity (``series_id``) and any
+catalog/metadata are the caller's responsibility — TimeDB just stores
+and retrieves rows. Higher-level libraries like
+`EnergyDB <https://github.com/rebase-energy/energydb>`_ build catalogs,
+unit handling, and asset hierarchies on top.
 
 
-Why TimeDB?
------------
+The 3D temporal model
+---------------------
 
-Most time-series systems assume one immutable value per timestamp. TimeDB supports real-world workflows where data changes and those changes must be preserved.
+Every row carries three orthogonal timestamps:
 
-- 📊 **Forecast Revisions**: store multiple versions for the same valid time
-- 🔄 **Auditable Updates**: in-place updates for flat data, versioned updates for overlapping data
-- ⏪ **True Backtesting**: query what was known at a specific point in time
-- 🏷️ **Label-Based Organization**: filter series by semantic labels
+- ``valid_time`` — when the value applies (e.g. *forecast for Wed 12:00*)
+- ``knowledge_time`` — when the value became known (*generated Mon 18:00*)
+- ``change_time`` — when the row was written or corrected (*overridden Tue 09:00*)
+
+Together they let TimeDB store overlapping forecast revisions, expose a
+full audit trail of corrections, and answer "what did we know at time T?"
+queries directly.
+
 
 Quick Start
 -----------
@@ -27,45 +38,28 @@ Quick Start
 
 .. code-block:: python
 
-   import timedb as td
-   import pandas as pd
+   import polars as pl
    from datetime import datetime, timezone
+   from timedb import TimeDBClient
 
-   # Create schema
-   td.create()
+   td = TimeDBClient()  # reads TIMEDB_CH_URL
+   td.create()          # creates series_values + run_series tables
 
-   # Create an overlapping forecast series
-   td.create_series(
-       name="wind_power",
-       unit="MW",
-       labels={"site": "offshore_1"},
-       overlapping=True,
-   )
-
-   # Insert one forecast run
-   knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
-   df = pd.DataFrame({
-       "valid_time": pd.date_range("2025-01-01", periods=24, freq="h", tz="UTC"),
-       "value": [100 + i * 2 for i in range(24)],
+   # One forecast run for series_id=42, issued at 06:00.
+   kt = datetime(2025, 1, 1, 6, tzinfo=timezone.utc)
+   df = pl.DataFrame({
+       "series_id":  [42] * 24,
+       "valid_time": [datetime(2025, 1, 1, h, tzinfo=timezone.utc) for h in range(24)],
+       "value":      [100.0 + i * 2 for i in range(24)],
    })
+   td.write(df, retention="medium", knowledge_time=kt)
 
-   td.get_series("wind_power").where(site="offshore_1").insert(
-       data=df,
-       knowledge_time=knowledge_time,
-   )
+   # Latest value per valid_time (collapses overlapping runs).
+   latest = td.read(series_ids=[42])
 
-   # Read latest values
-   df_latest = td.get_series("wind_power").where(site="offshore_1").read()
+   # Full bitemporal history — every forecast run side-by-side.
+   history = td.read(series_ids=[42], include_knowledge_time=True)
 
-   # Read full revision history
-   df_versions = td.get_series("wind_power").where(site="offshore_1").read(overlapping=True)
-
-Release Notes
--------------
-
-For version-by-version changes, migration notes, and feature updates, see:
-
-- `Changelog <https://github.com/rebase-energy/timedb/blob/main/CHANGELOG.md>`_
 
 Documentation
 -------------
@@ -77,8 +71,6 @@ Documentation
    installation
    sdk
    reference
-   cli
-   api_setup
    examples
 
 
