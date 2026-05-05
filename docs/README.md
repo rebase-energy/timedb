@@ -44,9 +44,9 @@ make clean
 
 - `index.rst` - Main documentation index
 - `installation.rst` - Installation instructions
-- `cli.rst` - Command Line Interface documentation
 - `sdk.rst` - SDK usage documentation
-- `api_setup.rst` - API server setup documentation
+- `reference.rst` - Auto-generated API reference
+- `examples.rst` - Notebook example index
 - `conf.py` - Sphinx configuration
 
 ## Read the Docs
