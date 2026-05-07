@@ -1,5 +1,5 @@
 """
-Colab setup script — installs PostgreSQL + ClickHouse + timedb.
+Colab setup script — installs ClickHouse + timedb.
 
 Downloaded and executed by the first cell of each example notebook.
 """
@@ -16,20 +16,14 @@ def _run(cmd):
         raise RuntimeError(f"Command failed (exit {result.returncode}): {cmd}")
 
 
-print("1/4  Installing timedb …")
+print("1/3  Installing timedb …")
 _run(f'"{sys.executable}" -m pip install -q timedb[pint]')
 
-print("2/4  Configuring and starting PostgreSQL …")
-subprocess.run("service postgresql start", shell=True, check=True)
-with open("/tmp/init_timedb.sql", "w") as f:
-    f.write("ALTER USER postgres PASSWORD 'timedb';\nCREATE DATABASE timedb;\n")
-_run('su - postgres -c "psql -f /tmp/init_timedb.sql"')
-
-print("3/4  Installing and starting ClickHouse …")
+print("2/3  Installing and starting ClickHouse …")
 _run("apt-get -qq install -y apt-transport-https ca-certificates")
 _run(
     "curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key"
-    " | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg"
+    " | gpg --dearmor --yes --batch -o /usr/share/keyrings/clickhouse-keyring.gpg"
 )
 _run(
     'echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg]'
@@ -37,10 +31,9 @@ _run(
     " | tee /etc/apt/sources.list.d/clickhouse.list"
 )
 _run("apt-get -qq update")
-_run("apt-get -qq install -y clickhouse-server clickhouse-client")
+_run("DEBIAN_FRONTEND=noninteractive apt-get -qq install -y clickhouse-server clickhouse-client")
 subprocess.run("service clickhouse-server start", shell=True, check=True)
 
-print("4/4  Setting environment variables …")
-os.environ["TIMEDB_PG_DSN"] = "postgresql://postgres:timedb@localhost/timedb"
+print("3/3  Setting environment variables …")
 os.environ["TIMEDB_CH_URL"] = "http://default:@localhost:8123/default"
-print("✓  Ready — PostgreSQL + ClickHouse running in this Colab session.")
+print("✓  Ready — ClickHouse running in this Colab session.")

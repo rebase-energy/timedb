@@ -1,31 +1,26 @@
 #!/usr/bin/env fish
-# Clean restart: stop, remove volumes and local data dirs, then start
+# Clean restart: stop, remove volume and local data dir, then start
 
 # Change to script directory
 set -l BASEDIR (dirname (status -f))
 cd $BASEDIR
 
-printf 'Stopping containers and removing volumes...\n'
+printf 'Stopping container and removing volumes...\n'
 docker compose down -v 2>/dev/null || true
-
-printf 'Removing local ./pgdata (if present)...\n'
-if test -d ./pgdata
-    sudo rm -rf ./pgdata
-end
 
 printf 'Removing local ./chdata (if present)...\n'
 if test -d ./chdata
     sudo rm -rf ./chdata
 end
 
-printf 'Starting containers...\n'
+printf 'Starting container...\n'
 docker compose up -d
 
-printf 'Waiting for databases to be ready...\n'
-sleep 10
+printf 'Waiting for ClickHouse to be ready...\n'
+sleep 5
 
 printf '\nContainer status:\n'
-docker ps | grep -E "local_postgres|local_clickhouse"
+docker ps | grep -E "timedb_clickhouse"
 
-printf '\nPostgreSQL initialization status:\n'
-docker logs local_postgres 2>&1 | grep -E '(ready|error|listening)' | tail -3
+printf '\nClickHouse health:\n'
+curl -sS http://127.0.0.1:8123/ping; or printf 'ClickHouse not reachable yet\n'

@@ -72,6 +72,7 @@ Documentation
    sdk
    reference
    examples
+   development
 
 
 Indices and tables
