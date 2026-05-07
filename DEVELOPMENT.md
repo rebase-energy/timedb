@@ -57,28 +57,26 @@ uv run file.py
 
 ## 3) Database Environment
 
-TimeDB uses two databases:
-- **PostgreSQL** (port `5433`) — stores series metadata
-- **ClickHouse** (port `8123`) — stores all time-series values
+TimeDB is a stateless library on top of **ClickHouse** (port `8123`) — it stores all time-series values there. There is no PostgreSQL dependency; series metadata lives in the calling application (e.g. [energydb](https://github.com/rebase-energy/energydb)).
 
-Spin both up locally using Docker:
+Spin up ClickHouse locally using Docker:
 
 ```bash
 cd local-db/
 docker compose up -d
 ```
 
-Verify the containers are running:
+Verify the container is running:
 
 ```bash
 docker ps
 ```
 
-You should see `local_postgres` (port 5433) and `local_clickhouse` (port 8123).
+You should see `timedb_clickhouse` (port 8123).
 
 ## 4) Configuration
 
-The application requires `TIMEDB_PG_DSN` and `TIMEDB_CH_URL` environment variables.
+The application requires the `TIMEDB_CH_URL` environment variable.
 
 Fastest option (recommended): from the repository root, copy the example environment file.
 
@@ -86,24 +84,21 @@ Fastest option (recommended): from the repository root, copy the example environ
 cp .env.example .env
 ```
 
-Both variables are already set correctly for the local Docker setup:
+The variable is already set correctly for the local Docker setup:
 
 ```text
-TIMEDB_PG_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 TIMEDB_CH_URL=http://default:@localhost:8123/default
 ```
 
-Alternatively, export the variables directly in your shell:
+Alternatively, export the variable directly in your shell:
 
 ```bash
 # Bash/Zsh
-export TIMEDB_PG_DSN='postgresql://postgres:devpassword@127.0.0.1:5433/devdb'
 export TIMEDB_CH_URL='http://default:@localhost:8123/default'
 ```
 
 ```fish
 # Fish
-set -x TIMEDB_PG_DSN postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 set -x TIMEDB_CH_URL http://default:@localhost:8123/default
 ```
 
@@ -117,21 +112,21 @@ Now you can try the examples in `examples/`, or build your own script using the 
 
 If you are using the local Docker setup, use scripts in `local-db/`:
 
-- `./restart-db.sh` or `./restart-db.fish`: Restarts containers while preserving existing data.
-- `./clean-restart-db.sh` or `./clean-restart-db.fish`: Removes containers, volumes, and data, then starts fresh.
+- `./restart-db.sh` or `./restart-db.fish`: Restarts the container while preserving existing data.
+- `./clean-restart-db.sh` or `./clean-restart-db.fish`: Removes the container, volume, and data, then starts fresh.
 
 ### Manual inspection
-
-Connect to PostgreSQL with `psql`:
-
-```bash
-psql postgresql://postgres:devpassword@127.0.0.1:5433/devdb
-```
 
 Connect to ClickHouse with the HTTP interface:
 
 ```bash
 curl http://localhost:8123/ping
+```
+
+Or with the native client:
+
+```bash
+docker exec -it timedb_clickhouse clickhouse-client
 ```
 
 ## 7) Building Documentation

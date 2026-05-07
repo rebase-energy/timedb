@@ -1,0 +1,3 @@
+# Container data dirs (bind mounts)
+chdata/
+pgdata/

@@ -1,19 +1,7 @@
 services:
-  postgres:
-    image: postgres:18
-    container_name: local_postgres
-    restart: always
-    environment:
-      POSTGRES_PASSWORD: devpassword
-      POSTGRES_DB: devdb
-    ports:
-      - "127.0.0.1:5433:5432"
-    volumes:
-      - ./pgdata:/var/lib/postgresql/data
-
   clickhouse:
     image: clickhouse/clickhouse-server:26.1
-    container_name: local_clickhouse
+    container_name: timedb_clickhouse
     restart: always
     environment:
       TZ: UTC

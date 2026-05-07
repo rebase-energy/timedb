@@ -69,6 +69,7 @@ CLAUDE.md
 # =========================
 docs/_build/
 docs/notebooks
+docs/development.md
 
 # =========================
 # Local scratch / benchmarks

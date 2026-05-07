@@ -29,6 +29,13 @@ for nb_file in glob.glob(os.path.join(_examples_src, "*.ipynb")):
     if not os.path.exists(dest) or os.path.getmtime(nb_file) > os.path.getmtime(dest):
         shutil.copy2(nb_file, dest)
 
+# Copy DEVELOPMENT.md from repo root into docs/ so myst-parser can render it
+_dev_md_src = os.path.join(_docs_dir, "..", "DEVELOPMENT.md")
+_dev_md_dest = os.path.join(_docs_dir, "development.md")
+if os.path.exists(_dev_md_src):
+    if not os.path.exists(_dev_md_dest) or os.path.getmtime(_dev_md_src) > os.path.getmtime(_dev_md_dest):
+        shutil.copy2(_dev_md_src, _dev_md_dest)
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -48,14 +55,21 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
     "nbsphinx",
+    "myst_parser",
 ]
+
+# myst-parser: render development.md (copied from repo root above)
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
 
 # nbsphinx configuration
 nbsphinx_execute = "never"  # Don't execute notebooks during build
 nbsphinx_allow_errors = True  # Continue build even if notebooks have errors
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "README.md"]
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
