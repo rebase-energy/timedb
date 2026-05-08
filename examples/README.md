@@ -19,12 +19,12 @@ Click the badge to open the notebook in Colab — no local setup required. The f
 2. **Environment variable**:
    ```bash
    # Bash/Zsh
-   export TIMEDB_CH_URL='http://default:@localhost:8123/default'
+   export TIMEDB_CH_URL='http://default:devpassword@localhost:8123/default'
    ```
 
    ```fish
    # Fish
-   set -x TIMEDB_CH_URL http://default:@localhost:8123/default
+   set -x TIMEDB_CH_URL http://default:devpassword@localhost:8123/default
    ```
 
 3. **Install dependencies**:
