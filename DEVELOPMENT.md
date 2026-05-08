@@ -87,19 +87,19 @@ cp .env.example .env
 The variable is already set correctly for the local Docker setup:
 
 ```text
-TIMEDB_CH_URL=http://default:@localhost:8123/default
+TIMEDB_CH_URL=http://default:devpassword@localhost:8123/default
 ```
 
 Alternatively, export the variable directly in your shell:
 
 ```bash
 # Bash/Zsh
-export TIMEDB_CH_URL='http://default:@localhost:8123/default'
+export TIMEDB_CH_URL='http://default:devpassword@localhost:8123/default'
 ```
 
 ```fish
 # Fish
-set -x TIMEDB_CH_URL http://default:@localhost:8123/default
+set -x TIMEDB_CH_URL http://default:devpassword@localhost:8123/default
 ```
 
 ## 5) Next Steps

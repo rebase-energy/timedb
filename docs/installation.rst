@@ -51,19 +51,19 @@ environment variable, or accepts it directly via the constructor.
 .. code-block:: bash
 
    # Bash/Zsh
-   export TIMEDB_CH_URL='http://default:@localhost:8123/default'
+   export TIMEDB_CH_URL='http://default:devpassword@localhost:8123/default'
 
 .. code-block:: fish
 
    # Fish
-   set -x TIMEDB_CH_URL http://default:@localhost:8123/default
+   set -x TIMEDB_CH_URL http://default:devpassword@localhost:8123/default
 
 A ``.env`` file in the project root works as well — timedb loads it on
 import via ``python-dotenv``.
 
 .. code-block:: text
 
-   TIMEDB_CH_URL=http://default:@localhost:8123/default
+   TIMEDB_CH_URL=http://default:devpassword@localhost:8123/default
 
 
 Verification

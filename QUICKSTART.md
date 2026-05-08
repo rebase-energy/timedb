@@ -66,7 +66,7 @@ This sets both required variables:
 
 ```text
 TIMEDB_PG_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
-TIMEDB_CH_URL=http://default:@localhost:8123/default
+TIMEDB_CH_URL=http://default:devpassword@localhost:8123/default
 ```
 
 To verify the PostgreSQL connection works:
