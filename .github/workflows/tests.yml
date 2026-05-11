@@ -11,20 +11,6 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpassword
-          POSTGRES_DB: testdb
-        options: >-
-          --health-cmd "pg_isready -U testuser -d testdb"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
       clickhouse:
         image: clickhouse/clickhouse-server:26.1
         env:
@@ -40,8 +26,7 @@ jobs:
           - 8123:8123
 
     env:
-      TEST_TIMEDB_PG_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
-      TEST_TIMEDB_CH_URL: http://default:@localhost:8123/default
+      TIMEDB_CH_URL: http://default:@localhost:8123/default
 
     steps:
       - uses: actions/checkout@v4
@@ -62,28 +47,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
-
-      - name: Wait for PostgreSQL
-        run: |
-          until pg_isready -h localhost -U testuser -d testdb; do
-            echo "Waiting for PostgreSQL to be ready..."
-            sleep 2
-          done
-        env:
-          PGPASSWORD: testpassword
+          pip install -e ".[test,notebooks]"
 
       - name: Run tests with coverage
         run: pytest --cov=timedb --cov-report=xml
 
-      - name: Install notebook dependencies
-        run: pip install -e ".[test,notebooks]"
-
       - name: Run notebook tests
         run: pytest --nbmake examples/ --nbmake-timeout=120
         env:
-          TIMEDB_PG_DSN: postgresql://testuser:testpassword@localhost:5432/testdb
-          TIMEDB_CH_URL: http://default:@localhost:8123/default
           MPLBACKEND: Agg
 
       - name: Upload coverage to Codecov
