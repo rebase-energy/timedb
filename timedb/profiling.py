@@ -15,8 +15,14 @@ Usage:
     # ... run operation ...
     phases = profiling.collect()   # dict of phase -> elapsed seconds
     profiling.disable()
+
+    # Or, for hot-path instrumentation:
+    with profiling._phase(profiling.PHASE_EDB_RESOLVE):
+        ...
 """
 
+import time as _time
+from contextlib import contextmanager
 
 # ── Write phase constants ─────────────────────────────────────────────────────
 
@@ -34,12 +40,16 @@ PHASE_READ_TO_POLARS = "read.to_polars"  # pl.from_arrow() conversion
 PHASE_READ_TOTAL = "read.total"  # Full td.read() wall time
 
 
-# ── EnergyDB phase constants (used from energydb.scope) ───────────────────────
+# ── EnergyDB phase constants (used from energydb scope/_io/_join/client) ──────
 
-PHASE_EDB_RESOLVE = "edb.resolve"  # PG resolve_for_write/resolve_for_read + subtree lookup
-PHASE_EDB_RUNS_UPSERT = "edb.runs_upsert"  # PG upsert into energydb.runs
-PHASE_EDB_UNIT_CONVERT = "edb.unit_convert"  # Polars per-series unit factor application
+PHASE_EDB_CONN_ACQUIRE = "edb.conn_acquire"  # pool.connection() checkout (per acquire)
+PHASE_EDB_RESOLVE_SUBTREE = "edb.resolve_subtree"  # recursive subtree CTE in _resolve_target_node_uuids
+PHASE_EDB_RESOLVE = "edb.resolve"  # resolve_for_read/resolve_for_write + resolve_manifest
+PHASE_EDB_MANIFEST_BUILD = "edb.manifest_build"  # polars stitching in _build_read_manifest / _attach_routing
+PHASE_EDB_RUNS_UPSERT = "edb.runs_upsert"  # runs_mod.upsert_run + the trailing PG commit
+PHASE_EDB_UNIT_CONVERT = "edb.unit_convert"  # apply_manifest_unit_conversion / apply_per_series_unit
 PHASE_EDB_HIERARCHY_JOIN = "edb.hierarchy_join"  # join_hierarchy / join_edge_hierarchy post-read
+PHASE_EDB_OUTPUT_CONVERT = "edb.output_convert"  # to_polars(input) + to_output(result) boundary conversions
 
 
 # ── Internal state ────────────────────────────────────────────────────────────
@@ -93,3 +103,21 @@ def _record(phase: str, elapsed_s: float) -> None:
     if not _enabled:
         return
     _timings[phase] = _timings.get(phase, 0.0) + elapsed_s
+
+
+@contextmanager
+def _phase(phase: str):
+    """Context manager that records ``phase`` only when profiling is enabled.
+
+    Zero overhead when disabled: no ``perf_counter`` calls, the body still
+    runs unchanged. Use at call-site instead of hand-rolling
+    ``_t = perf_counter(); ...; _record(phase, perf_counter() - _t)``.
+    """
+    if not _enabled:
+        yield
+        return
+    _t = _time.perf_counter()
+    try:
+        yield
+    finally:
+        _record(phase, _time.perf_counter() - _t)
