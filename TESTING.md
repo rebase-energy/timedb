@@ -16,20 +16,18 @@ pip install -e ".[test]"
 
 This installs timedb in editable mode along with pytest and pytest-cov.
 
-### 2. Configure Test Databases
+### 2. Configure the Test Database
 
-Set both environment variables for PostgreSQL and ClickHouse:
+Set the ClickHouse connection string. Tests gate on `TIMEDB_CH_URL`:
 
 ```bash
 # Bash/Zsh
-export TEST_TIMEDB_PG_DSN='postgresql://user:password@host:port/test_database'
-export TEST_TIMEDB_CH_URL='http://default:@localhost:8123/default'
+export TIMEDB_CH_URL='http://default:devpassword@localhost:8123/default'
 ```
 
 ```fish
 # Fish
-set -x TEST_TIMEDB_PG_DSN postgresql://user:password@host:port/test_database
-set -x TEST_TIMEDB_CH_URL http://default:@localhost:8123/default
+set -x TIMEDB_CH_URL http://default:devpassword@localhost:8123/default
 ```
 
 **Important**: Use a separate test database, not your development database. Tests will create and drop schema objects.
@@ -161,7 +159,7 @@ pytest --cov=timedb --cov-fail-under=80
 
 ### Tests Fail with "Database connection not configured"
 
-Make sure you've set `TEST_TIMEDB_PG_DSN` and `TEST_TIMEDB_CH_URL` environment variables.
+Make sure you've set the `TIMEDB_CH_URL` environment variable.
 
 ### Tests Fail with Permission Errors
 
