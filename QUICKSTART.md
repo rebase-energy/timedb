@@ -4,7 +4,7 @@ Get up and running with timedb in under 10 minutes.
 
 ## Prerequisites
 
-- **Docker**: Required to run PostgreSQL and ClickHouse
+- **Docker**: Required to run ClickHouse
 - **Python 3.9+**: Required to run timedb
 - **uv** (recommended): For managing Python dependencies ([installation guide](https://docs.astral.sh/uv/getting-started/installation/))
 
@@ -22,37 +22,30 @@ uv sync # --all-extras to use notebooks, tests, docs
 pip install -e .
 ```
 
-## Step 2: Start Databases
+## Step 2: Start ClickHouse
 
-Navigate to the `local-db/` directory and start both containers:
+Navigate to the `local-db/` directory and start the container:
 
 ```bash
 cd local-db
 docker compose up -d
 ```
 
-Verify the containers are running:
+Verify the container is running:
 
 ```bash
 docker ps
 ```
 
-You should see:
-- `local_postgres` running on port `5433` (PostgreSQL — series metadata)
-- `local_clickhouse` running on port `8123` (ClickHouse — time-series values)
+You should see `timedb_clickhouse` running on port `8123`.
 
 ### Database Details
-
-**PostgreSQL**
-- **Host**: `127.0.0.1`
-- **Port**: `5433`
-- **Username**: `postgres`
-- **Password**: `devpassword`
-- **Database**: `devdb`
 
 **ClickHouse**
 - **Host**: `127.0.0.1`
 - **HTTP Port**: `8123`
+- **Username**: `default`
+- **Password**: `devpassword`
 
 ## Step 3: Configure Environment Variables
 
@@ -62,20 +55,11 @@ Create a `.env` file in the project root (same directory as `README.md`):
 cp .env.example .env
 ```
 
-This sets both required variables:
+This sets the required variable:
 
 ```text
-TIMEDB_PG_DSN=postgresql://postgres:devpassword@127.0.0.1:5433/devdb
 TIMEDB_CH_URL=http://default:devpassword@localhost:8123/default
 ```
-
-To verify the PostgreSQL connection works:
-
-```bash
-psql postgresql://postgres:devpassword@127.0.0.1:5433/devdb
-```
-
-You should see a PostgreSQL prompt. Type `\q` to exit.
 
 To verify the ClickHouse connection works:
 
@@ -98,7 +82,7 @@ jupyter notebook examples/quickstart.ipynb
 ```
 
 The notebook will:
-1. Connect to PostgreSQL and ClickHouse
+1. Connect to ClickHouse
 2. Create the timedb schema
 3. Create a sample time series for wind power forecasts
 4. Insert forecast revisions
@@ -123,18 +107,18 @@ docker compose down
 docker compose up -d
 ```
 
-### Connection refused on port 5433 or 8123
-- Verify Docker containers are running: `docker ps`
-- Wait a few seconds for database initialization to complete
+### Connection refused on port 8123
+- Verify the Docker container is running: `docker ps`
+- Wait a few seconds for ClickHouse initialization to complete
 - Check the logs: `docker compose logs`
 
 ### Database already exists
 If you want to start fresh:
 
 ```bash
-# Stop containers and remove all data
+# Stop the container and remove all data
 docker compose down -v
-rm -rf local-db/pgdata local-db/chdata
+rm -rf local-db/chdata
 docker compose up -d
 ```
 
