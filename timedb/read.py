@@ -115,6 +115,7 @@ def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
     {where}
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
+    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
@@ -143,6 +144,7 @@ def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
               FROM series_values
               {where}
               GROUP BY series_id, valid_time
+              SETTINGS optimize_aggregation_in_order = 1
           )
     )
     WHERE prev_state IS NULL
@@ -250,6 +252,7 @@ def _read_relative_sql(
             {{offset_secs:Int64}})
     GROUP BY series_id, valid_time
     ORDER BY series_id, valid_time
+    SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
