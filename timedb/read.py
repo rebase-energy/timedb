@@ -165,12 +165,14 @@ def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
 
 
 def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
-    """One row per (series_id, knowledge_time, valid_time)."""
-    # LIMIT 1 BY streams a "first row per group" pass: the input arrives in
-    # (sid, vt, kt, ct) order, the ORDER BY reverses ct so the row with the
-    # largest change_time is the first one seen per (sid, vt, kt) group, and
-    # LIMIT 1 BY emits that and skips the rest. Equivalent to argMax(value,
-    # change_time) GROUP BY (sid, vt, kt), but with no aggregation state.
+    """One row per (series_id, knowledge_time, valid_time).
+
+    LIMIT 1 BY streams a "first row per group" pass: the input arrives in
+    (sid, vt, kt, ct) order, the ORDER BY reverses ct so the row with the
+    largest change_time is the first one seen per (sid, vt, kt) group, and
+    LIMIT 1 BY emits that and skips the rest. Equivalent to argMax(value,
+    change_time) GROUP BY (sid, vt, kt), but with no aggregation state.
+    """
     sql = f"""
     SELECT series_id, knowledge_time, valid_time, value
     FROM series_values
