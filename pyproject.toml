@@ -22,7 +22,6 @@ classifiers = [
 ]
 
 dependencies = [
-  "clickhouse-connect>=0.15.1",
   "python-dotenv>=0.21",
   "pandas>=2.3.0",
   "polars>=1.0.0",
@@ -30,6 +29,7 @@ dependencies = [
   "numpy>=1.24",
   "timedatamodel==0.5.0",
   "uuid6>=2024.1",
+  "clickhouse-connect>=0.15.1",
 ]
 
 [project.optional-dependencies]
