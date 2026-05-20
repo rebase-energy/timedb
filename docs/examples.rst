@@ -19,6 +19,6 @@ Quickstart
 ----------
 
 Walks through ``TimeDBClient.create()``, two forecast runs, latest vs.
-bitemporal reads, and a forecast correction. The notebook at
+overlapping reads, and a forecast correction. The notebook at
 ``examples/quickstart.ipynb`` is the source of truth and is auto-copied
 into ``docs/notebooks/`` at build time.

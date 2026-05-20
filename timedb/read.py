@@ -1,4 +1,4 @@
-"""Bitemporal read path for timedb.
+"""3-dimensional read path for timedb.
 
 Output shape by flag combination:
 
@@ -189,7 +189,7 @@ def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
 
 
 def _read_overlapping_with_changes(ch_client, where: str, params: dict) -> pa.Table:
-    """Full bitemporal audit: every state transition per (series_id, kt, vt)."""
+    """Full 3D audit: every state transition per (series_id, kt, vt)."""
     sql = f"""
     SELECT series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation
     FROM (

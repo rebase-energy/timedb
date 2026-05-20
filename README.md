@@ -1,6 +1,6 @@
 <div align="center">
   <h1>⏱️ TimeDB</h1>
-  <p><b>An open-source, opinionated time-series database built on PostgreSQL & ClickHouse.</b></p>
+  <p><b>A minimal, stateless Python client for 3-dimensional time series on ClickHouse.</b></p>
 
   <a href="https://pypi.org/project/timedb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/timedb?color=blue&style=flat-square"></a>
   <a href="https://pypi.org/project/timedb/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/timedb?style=flat-square"></a>
@@ -10,9 +10,9 @@
 
 <br/>
 
-**TimeDB** is designed to natively handle **overlapping forecast revisions**, **auditable human-in-the-loop updates**, and **"time-of-knowledge" history**. Using a three-dimensional temporal data model, it provides a seamless workflow through its Python SDK and FastAPI backend.
+**TimeDB** stores **overlapping forecast revisions**, **auditable corrections**, and **"time-of-knowledge" history** as plain rows in ClickHouse. Every value carries a three-dimensional timestamp so you can replay exactly what was known at any past instant.
 
-Traditional time-series databases assume one immutable value per timestamp. TimeDB is built for complex, real-world domains where forecasts evolve, data gets corrected, and historical backtesting requires strict audits.
+Traditional time-series stores assume one immutable value per timestamp. TimeDB is built for the messy reality of forecasts that get revised, observations that get corrected, and backtests that need strict point-in-time audits.
 
 ---
 
@@ -26,20 +26,17 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 | ⏰&nbsp;**`knowledge_time`** | The time when the value was predicted/known. | *"Generated on Monday 18:00"* |
 | ✏️&nbsp;**`change_time`** | The time when the value was written or changed. | *"Manually overridden on Tuesday 09:00"* |
 
-> **Audit & Metadata:** Every data point also supports `tags`, `annotations`, and `changed_by` to maintain a perfect audit trail of who changed what, when, and why.
+> **Audit & Metadata:** Every row also carries `changed_by` and `annotation` text fields so corrections leave a readable trail instead of silent overwrites.
 
 ---
 
 ## ✨ Why Choose TimeDB?
 
-- 📊 **Forecast Revisions:** Store overlapping forecasts with full provenance.
-- 🔄 **Auditable Updates:** Manual adjustments generate audit trails, not silent overwrites.
-- ⏪ **True Backtesting:** Query historical data as of any point in time (*"What did our model know last Monday?"*).
-- 🏷️ **Label-Based Organization:** Easily filter and slice series by meaningful dimensions.
-
-<div align="center">
-  <p></p>  <img src="example.gif" alt="TimeDB demo" width="700"/>
-</div>
+- 📊 **Forecast Revisions:** Store overlapping forecasts side-by-side — every `knowledge_time` is preserved.
+- 🔄 **Auditable Updates:** Corrections are new rows with a fresh `change_time`; reads collapse them into the latest state, with full history available on demand.
+- ⏪ **True Backtesting:** Query historical data as of any point in time (*"What did our model know last Monday?"*), or use `read_relative()` for per-window day-ahead cutoffs.
+- 🗂️ **Retention Tiers:** Pick `short` / `medium` / `long` / `forever` per series; ClickHouse drops whole partitions when TTLs expire.
+- 🪶 **Stateless & Minimal:** One class, two tables, no catalog. Series identity (`series_id`) is owned by the caller — no naming, units, or labels to keep in sync.
 
 ---
 
@@ -51,54 +48,62 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 pip install timedb
 ```
 
-Requires Python 3.9+, PostgreSQL (series metadata), and ClickHouse (time-series values).
+Requires Python 3.12+ and a reachable ClickHouse instance. TimeDB reads its connection string from `TIMEDB_CH_URL` (also picked up from a `.env` file).
 
 ### 2. Usage Example
 
 ```python
-import timedb as td
-import pandas as pd
+import polars as pl
 from datetime import datetime, timezone
-from timedb import TimeSeries
+from timedb import TimeDBClient
 
-# Create Schema
-td.create()
+td = TimeDBClient()  # reads TIMEDB_CH_URL
+td.create()          # creates series_values + run_series tables
 
-# 1. Create a forecast series
-td.create_series(
-    name="wind_power",
-    unit="MW",
-    labels={"site": "offshore_1"},
-    overlapping=True
-)
+# 1. Write a forecast run for series_id=42, issued at 06:00.
+kt = datetime(2025, 1, 1, 6, tzinfo=timezone.utc)
+df = pl.DataFrame({
+    "series_id":  [42] * 24,
+    "valid_time": [datetime(2025, 1, 1, h, tzinfo=timezone.utc) for h in range(24)],
+    "value":      [100.0 + i * 2 for i in range(24)],
+})
+td.write(df, retention="medium", knowledge_time=kt)
 
-# 2. Insert forecast with knowledge_time
-knowledge_time = datetime(2025, 1, 1, 18, 0, tzinfo=timezone.utc)
-ts = TimeSeries.from_pandas(
-    pd.DataFrame({
-        'valid_time': pd.date_range('2025-01-01', periods=24, freq='h', tz='UTC'),
-        'value': [100 + i*2 for i in range(24)]
-    }),
-    unit='MW',
-)
+# 2. A later forecast revision — same valid_time window, higher knowledge_time.
+kt2 = datetime(2025, 1, 1, 12, tzinfo=timezone.utc)
+td.write(df.with_columns(pl.col("value") + 5), retention="medium", knowledge_time=kt2)
 
-td.get_series("wind_power") \
-   .where(site="offshore_1") \
-   .insert(ts, knowledge_time=knowledge_time)
+# 3. Latest value per valid_time (the second run wins).
+latest = td.read(series_ids=[42])
 
-# 3. Read latest forecast — returns a TimeSeries
-ts_latest = td.get_series("wind_power").where(site="offshore_1").read()
-df_latest = ts_latest.to_pandas()  # pd.DataFrame with valid_time index
-
-# 4. Read forecast history (one row per knowledge_time × valid_time)
-ts_all = td.get_series("wind_power").where(site="offshore_1").read(overlapping=True)
+# 4. Full forecast history — one row per (knowledge_time, valid_time).
+history = td.read(series_ids=[42], include_knowledge_time=True)
 ```
+
+Required write columns are `series_id`, `valid_time`, `value`. Everything else (`change_time`, `run_id`, `changed_by`, `annotation`, `valid_time_end`) is optional and stamped with safe defaults per batch. All timestamp columns must be timezone-aware.
+
+---
+
+## 🤝 The Full Stack — TimeDB + EnergyDB
+
+TimeDB stores rows keyed by integer `series_id` and nothing else. That's enough when you're managing identity in your own application — but for the energy domain, we ship the full stack.
+
+**[EnergyDB](https://github.com/rebase-energy/energydb)** adds, on top of the same ClickHouse store (plus a thin PostgreSQL catalog):
+
+- 🌳 **Typed asset trees**: `Portfolio` → `Site` → `WindTurbine` / `PVArray` / `Battery`, etc. — every asset class from [EnergyDataModel](https://github.com/rebase-energy/EnergyDataModel).
+- 🔗 **Grid edges**: `Line`, transformer, pipe — connect any two nodes, attach their own time series.
+- 🧭 **Fluent path scopes**: `client.get_node("my-portfolio", "Offshore-1", "T01").read(name="power", data_type="actual")` resolves to one indexed SQL query.
+- ⚖️ **Per-series canonical units**: declare `MW` once; `pint` converts on every read and write via a `unit=` kwarg.
+- 🧬 **Run/workflow provenance**: `workflow_id`, `model_name`, `run_start_time`, etc. attached at write time.
+- 📋 **Diffable structural changes**: `dry_run=True` previews every rename, move, delete, or insert as a `TreeDiff` before you commit.
+
+Use **TimeDB** for the raw storage primitive. Use **EnergyDB** for an asset-aware catalog of energy portfolios.
 
 ---
 
 ## 🧪 Try it in Google Colab
 
-Want to try TimeDB without a local setup? Open our Quickstart in Colab — the first cell automatically installs PostgreSQL + ClickHouse inside the VM.
+Want to try TimeDB without a local setup? Open our Quickstart in Colab — the first cell automatically installs ClickHouse inside the VM.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb)
 
@@ -110,7 +115,7 @@ Want to try TimeDB without a local setup? Open our Quickstart in Colab — the f
 
 - [📖 Official Documentation](https://timedb.readthedocs.io)
 - [⚙️ Installation Guide](https://timedb.readthedocs.io/en/latest/installation.html)
-- [🐍 Python SDK Documentation](https://timedb.readthedocs.io/en/latest/sdk.html)
+- [🐍 SDK Guide](https://timedb.readthedocs.io/en/latest/sdk.html)
 - [🌐 Reference](https://timedb.readthedocs.io/en/latest/reference.html)
 - [💡 Examples & Notebooks](examples/)
 

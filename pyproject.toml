@@ -11,7 +11,7 @@ timedb = ["sql/*.sql"]
 [project]
 name = "timedb"
 version = "0.6.0"
-description = "Minimal stateless ClickHouse library for bitemporal time series"
+description = "Minimal stateless ClickHouse library for 3-dimensional time series"
 readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [

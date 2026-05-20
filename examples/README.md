@@ -1,16 +1,16 @@
 # timedb Examples
 
-Interactive Jupyter notebook demonstrating timedb's bitemporal time-series model.
+Interactive Jupyter notebook demonstrating timedb's 3-dimensional time-series model.
 
 ## Try in Google Colab
 
-Click the badge to open the notebook in Colab — no local setup required. The first cell installs PostgreSQL + ClickHouse automatically inside the Colab VM (~2–3 min).
+Click the badge to open the notebook in Colab — no local setup required. The first cell installs ClickHouse automatically inside the Colab VM (~2–3 min).
 
 | Notebook | Colab |
 |----------|-------|
 | Quickstart | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rebase-energy/timedb/blob/main/examples/quickstart.ipynb) |
 
-> **Note**: The Colab setup cell installs PostgreSQL + ClickHouse. Data persists only within the active Colab session.
+> **Note**: The Colab setup cell installs ClickHouse. Data persists only within the active Colab session.
 
 ## Prerequisites (local)
 
@@ -37,7 +37,7 @@ Click the badge to open the notebook in Colab — no local setup required. The f
 
 ### Quickstart (`quickstart.ipynb`)
 
-Walks through the full bitemporal model in one notebook:
+Walks through the full 3-dimensional model in one notebook:
 
 - Setup
 - Insert a forecast and read it back

@@ -3,7 +3,7 @@
 Welcome to TimeDB
 =================
 
-**TimeDB** is a minimal, stateless Python client for storing bitemporal
+**TimeDB** is a minimal, stateless Python client for storing 3-dimensional
 time-series data in `ClickHouse <https://clickhouse.com>`_.
 
 It is designed for workflows where forecasts get revised, observations
@@ -57,7 +57,7 @@ Quick Start
    # Latest value per valid_time (collapses overlapping runs).
    latest = td.read(series_ids=[42])
 
-   # Full bitemporal history — every forecast run side-by-side.
+   # Full forecast history — every forecast run side-by-side.
    history = td.read(series_ids=[42], include_knowledge_time=True)
 
 
