@@ -1,4 +1,4 @@
-"""timedb — minimal stateless ClickHouse library for bitemporal time series.
+"""timedb — minimal stateless ClickHouse library for 3-dimensional time series.
 
 Usage:
 

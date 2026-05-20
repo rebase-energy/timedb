@@ -14,7 +14,7 @@ TimeDB stores rows in two tables:
 
 - ``series_values`` — append-only time-series store. Sort key
   ``(series_id, valid_time, knowledge_time, change_time)`` covers both
-  flat and bitemporal reads. Partitioned by ``(retention, month)`` so
+  flat and overlapping reads. Partitioned by ``(retention, month)`` so
   TTLs drop whole partitions.
 - ``run_series`` — tiny ``(series_id → run_id)`` mapping. Lets
   "which runs touched this series" lookups skip the data table.
@@ -170,7 +170,7 @@ Each combination answers a different question:
 - ``include_updates=True`` — full correction chain on the
   currently-winning forecast run, with ``changed_by`` / ``annotation``
   per state transition.
-- Both — full bitemporal audit log: every state transition for every
+- Both — full 3D audit log: every state transition for every
   forecast run.
 
 .. code-block:: python
