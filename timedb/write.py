@@ -202,13 +202,13 @@ def write(
     pl_df = pl_df.with_columns(stamps)
 
     values_cols = [c for c in _SERIES_VALUES_COLUMNS if c in pl_df.columns]
-    # ``combine_chunks()`` is kept: clickhouse-connect's insert path streams
-    # chunks one at a time, and on chunked input the wire-side compression
-    # ends up resetting context per chunk (and per-chunk HTTP framing
-    # overhead on large arrays). Measured ~120 ms regression on the
-    # forecast_write @ 200 path when ``combine_chunks()`` was removed.
-    values_arrow = pl_df.select(values_cols).to_arrow().combine_chunks()
-    rs_arrow = pl_df.select(["series_id", "run_id"]).unique().to_arrow().combine_chunks()
+    # ``rechunk()`` on the polars side beats pyarrow's ``combine_chunks()``
+    # by ~1.4× on the 1.7M-row insert (36 ms → 26 ms measured), and still
+    # produces the single-chunk Arrow table that clickhouse-connect's
+    # insert path needs — without it, per-chunk HTTP framing + compression
+    # context resets give back ~120 ms on the forecast_write @ 200 path.
+    values_arrow = pl_df.select(values_cols).rechunk().to_arrow()
+    rs_arrow = pl_df.select(["series_id", "run_id"]).unique().rechunk().to_arrow()
 
     if _prof:
         profiling._record(profiling.PHASE_WRITE_NORMALIZE, time.perf_counter() - _t_norm)
