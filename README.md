@@ -90,7 +90,7 @@ TimeDB stores rows keyed by integer `series_id` and nothing else. That's enough 
 
 **[EnergyDB](https://github.com/rebase-energy/energydb)** adds, on top of the same ClickHouse store (plus a thin PostgreSQL catalog):
 
-- 🌳 **Typed asset trees**: `Portfolio` → `Site` → `WindTurbine` / `PVArray` / `Battery`, etc. — every asset class from [EnergyDataModel](https://github.com/rebase-energy/EnergyDataModel).
+- 🌳 **Typed asset trees**: `Portfolio` → `Site` → `WindTurbine` / `PVArray` / `Battery`, etc. — every asset class from [EnergyDataModel](https://github.com/rebase-energy/energydatamodel).
 - 🔗 **Grid edges**: `Line`, transformer, pipe — connect any two nodes, attach their own time series.
 - 🧭 **Fluent path scopes**: `client.get_node("my-portfolio", "Offshore-1", "T01").read(name="power", data_type="actual")` resolves to one indexed SQL query.
 - ⚖️ **Per-series canonical units**: declare `MW` once; `pint` converts on every read and write via a `unit=` kwarg.
