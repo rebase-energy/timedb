@@ -11,6 +11,10 @@ Public API
 
 .. autodata:: timedb.RETENTION_TIERS
 
+.. autoclass:: timedb.WriteResult
+   :members:
+   :show-inheritance:
+
 Profiling helpers
 -----------------
 

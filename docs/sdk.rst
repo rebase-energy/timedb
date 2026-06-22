@@ -111,6 +111,47 @@ older ``knowledge_time`` (the run being corrected) with a fresh
 ``change_time`` and the corrected ``value``. The reads documented below
 collapse correction chains automatically.
 
+Every ``write()`` returns a :class:`~timedb.WriteResult` — a
+``NamedTuple(written, skipped)`` of row counts. ``skipped`` is always ``0``
+unless ``skip_unchanged`` (below) was set.
+
+
+Skipping unchanged re-polls
+---------------------------
+
+Sources that re-poll the same ``valid_time`` window repeatedly (ENTSO-E and
+many TSO feeds) tend to append rows that are physically new but carry an
+identical ``(value, annotation, changed_by)`` — they differ only in
+``change_time`` (and usually ``knowledge_time``). The read path already
+collapses these duplicates (``argMax`` plus the distinct-from-previous
+filter), so storing them only inflates ClickHouse storage and merge/scan
+cost without changing any answer.
+
+Pass ``skip_unchanged=True`` to drop them at write time:
+
+.. code-block:: python
+
+   result = td.write(df, retention="medium", skip_unchanged=True)
+   print(result.written, result.skipped)   # e.g. 24 0  or  6 18
+
+``unchanged_scope`` controls how the comparison is scoped:
+
+- ``"valid_time"`` (default) — compare each incoming row against the single
+  *winning* stored value for its ``(series_id, valid_time)`` (largest
+  ``(knowledge_time, change_time)`` — exactly what a default ``read()``
+  surfaces). This is the right scope for idempotent re-polls.
+- ``"knowledge_time"`` — compare per ``(series_id, valid_time,
+  knowledge_time)``. A near-noop unless you pass a *stable* ``knowledge_time``:
+  the default stamps ``now()`` per batch, so every row otherwise lands under a
+  fresh, never-before-seen ``knowledge_time`` and nothing matches.
+
+The filter runs one bounded read-back over the incoming ``valid_time`` range
+(pruned by ``series_id`` and retention) plus a NaN-aware anti-join on the
+full ``(value, annotation, changed_by)`` tuple — the same tuple the audit
+read collapses on, so a dropped row is one no reader would ever surface. The
+mode is opt-in and never deletes already-stored rows: full provenance is
+preserved unless you ask for the dedup.
+
 
 Retention tiers
 ---------------
