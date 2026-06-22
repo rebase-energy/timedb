@@ -116,16 +116,16 @@ Every ``write()`` returns a :class:`~timedb.WriteResult` — a
 unless ``skip_unchanged`` (below) was set.
 
 
-Skipping unchanged re-polls
----------------------------
+Skipping unchanged writes
+-------------------------
 
-Sources that re-poll the same ``valid_time`` window repeatedly (ENTSO-E and
-many TSO feeds) tend to append rows that are physically new but carry an
-identical ``(value, annotation, changed_by)`` — they differ only in
-``change_time`` (and usually ``knowledge_time``). The read path already
-collapses these duplicates (``argMax`` plus the distinct-from-previous
-filter), so storing them only inflates ClickHouse storage and merge/scan
-cost without changing any answer.
+Writing the same ``valid_time`` window more than once with unchanged data
+appends rows that are physically new but carry an identical
+``(value, annotation, changed_by)`` — they differ only in ``change_time``
+(and usually ``knowledge_time``). The read path already collapses these
+duplicates (``argMax`` plus the distinct-from-previous filter), so storing
+them only inflates ClickHouse storage and merge/scan cost without changing
+any answer.
 
 Pass ``skip_unchanged=True`` to drop them at write time:
 
@@ -139,7 +139,8 @@ Pass ``skip_unchanged=True`` to drop them at write time:
 - ``"valid_time"`` (default) — compare each incoming row against the single
   *winning* stored value for its ``(series_id, valid_time)`` (largest
   ``(knowledge_time, change_time)`` — exactly what a default ``read()``
-  surfaces). This is the right scope for idempotent re-polls.
+  surfaces). This is the right scope when the same window is written
+  repeatedly with unchanged data.
 - ``"knowledge_time"`` — compare per ``(series_id, valid_time,
   knowledge_time)``. A near-noop unless you pass a *stable* ``knowledge_time``:
   the default stamps ``now()`` per batch, so every row otherwise lands under a

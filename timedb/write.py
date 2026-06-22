@@ -156,7 +156,7 @@ def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) 
         "max_vt": pl_df.get_column("valid_time").max(),
     }
     # ponytail: reads the whole [min_vt, max_vt] valid_time slab per series.
-    # Fine for contiguous re-poll windows; revisit if sparse batches dominate.
+    # Fine for contiguous write windows; revisit if sparse batches dominate.
     sql = f"""
     SELECT {cols}
     FROM series_values
