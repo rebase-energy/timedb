@@ -15,10 +15,12 @@ load_dotenv(find_dotenv())
 
 from . import profiling  # noqa: E402
 from .client import TimeDBClient  # noqa: E402
-from .write import RETENTION_TIERS  # noqa: E402
+from .write import RETENTION_TIERS, UnchangedScope, WriteResult  # noqa: E402
 
 __all__ = [
     "RETENTION_TIERS",
     "TimeDBClient",
+    "UnchangedScope",
+    "WriteResult",
     "profiling",
 ]

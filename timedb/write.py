@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from typing import Literal, NamedTuple
 
 import pandas as pd
 import polars as pl
@@ -112,14 +113,91 @@ def _insert_arrow_parallel(
         fb.result()
 
 
+class WriteResult(NamedTuple):
+    """Counts returned by :func:`write`. ``skipped`` is always 0 unless
+    ``skip_unchanged`` was set."""
+
+    written: int
+    skipped: int
+
+
+UnchangedScope = Literal["valid_time", "knowledge_time"]
+
+
+def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) -> pl.DataFrame:
+    """Drop incoming rows whose ``(value, annotation, changed_by)`` already
+    match the latest stored state for their comparison key.
+
+    ``scope="valid_time"`` compares against the single winning value per
+    ``(series_id, valid_time)`` (largest ``(knowledge_time, change_time)`` —
+    identical to ``read._read_latest``'s argMax). ``scope="knowledge_time"``
+    compares per ``(series_id, valid_time, knowledge_time)``.
+
+    Operates on the stamped frame (retention present, value NaN-filled). The
+    comparison tuple matches what ``read._read_latest_with_changes`` collapses
+    on, so a dropped row is one no reader would ever surface.
+    """
+    if pl_df.is_empty():
+        return pl_df
+
+    keys = ["series_id", "valid_time"]
+    if scope == "knowledge_time":
+        keys.append("knowledge_time")
+        cols = "series_id, valid_time, knowledge_time, value, annotation, changed_by"
+        order = "series_id, valid_time, knowledge_time, change_time DESC"
+    else:
+        cols = "series_id, valid_time, value, annotation, changed_by"
+        order = "series_id, valid_time, knowledge_time DESC, change_time DESC"
+
+    params = {
+        "sids": pl_df.get_column("series_id").unique().to_list(),
+        "rets": pl_df.get_column("retention").unique().to_list(),
+        "min_vt": pl_df.get_column("valid_time").min(),
+        "max_vt": pl_df.get_column("valid_time").max(),
+    }
+    # ponytail: reads the whole [min_vt, max_vt] valid_time slab per series.
+    # Fine for contiguous re-poll windows; revisit if sparse batches dominate.
+    sql = f"""
+    SELECT {cols}
+    FROM series_values
+    WHERE series_id IN {{sids:Array(UInt64)}}
+      AND retention IN {{rets:Array(String)}}
+      AND valid_time >= {{min_vt:DateTime64(6, 'UTC')}}
+      AND valid_time <= {{max_vt:DateTime64(6, 'UTC')}}
+    ORDER BY {order}
+    LIMIT 1 BY {", ".join(keys)}
+    """
+    stored = pl.from_arrow(ch_client.query_arrow(sql, parameters=params))
+    assert isinstance(stored, pl.DataFrame)
+    if stored.is_empty():
+        return pl_df
+
+    # changed_by is LowCardinality (arrives as an Arrow dictionary → Categorical);
+    # annotation is plain String. Cast both so the == comparison stays Utf8.
+    stored = stored.with_columns(
+        pl.col("annotation").cast(pl.Utf8),
+        pl.col("changed_by").cast(pl.Utf8),
+        pl.lit(True).alias("_in_store"),
+    )
+    j = pl_df.join(stored, on=keys, how="left", suffix="_st")
+    val_same = (pl.col("value") == pl.col("value_st")) | (pl.col("value").is_nan() & pl.col("value_st").is_nan())
+    same = (
+        val_same & (pl.col("annotation") == pl.col("annotation_st")) & (pl.col("changed_by") == pl.col("changed_by_st"))
+    )
+    keep = pl.col("_in_store").is_null() | (~same).fill_null(False)
+    return j.filter(keep).select(pl_df.columns)
+
+
 def write(
     ch_client,
     df: pd.DataFrame | pl.DataFrame,
     *,
     retention: str | None = None,
     knowledge_time: datetime | None = None,
+    skip_unchanged: bool = False,
+    unchanged_scope: UnchangedScope = "valid_time",
     aux_clients: Callable[[], list] | None = None,
-) -> None:
+) -> WriteResult:
     """Write time-series rows into ``series_values`` plus their ``run_series`` mapping.
 
     Required columns on ``df``: ``series_id``, ``valid_time``, ``value``.
@@ -140,6 +218,14 @@ def write(
 
     ``(series_id, run_id)`` pairs are also written to ``run_series`` so that
     "which runs touched this series" lookups don't need to scan ``series_values``.
+
+    When ``skip_unchanged`` is set, rows whose latest stored
+    ``(value, annotation, changed_by)`` already matches are dropped before the
+    insert (one bounded read-back). ``unchanged_scope="valid_time"`` (default)
+    compares the winning value per ``(series_id, valid_time)``;
+    ``"knowledge_time"`` compares per ``(series_id, valid_time, knowledge_time)``
+    — a near-noop unless a stable ``knowledge_time`` is supplied, since the
+    default stamps ``now()`` per batch. Returns counts of rows written/skipped.
     """
     _prof = profiling._enabled
     _t_total = time.perf_counter() if _prof else 0.0
@@ -201,6 +287,17 @@ def write(
 
     pl_df = pl_df.with_columns(stamps)
 
+    skipped = 0
+    if skip_unchanged:
+        if unchanged_scope not in ("valid_time", "knowledge_time"):
+            raise ValueError(
+                f"Unknown unchanged_scope {unchanged_scope!r}. Valid values: 'valid_time', 'knowledge_time'."
+            )
+        with profiling._phase(profiling.PHASE_WRITE_SKIP_UNCHANGED):
+            before = pl_df.height
+            pl_df = _filter_unchanged(ch_client, pl_df, scope=unchanged_scope)
+            skipped = before - pl_df.height
+
     values_cols = [c for c in _SERIES_VALUES_COLUMNS if c in pl_df.columns]
     # ``rechunk()`` on the polars side beats pyarrow's ``combine_chunks()``
     # by ~1.4× on the 1.7M-row insert (36 ms → 26 ms measured), and still
@@ -229,3 +326,5 @@ def write(
 
     if _prof:
         profiling._record(profiling.PHASE_WRITE_TOTAL, time.perf_counter() - _t_total)
+
+    return WriteResult(written=pl_df.height, skipped=skipped)

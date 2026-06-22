@@ -138,3 +138,58 @@ def test_run_series_mapping(td):
 def test_empty_series_list_returns_empty(td):
     result = td.read(series_ids=[], retention="medium")
     assert result.is_empty()
+
+
+# ── skip_unchanged ────────────────────────────────────────────────────────────
+
+
+def _row_count(td, series_id: int) -> int:
+    """Physical row count in series_values (not the collapsed read)."""
+    res = td._ch.query(
+        "SELECT count() FROM series_values WHERE series_id = {sid:UInt64}",
+        parameters={"sid": series_id},
+    )
+    return int(res.result_rows[0][0])
+
+
+def test_skip_unchanged_drops_identical_rewrite(td):
+    df = _flat_df(series_id=1, n=3)
+    td.write(df, retention="medium", knowledge_time=KT_1)
+    before = _row_count(td, 1)
+    # Same values under a NEW kt: valid_time scope ignores kt, so all skipped.
+    res = td.write(df, retention="medium", knowledge_time=KT_2, skip_unchanged=True)
+    assert (res.written, res.skipped) == (0, 3)
+    assert _row_count(td, 1) == before
+
+
+def test_skip_unchanged_keeps_changed_value(td):
+    df = _flat_df(series_id=1, n=3)
+    td.write(df, retention="medium", knowledge_time=KT_1)
+    before = _row_count(td, 1)
+    changed = df.with_columns(
+        pl.when(pl.int_range(pl.len()) == 1).then(pl.col("value") + 50).otherwise(pl.col("value")).alias("value")
+    )
+    res = td.write(changed, retention="medium", knowledge_time=KT_2, skip_unchanged=True)
+    assert (res.written, res.skipped) == (1, 2)
+    assert _row_count(td, 1) == before + 1
+
+
+def test_default_rewrite_still_appends(td):
+    df = _flat_df(series_id=1, n=3)
+    td.write(df, retention="medium", knowledge_time=KT_1)
+    before = _row_count(td, 1)
+    td.write(df, retention="medium", knowledge_time=KT_2)  # skip_unchanged defaults off
+    assert _row_count(td, 1) == before + 3
+
+
+def test_skip_unchanged_knowledge_time_scope(td):
+    df = _flat_df(series_id=1, n=2)
+    td.write(df, retention="medium", knowledge_time=KT_1)
+    before = _row_count(td, 1)
+    # Identical restatement under the SAME kt → skipped.
+    r1 = td.write(df, retention="medium", knowledge_time=KT_1, skip_unchanged=True, unchanged_scope="knowledge_time")
+    assert (r1.written, r1.skipped) == (0, 2)
+    # Same values under a NEW kt → kept (distinct vintage).
+    r2 = td.write(df, retention="medium", knowledge_time=KT_2, skip_unchanged=True, unchanged_scope="knowledge_time")
+    assert (r2.written, r2.skipped) == (2, 0)
+    assert _row_count(td, 1) == before + 2

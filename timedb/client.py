@@ -85,12 +85,16 @@ class TimeDBClient:
         *,
         retention: str | None = None,
         knowledge_time: datetime | None = None,
-    ) -> None:
+        skip_unchanged: bool = False,
+        unchanged_scope: _write.UnchangedScope = "valid_time",
+    ) -> _write.WriteResult:
         return _write.write(
             self._ch,
             df,
             retention=retention,
             knowledge_time=knowledge_time,
+            skip_unchanged=skip_unchanged,
+            unchanged_scope=unchanged_scope,
             aux_clients=self._ensure_aux_clients,
         )
 
