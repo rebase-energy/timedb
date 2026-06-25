@@ -14,11 +14,20 @@ from datetime import time as dt_time
 from importlib import resources
 
 import clickhouse_connect
+import clickhouse_connect.common
 import pandas as pd
 import polars as pl
 
 from . import read as _read
 from . import write as _write
+
+# ClickHouse Cloud marks some insert settings (e.g. ``max_partitions_per_insert_block``)
+# readonly for the connecting role. clickhouse-connect's default action is to raise
+# on any unknown/readonly setting; ``drop`` makes it skip them (with a logged warning)
+# instead, so the same insert settings work on Cloud and self-hosted alike. Dropped
+# guards like the partition-block limit just fall back to the server default, which is
+# safe — and on Cloud the limit is readonly so it could not be raised regardless.
+clickhouse_connect.common.set_setting("invalid_setting_action", "drop")
 
 
 def _get_ch_url() -> str:
@@ -26,6 +35,31 @@ def _get_ch_url() -> str:
     if not ch_url:
         raise ValueError("ClickHouse connection not configured. Pass ch_url or set TIMEDB_CH_URL.")
     return ch_url
+
+
+# CH client HTTP timeouts (seconds), both env-tunable without a code change.
+#
+# ``send_receive_timeout`` (TIMEDB_CH_TIMEOUT) is the response *read* timeout.
+#
+# ``connect_timeout`` (TIMEDB_CH_CONNECT_TIMEOUT) is the TCP/TLS connect timeout
+# AND — crucially — the socket timeout urllib3 uses while *sending the request
+# body*. It only switches to the read timeout once the body is fully sent. So a
+# large bulk insert over a slow or distant link (e.g. a laptop → ClickHouse
+# Cloud in another region) is bounded by ``connect_timeout``, not the read one:
+# clickhouse-connect's default of 10s kills the upload mid-flight while it is
+# still legitimately streaming. Raise it; for a very slow uplink, raise it more.
+_DEFAULT_CH_TIMEOUT_S = 900
+_DEFAULT_CH_CONNECT_TIMEOUT_S = 60
+
+
+def _get_ch_timeout() -> int:
+    raw = os.environ.get("TIMEDB_CH_TIMEOUT")
+    return int(raw) if raw else _DEFAULT_CH_TIMEOUT_S
+
+
+def _get_ch_connect_timeout() -> int:
+    raw = os.environ.get("TIMEDB_CH_CONNECT_TIMEOUT")
+    return int(raw) if raw else _DEFAULT_CH_CONNECT_TIMEOUT_S
 
 
 _DDL = resources.files("timedb").joinpath("sql", "ch_create_tables.sql").read_text(encoding="utf-8")
@@ -44,15 +78,22 @@ class TimeDBClient:
 
     def __init__(self, ch_url: str | None = None):
         self._ch_url = ch_url or _get_ch_url()
-        self._ch = clickhouse_connect.get_client(dsn=self._ch_url)
+        self._ch_timeout = _get_ch_timeout()
+        self._ch_connect_timeout = _get_ch_connect_timeout()
+        self._ch = self._new_client()
         self._aux_clients: list = []
+
+    def _new_client(self):
+        return clickhouse_connect.get_client(
+            dsn=self._ch_url,
+            connect_timeout=self._ch_connect_timeout,
+            send_receive_timeout=self._ch_timeout,
+        )
 
     def _ensure_aux_clients(self) -> list:
         """Lazily build the sidecar insert clients (constructed on first big write)."""
         if not self._aux_clients:
-            self._aux_clients = [
-                clickhouse_connect.get_client(dsn=self._ch_url) for _ in range(self._AUX_INSERT_CLIENTS)
-            ]
+            self._aux_clients = [self._new_client() for _ in range(self._AUX_INSERT_CLIENTS)]
         return self._aux_clients
 
     # ------------------------------------------------------------------
