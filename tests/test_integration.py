@@ -15,11 +15,12 @@ if not os.environ.get("TIMEDB_CH_URL"):
     pytest.skip("TIMEDB_CH_URL not set — skipping integration tests", allow_module_level=True)
 
 
-# Use recent dates so the 'short' retention (180-day TTL) doesn't drop rows
-# out from under the test.
-BASE_VT = datetime(2026, 1, 1, tzinfo=UTC)
-KT_1 = datetime(2026, 1, 1, 6, tzinfo=UTC)
-KT_2 = datetime(2026, 1, 1, 7, tzinfo=UTC)
+# Anchor to a recent date *relative to now* so the 'short' retention (180-day
+# TTL) never drops rows out from under the test as the calendar advances. A
+# fixed literal here silently rots once (literal + 180 days) passes.
+BASE_VT = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+KT_1 = BASE_VT + timedelta(hours=6)
+KT_2 = BASE_VT + timedelta(hours=7)
 
 
 def _flat_df(series_id: int, n: int = 4) -> pl.DataFrame:
