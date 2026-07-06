@@ -194,3 +194,21 @@ def test_skip_unchanged_knowledge_time_scope(td):
     r2 = td.write(df, retention="medium", knowledge_time=KT_2, skip_unchanged=True, unchanged_scope="knowledge_time")
     assert (r2.written, r2.skipped) == (2, 0)
     assert _row_count(td, 1) == before + 2
+
+
+def test_read_null_value_roundtrip(td):
+    """A null written value (stored as the NaN sentinel) reads back as null;
+    non-null values are untouched. Guards the gated NaN-to-null conversion in
+    ``_fetch`` (the mask rebuild only runs when NaNs are actually present)."""
+    df = _flat_df(series_id=1, n=3).with_columns(
+        pl.when(pl.col("valid_time") == BASE_VT).then(None).otherwise(pl.col("value")).alias("value")
+    )
+    td.write(df, retention="medium", knowledge_time=KT_1)
+    result = td.read(series_ids=[1], retention="medium").sort("valid_time")
+    assert result["value"].to_list() == [None, 1.0, 2.0]
+
+    # No-NaN series: values come back exactly, dtype stays Float64.
+    td.write(_flat_df(series_id=2, n=3), retention="medium", knowledge_time=KT_1)
+    clean = td.read(series_ids=[2], retention="medium").sort("valid_time")
+    assert clean["value"].to_list() == [0.0, 1.0, 2.0]
+    assert clean["value"].dtype == pl.Float64

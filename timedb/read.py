@@ -24,6 +24,7 @@ from datetime import time as dt_time
 import numpy as np
 import polars as pl
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from . import profiling
 
@@ -54,11 +55,16 @@ def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
     _t = _time.perf_counter() if _prof else 0.0
     table = _empty(cols) if result.num_rows == 0 else result.select(cols)
     if "value" in table.schema.names:
+        # NaN is the storage sentinel for null. Detect via Arrow compute (a
+        # zero-copy SIMD scan) and only rebuild the column with a null mask when
+        # NaNs actually exist — the rebuild's O(rows) numpy copy used to run on
+        # every read just to make this decision.
         idx = table.schema.get_field_index("value")
-        arr = table.column(idx).to_numpy(zero_copy_only=False)
-        mask = np.isnan(arr)
-        if mask.any():
-            table = table.set_column(idx, "value", pa.array(arr, mask=mask))
+        col = table.column(idx)
+        # ty: pyarrow.compute kernels are generated at runtime; the stubs lack them.
+        if len(col) and pc.any(pc.is_nan(col)).as_py():  # ty: ignore[unresolved-attribute]
+            arr = col.to_numpy(zero_copy_only=False)
+            table = table.set_column(idx, "value", pa.array(arr, mask=np.isnan(arr)))
     if _prof:
         profiling._record(profiling.PHASE_READ_BUILD_ARROW, _time.perf_counter() - _t)
     return table
