@@ -18,9 +18,11 @@ load_dotenv(".env")
 
 from . import profiling  # noqa: E402
 from .client import TimeDBClient  # noqa: E402
+from .read import PgEngineMeta  # noqa: E402
 from .write import RETENTION_TIERS, UnchangedScope, WriteResult  # noqa: E402
 
 __all__ = [
+    "PgEngineMeta",
     "RETENTION_TIERS",
     "TimeDBClient",
     "UnchangedScope",

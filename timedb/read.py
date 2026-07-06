@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time as _time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from datetime import time as dt_time
 
@@ -63,6 +64,39 @@ def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
     return table
 
 
+@dataclass(frozen=True)
+class PgEngineMeta:
+    """Resolve the series_id set inside ClickHouse via a PostgreSQL engine table over the
+    ``series_meta`` view, instead of the caller passing an explicit id array.
+
+    Replicates energydb's subtree predicate (the root node itself + its descendants, plus the
+    optional ``data_type`` / ``name`` filters). The read then filters ``series_id`` and
+    ``retention`` by subqueries over this ``meta`` CTE rather than array parameters.
+    """
+
+    table: str
+    root_path: str
+    data_type: str | None = None
+    name: str | None = None
+
+
+def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
+    """Build the ``WITH meta AS (...)`` CTE + params for a :class:`PgEngineMeta` source."""
+    conds = ["(path = {ms_root:String} OR path LIKE {ms_prefix:String})"]
+    params: dict = {"ms_root": ms.root_path, "ms_prefix": ms.root_path.rstrip("/") + "/%"}
+    if ms.data_type is not None:
+        conds.append("data_type = {ms_dt:String}")
+        params["ms_dt"] = ms.data_type
+    if ms.name is not None:
+        conds.append("name = {ms_name:String}")
+        params["ms_name"] = ms.name
+    cte = (
+        "WITH meta AS (SELECT toUInt64(series_id) AS series_id, retention "
+        f"FROM {ms.table} WHERE " + " AND ".join(conds) + ") "
+    )
+    return cte, params
+
+
 def _where(
     *,
     series_ids: Sequence[int],
@@ -71,17 +105,25 @@ def _where(
     end_valid: datetime | None = None,
     start_known: datetime | None = None,
     end_known: datetime | None = None,
+    meta_source: PgEngineMeta | None = None,
 ) -> tuple[str, dict]:
-    filters = ["series_id IN {series_ids:Array(UInt64)}"]
-    params: dict = {"series_ids": list(series_ids)}
-
-    if retention is not None:
-        if isinstance(retention, str):
-            filters.append("retention = {retention:String}")
-            params["retention"] = retention
-        else:
-            filters.append("retention IN {retentions:Array(String)}")
-            params["retentions"] = list(retention)
+    params: dict = {}
+    if meta_source is None:
+        filters = ["series_id IN {series_ids:Array(UInt64)}"]
+        params["series_ids"] = list(series_ids)
+        if retention is not None:
+            if isinstance(retention, str):
+                filters.append("retention = {retention:String}")
+                params["retention"] = retention
+            else:
+                filters.append("retention IN {retentions:Array(String)}")
+                params["retentions"] = list(retention)
+    else:
+        # ids + retentions come from the engine-resolved meta CTE (prefixed onto the query)
+        filters = [
+            "series_id IN (SELECT series_id FROM meta)",
+            "retention IN (SELECT DISTINCT retention FROM meta)",
+        ]
 
     if start_valid is not None:
         filters.append("valid_time >= {start_valid:DateTime64(6, 'UTC')}")
@@ -103,13 +145,14 @@ def _where(
 # ---------------------------------------------------------------------------
 
 
-def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
+def _read_latest(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
     """Latest value per (series_id, valid_time).
 
     The tuple-argMax picks the row with the largest (knowledge_time,
     change_time) — latest issue, latest correction within it.
     """
     sql = f"""
+    {cte}
     SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
     FROM series_values
     {where}
@@ -120,7 +163,7 @@ def _read_latest(ch_client, where: str, params: dict) -> pa.Table:
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
 
-def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
+def _read_latest_with_changes(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
     """Correction chain of the winning forecast per (series_id, valid_time).
 
     Emits only real state transitions (consecutive duplicates collapsed by
@@ -129,6 +172,7 @@ def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
     # Semi-join: the inner query picks max(knowledge_time) per (sid, vt) along
     # the sort-key prefix; the outer filter is a tuple PK match (seek, not sort).
     sql = f"""
+    {cte}
     SELECT series_id, valid_time, change_time, value, changed_by, annotation
     FROM (
         SELECT
@@ -164,7 +208,7 @@ def _read_latest_with_changes(ch_client, where: str, params: dict) -> pa.Table:
 # ---------------------------------------------------------------------------
 
 
-def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
+def _read_overlapping(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
     """One row per (series_id, knowledge_time, valid_time).
 
     LIMIT 1 BY streams a "first row per group" pass: the input arrives in
@@ -174,6 +218,7 @@ def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
     change_time) GROUP BY (sid, vt, kt), but with no aggregation state.
     """
     sql = f"""
+    {cte}
     SELECT series_id, knowledge_time, valid_time, value
     FROM series_values
     {where}
@@ -188,9 +233,10 @@ def _read_overlapping(ch_client, where: str, params: dict) -> pa.Table:
     )
 
 
-def _read_overlapping_with_changes(ch_client, where: str, params: dict) -> pa.Table:
+def _read_overlapping_with_changes(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
     """Full 3D audit: every state transition per (series_id, kt, vt)."""
     sql = f"""
+    {cte}
     SELECT series_id, valid_time, knowledge_time, change_time, value, changed_by, annotation
     FROM (
         SELECT
@@ -275,12 +321,13 @@ def read(
     end_known: datetime | None = None,
     include_updates: bool = False,
     include_knowledge_time: bool = False,
+    meta_source: PgEngineMeta | None = None,
 ) -> pl.DataFrame:
     _prof = profiling._enabled
     _t_total = _time.perf_counter() if _prof else 0.0
 
     series_ids = list(series_ids)
-    if not series_ids:
+    if meta_source is None and not series_ids:
         return pl.DataFrame()
 
     where, params = _where(
@@ -290,19 +337,24 @@ def read(
         end_valid=end_valid,
         start_known=start_known,
         end_known=end_known,
+        meta_source=meta_source,
     )
+    cte = ""
+    if meta_source is not None:
+        cte, cte_params = _meta_cte(meta_source)
+        params.update(cte_params)
 
     if include_updates:
         arrow = (
-            _read_overlapping_with_changes(ch_client, where, params)
+            _read_overlapping_with_changes(ch_client, where, params, cte)
             if include_knowledge_time
-            else _read_latest_with_changes(ch_client, where, params)
+            else _read_latest_with_changes(ch_client, where, params, cte)
         )
     else:
         arrow = (
-            _read_overlapping(ch_client, where, params)
+            _read_overlapping(ch_client, where, params, cte)
             if include_knowledge_time
-            else _read_latest(ch_client, where, params)
+            else _read_latest(ch_client, where, params, cte)
         )
 
     _t = _time.perf_counter() if _prof else 0.0

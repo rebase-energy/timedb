@@ -150,6 +150,7 @@ class TimeDBClient:
         end_known: datetime | None = None,
         include_updates: bool = False,
         include_knowledge_time: bool = False,
+        meta_source: _read.PgEngineMeta | None = None,
     ) -> pl.DataFrame:
         return _read.read(
             self._ch,
@@ -161,6 +162,7 @@ class TimeDBClient:
             end_known=end_known,
             include_updates=include_updates,
             include_knowledge_time=include_knowledge_time,
+            meta_source=meta_source,
         )
 
     def read_relative(
