@@ -113,6 +113,63 @@ def _insert_arrow_parallel(
         fb.result()
 
 
+def _run_inserts(ch_client, aux: list, values_arrow: pa.Table, rs_arrow: pa.Table) -> None:
+    """Insert ``series_values`` and ``run_series`` concurrently, one client per lane.
+
+    Every insert pays a fixed per-insert commit latency (~135 ms on ClickHouse
+    Cloud, where each part is committed to object storage before the ack), so
+    running the tiny ``run_series`` insert after the values insert doubles the
+    CH cost of a small write. Instead the two ride separate client sessions:
+    the values lane keeps the existing large-batch split (``ch_client`` +
+    ``aux[0]``), the run_series lane takes the next free sidecar (``aux[1]``
+    when the split is active, ``aux[0]`` otherwise). With no sidecars at all,
+    both lanes run serially on ``ch_client`` as before.
+
+    Every lane is awaited even when another fails — an abandoned in-flight
+    insert would poison its shared client session for the next call. The first
+    error is re-raised, values lane first.
+    """
+    n_values, n_rs = values_arrow.num_rows, rs_arrow.num_rows
+
+    def _values() -> None:
+        with profiling._phase(profiling.PHASE_WRITE_SERIES_VALUES_INSERT):
+            _insert_arrow_parallel(ch_client, aux[:1], "series_values", values_arrow, settings=_CH_INSERT_SETTINGS)
+
+    def _run_series(client) -> None:
+        with profiling._phase(profiling.PHASE_WRITE_RUN_SERIES_INSERT):
+            client.insert_arrow("run_series", rs_arrow, settings=_CH_INSERT_SETTINGS)
+
+    if not n_rs:
+        if n_values:
+            _values()
+        return
+    if not n_values:
+        _run_series(ch_client)
+        return
+
+    # Both lanes have work: pick the run_series client that doesn't collide
+    # with the values lane (which occupies ch_client, plus aux[0] when split).
+    split = n_values >= _PARALLEL_INSERT_THRESHOLD and bool(aux)
+    rs_client = (aux[1] if len(aux) > 1 else None) if split else (aux[0] if aux else None)
+    if rs_client is None:
+        # Not enough client lanes to overlap; keep the (bigger-win) values
+        # split and run the run_series insert serially after it.
+        _values()
+        _run_series(ch_client)
+        return
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [ex.submit(_values), ex.submit(_run_series, rs_client)]
+        errors: list[BaseException] = []
+        for f in futures:
+            try:
+                f.result()
+            except BaseException as e:  # noqa: BLE001 — collected and re-raised below
+                errors.append(e)
+        if errors:
+            raise errors[0]
+
+
 class WriteResult(NamedTuple):
     """Counts returned by :func:`write`. ``skipped`` is always 0 unless
     ``skip_unchanged`` was set."""
@@ -196,7 +253,7 @@ def write(
     knowledge_time: datetime | None = None,
     skip_unchanged: bool = False,
     unchanged_scope: UnchangedScope = "valid_time",
-    aux_clients: Callable[[], list] | None = None,
+    aux_clients: Callable[[int], list] | None = None,
 ) -> WriteResult:
     """Write time-series rows into ``series_values`` plus their ``run_series`` mapping.
 
@@ -218,6 +275,11 @@ def write(
 
     ``(series_id, run_id)`` pairs are also written to ``run_series`` so that
     "which runs touched this series" lookups don't need to scan ``series_values``.
+    That insert runs concurrently with the ``series_values`` insert (each CH
+    insert pays a fixed commit latency; see :func:`_run_inserts`), so a failed
+    values insert can leave ``run_series`` rows for a run whose data never
+    landed — the mirror image of the pre-existing values-without-``run_series``
+    failure mode, detectable by ``run_id`` either way.
 
     When ``skip_unchanged`` is set, rows whose latest stored
     ``(value, annotation, changed_by)`` already matches are dropped before the
@@ -310,19 +372,12 @@ def write(
     if _prof:
         profiling._record(profiling.PHASE_WRITE_NORMALIZE, time.perf_counter() - _t_norm)
 
-    if values_arrow.num_rows > 0:
-        _t = time.perf_counter() if _prof else 0.0
-        aux = aux_clients() if aux_clients is not None else []
-        _insert_arrow_parallel(ch_client, aux, "series_values", values_arrow, settings=_CH_INSERT_SETTINGS)
-        if _prof:
-            profiling._record(profiling.PHASE_WRITE_SERIES_VALUES_INSERT, time.perf_counter() - _t)
-
-    if rs_arrow.num_rows > 0:
-        _t = time.perf_counter() if _prof else 0.0
-        # ``run_series`` is tiny (one row per series_id) — always serial.
-        ch_client.insert_arrow("run_series", rs_arrow, settings=_CH_INSERT_SETTINGS)
-        if _prof:
-            profiling._record(profiling.PHASE_WRITE_RUN_SERIES_INSERT, time.perf_counter() - _t)
+    if values_arrow.num_rows > 0 or rs_arrow.num_rows > 0:
+        # One sidecar client for the run_series lane, a second when the values
+        # batch is large enough to split.
+        split = values_arrow.num_rows >= _PARALLEL_INSERT_THRESHOLD
+        aux = aux_clients(2 if split else 1) if aux_clients is not None else []
+        _run_inserts(ch_client, aux, values_arrow, rs_arrow)
 
     if _prof:
         profiling._record(profiling.PHASE_WRITE_TOTAL, time.perf_counter() - _t_total)

@@ -48,6 +48,7 @@ PHASE_EDB_RESOLVE_SUBTREE = "edb.resolve_subtree"  # recursive subtree CTE in _r
 PHASE_EDB_RESOLVE = "edb.resolve"  # resolve_for_read/resolve_for_write + resolve_manifest
 PHASE_EDB_MANIFEST_BUILD = "edb.manifest_build"  # polars stitching in _build_read_manifest / _attach_routing
 PHASE_EDB_RUNS_UPSERT = "edb.runs_upsert"  # runs_mod.upsert_run + the trailing PG commit
+PHASE_EDB_COMMIT = "edb.commit"  # explicit PG COMMIT round-trip in write pipelines
 PHASE_EDB_UNIT_CONVERT = "edb.unit_convert"  # apply_manifest_unit_conversion / apply_per_series_unit
 PHASE_EDB_HIERARCHY_JOIN = "edb.hierarchy_join"  # join_hierarchy / join_edge_hierarchy post-read
 PHASE_EDB_OUTPUT_CONVERT = "edb.output_convert"  # to_polars(input) + to_output(result) boundary conversions

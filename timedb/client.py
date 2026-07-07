@@ -70,11 +70,14 @@ _CH_TABLES = ["series_values", "run_series"]
 class TimeDBClient:
     # Auxiliary CH clients for parallel inserts. clickhouse-connect rejects
     # concurrent calls on a single client ("Attempt to execute concurrent
-    # queries within the same session"), so we keep a small sidecar pool
-    # for the write path. Two clients is the sweet spot: measured 556 ms →
-    # 349 ms (1.59×) on the 1.7 M-row insert; 4-way is no better because the
-    # CH-side write pipeline (parsing + merge tree insert) saturates first.
-    _AUX_INSERT_CLIENTS = 1  # number of clients beyond ``self._ch``
+    # queries within the same session"), so the write path keeps a small
+    # sidecar pool: one client so the tiny ``run_series`` insert can overlap
+    # the ``series_values`` insert (each insert pays a fixed per-insert commit
+    # latency — ~135 ms on ClickHouse Cloud — so serializing them doubles it),
+    # plus a second one when a large values batch is split. Two-way is the
+    # split sweet spot: measured 556 ms → 349 ms (1.59×) on the 1.7 M-row
+    # insert; 4-way is no better because the CH-side write pipeline
+    # (parsing + merge tree insert) saturates first.
 
     def __init__(self, ch_url: str | None = None):
         self._ch_url = ch_url or _get_ch_url()
@@ -90,10 +93,14 @@ class TimeDBClient:
             send_receive_timeout=self._ch_timeout,
         )
 
-    def _ensure_aux_clients(self) -> list:
-        """Lazily build the sidecar insert clients (constructed on first big write)."""
-        if not self._aux_clients:
-            self._aux_clients = [self._new_client() for _ in range(self._AUX_INSERT_CLIENTS)]
+    def _ensure_aux_clients(self, n: int) -> list:
+        """Return at least ``n`` sidecar insert clients, grown lazily.
+
+        A small-write-only process never builds more than one (the
+        ``run_series`` lane); the second appears on the first split insert.
+        """
+        while len(self._aux_clients) < n:
+            self._aux_clients.append(self._new_client())
         return self._aux_clients
 
     # ------------------------------------------------------------------
