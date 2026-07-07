@@ -111,7 +111,19 @@ def _scalar_or_set(conds: list[str], params: dict, column: str, value, key: str)
 
 
 def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
-    """Build the ``WITH meta AS (...)`` CTE + params for a :class:`PgEngineMeta` source."""
+    """Build the scalar ``WITH (...) AS _meta`` prefix + params for a :class:`PgEngineMeta` source.
+
+    A **scalar** tuple subquery, not a named CTE: ClickHouse substitutes named CTEs
+    textually, so every ``IN (SELECT .. FROM meta)`` reference re-queried Postgres
+    through the engine (measured: 2 external queries per read, 4 for the
+    latest-with-changes body, which embeds the WHERE twice). A scalar subquery is
+    evaluated exactly once and referenced as a constant — one engine round-trip per
+    read regardless of how many times the filters mention it, and ``IN <constant
+    array>`` keeps index analysis and partition pruning.
+
+    Size note: the scalar result must fit ClickHouse's constant-value limits; fine for
+    metadata-sized catalogs (thousands to tens of thousands of matching series).
+    """
     params: dict = {}
     if ms.root_path is not None:
         conds = ["(path = {ms_root:String} OR path LIKE {ms_prefix:String})"]
@@ -141,8 +153,8 @@ def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
         _scalar_or_set(conds, params, "name", ms.name, "ms_name")
 
     cte = (
-        "WITH meta AS (SELECT toUInt64(series_id) AS series_id, retention "
-        f"FROM {ms.table} WHERE " + " AND ".join(conds) + ") "
+        "WITH (SELECT (groupArray(toUInt64(series_id)), groupUniqArray(retention)) "
+        f"FROM {ms.table} WHERE " + " AND ".join(conds) + ") AS _meta "
     )
     return cte, params
 
@@ -169,10 +181,11 @@ def _where(
                 filters.append("retention IN {retentions:Array(String)}")
                 params["retentions"] = list(retention)
     else:
-        # ids + retentions come from the engine-resolved meta CTE (prefixed onto the query)
+        # ids + retentions come from the engine-resolved scalar (prefixed onto the query);
+        # _meta.1 = Array(UInt64) series_ids, _meta.2 = Array(String) retentions.
         filters = [
-            "series_id IN (SELECT series_id FROM meta)",
-            "retention IN (SELECT DISTINCT retention FROM meta)",
+            "series_id IN _meta.1",
+            "retention IN _meta.2",
         ]
 
     if start_valid is not None:
