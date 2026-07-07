@@ -177,6 +177,7 @@ class TimeDBClient:
         end_valid: datetime | None = None,
         days_ahead: int | None = None,
         time_of_day: dt_time | None = None,
+        meta_source: _read.PgEngineMeta | None = None,
     ) -> pl.DataFrame:
         return _read.read_relative(
             self._ch,
@@ -189,6 +190,7 @@ class TimeDBClient:
             end_valid=end_valid,
             days_ahead=days_ahead,
             time_of_day=time_of_day,
+            meta_source=meta_source,
         )
 
     def read_run_series(

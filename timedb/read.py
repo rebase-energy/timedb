@@ -73,29 +73,73 @@ def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
 @dataclass(frozen=True)
 class PgEngineMeta:
     """Resolve the series_id set inside ClickHouse via a PostgreSQL engine table over the
-    ``series_meta`` view, instead of the caller passing an explicit id array.
+    ``series_meta`` view, instead of the caller passing an explicit id array. The read then
+    filters ``series_id`` and ``retention`` by subqueries over this ``meta`` CTE rather than
+    array parameters.
 
-    Replicates energydb's subtree predicate (the root node itself + its descendants, plus the
-    optional ``data_type`` / ``name`` filters). The read then filters ``series_id`` and
-    ``retention`` by subqueries over this ``meta`` CTE rather than array parameters.
+    Exactly one addressing field must be set:
+
+    * ``root_path`` — a node subtree (the root itself + descendants, path-prefix match);
+    * ``paths`` — an exact set of node paths (path-routed manifests);
+    * ``node_uuids`` / ``edge_uuids`` — owner-uuid sets (uuid-routed manifests, edge scopes);
+    * ``edge_triple`` — one ``(from_path, to_path, edge_type)`` edge identity.
+
+    ``data_type`` / ``name`` narrow the series set; each accepts a scalar (scope reads) or a
+    set of values (manifests). Set-valued filters make the engine-resolved ids a *superset*
+    (the cartesian of the sets) — every predicate here pushes down to PG as a single-column
+    comparison, and the caller is expected to trim against its exactly-resolved meta.
     """
 
     table: str
-    root_path: str
-    data_type: str | None = None
-    name: str | None = None
+    root_path: str | None = None
+    paths: tuple[str, ...] | None = None
+    node_uuids: tuple[str, ...] | None = None
+    edge_uuids: tuple[str, ...] | None = None
+    edge_triple: tuple[str, str, str] | None = None
+    data_type: str | tuple[str, ...] | None = None
+    name: str | tuple[str, ...] | None = None
+
+
+def _scalar_or_set(conds: list[str], params: dict, column: str, value, key: str) -> None:
+    """Append an ``=`` (scalar) or ``IN`` (set) condition for a series filter."""
+    if isinstance(value, str):
+        conds.append(f"{column} = {{{key}:String}}")
+        params[key] = value
+    else:
+        conds.append(f"{column} IN {{{key}:Array(String)}}")
+        params[key] = list(value)
 
 
 def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
     """Build the ``WITH meta AS (...)`` CTE + params for a :class:`PgEngineMeta` source."""
-    conds = ["(path = {ms_root:String} OR path LIKE {ms_prefix:String})"]
-    params: dict = {"ms_root": ms.root_path, "ms_prefix": ms.root_path.rstrip("/") + "/%"}
+    params: dict = {}
+    if ms.root_path is not None:
+        conds = ["(path = {ms_root:String} OR path LIKE {ms_prefix:String})"]
+        params |= {"ms_root": ms.root_path, "ms_prefix": ms.root_path.rstrip("/") + "/%"}
+    elif ms.paths is not None:
+        conds = ["path IN {ms_paths:Array(String)}"]
+        params["ms_paths"] = list(ms.paths)
+    elif ms.node_uuids is not None:
+        conds = ["node_uuid IN {ms_node_uuids:Array(String)}"]
+        params["ms_node_uuids"] = list(ms.node_uuids)
+    elif ms.edge_uuids is not None:
+        conds = ["edge_uuid IN {ms_edge_uuids:Array(String)}"]
+        params["ms_edge_uuids"] = list(ms.edge_uuids)
+    elif ms.edge_triple is not None:
+        conds = [
+            "from_path = {ms_from:String}",
+            "to_path = {ms_to:String}",
+            "edge_type = {ms_etype:String}",
+        ]
+        params |= {"ms_from": ms.edge_triple[0], "ms_to": ms.edge_triple[1], "ms_etype": ms.edge_triple[2]}
+    else:
+        raise ValueError("PgEngineMeta needs one of root_path / paths / node_uuids / edge_uuids / edge_triple.")
+
     if ms.data_type is not None:
-        conds.append("data_type = {ms_dt:String}")
-        params["ms_dt"] = ms.data_type
+        _scalar_or_set(conds, params, "data_type", ms.data_type, "ms_dt")
     if ms.name is not None:
-        conds.append("name = {ms_name:String}")
-        params["ms_name"] = ms.name
+        _scalar_or_set(conds, params, "name", ms.name, "ms_name")
+
     cte = (
         "WITH meta AS (SELECT toUInt64(series_id) AS series_id, retention "
         f"FROM {ms.table} WHERE " + " AND ".join(conds) + ") "
@@ -281,13 +325,19 @@ def _read_relative_sql(
     start_window: datetime,
     start_valid: datetime | None,
     end_valid: datetime | None,
+    meta_source: PgEngineMeta | None = None,
 ) -> pa.Table:
     where, params = _where(
         series_ids=series_ids,
         retention=retention,
         start_valid=start_valid,
         end_valid=end_valid,
+        meta_source=meta_source,
     )
+    cte = ""
+    if meta_source is not None:
+        cte, cte_params = _meta_cte(meta_source)
+        params.update(cte_params)
     params.update(
         {
             "window_secs": int(window_length.total_seconds()),
@@ -296,6 +346,7 @@ def _read_relative_sql(
         }
     )
     sql = f"""
+    {cte}
     SELECT series_id, valid_time, argMax(value, (knowledge_time, change_time)) AS value
     FROM series_values
     {where}
@@ -385,6 +436,7 @@ def read_relative(
     end_valid: datetime | None = None,
     days_ahead: int | None = None,
     time_of_day: dt_time | None = None,
+    meta_source: PgEngineMeta | None = None,
 ) -> pl.DataFrame:
     using_daily = days_ahead is not None or time_of_day is not None
     using_explicit = window_length is not None or issue_offset is not None
@@ -412,7 +464,7 @@ def read_relative(
             raise ValueError("start_window is required when start_valid is not provided.")
 
     series_ids = list(series_ids)
-    if not series_ids:
+    if meta_source is None and not series_ids:
         return pl.DataFrame()
 
     _prof = profiling._enabled
@@ -427,6 +479,7 @@ def read_relative(
         start_window=start_window,
         start_valid=start_valid,
         end_valid=end_valid,
+        meta_source=meta_source,
     )
 
     _t = _time.perf_counter() if _prof else 0.0
