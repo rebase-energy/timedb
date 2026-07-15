@@ -47,9 +47,9 @@ _DEFAULT_RETENTION = "forever"
 _CH_INSERT_SETTINGS = {"max_partitions_per_insert_block": 1000}
 
 # When ``values_arrow`` exceeds this row count we split the batch in half and
-# fire both halves in parallel on two CH clients. clickhouse-connect rejects
-# concurrent calls on a single client (per-session lock), so the
-# ``TimeDBClient`` keeps a sidecar pool exposed via the ``aux_clients`` arg.
+# fire both halves in parallel on two CH clients (the ``TimeDBClient`` sidecar
+# pool exposed via the ``aux_clients`` arg; clients are sessionless, so the
+# separate instances are a lane convention rather than a session requirement).
 # 100K rows is the break-even point we measured — below that, the thread
 # pool / Arrow-slice overhead exceeds the wire-time savings; above it the
 # parallel insert is consistently 1.4–1.6× faster (556 → 349 ms on 1.7 M).
@@ -119,15 +119,15 @@ def _run_inserts(ch_client, aux: list, values_arrow: pa.Table, rs_arrow: pa.Tabl
     Every insert pays a fixed per-insert commit latency (~135 ms on ClickHouse
     Cloud, where each part is committed to object storage before the ack), so
     running the tiny ``run_series`` insert after the values insert doubles the
-    CH cost of a small write. Instead the two ride separate client sessions:
+    CH cost of a small write. Instead the two ride separate client instances:
     the values lane keeps the existing large-batch split (``ch_client`` +
     ``aux[0]``), the run_series lane takes the next free sidecar (``aux[1]``
     when the split is active, ``aux[0]`` otherwise). With no sidecars at all,
     both lanes run serially on ``ch_client`` as before.
 
-    Every lane is awaited even when another fails — an abandoned in-flight
-    insert would poison its shared client session for the next call. The first
-    error is re-raised, values lane first.
+    Every lane is awaited even when another fails — leaking an in-flight
+    insert past the write call would leave its outcome unknown to the caller.
+    The first error is re-raised, values lane first.
     """
     n_values, n_rs = values_arrow.num_rows, rs_arrow.num_rows
 
