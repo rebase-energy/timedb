@@ -8,7 +8,6 @@ identity resolution — both are the caller's responsibility (energydb).
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Literal, NamedTuple
@@ -47,12 +46,12 @@ _DEFAULT_RETENTION = "forever"
 _CH_INSERT_SETTINGS = {"max_partitions_per_insert_block": 1000}
 
 # When ``values_arrow`` exceeds this row count we split the batch in half and
-# fire both halves in parallel on two CH clients (the ``TimeDBClient`` sidecar
-# pool exposed via the ``aux_clients`` arg; clients are sessionless, so the
-# separate instances are a lane convention rather than a session requirement).
-# 100K rows is the break-even point we measured — below that, the thread
-# pool / Arrow-slice overhead exceeds the wire-time savings; above it the
-# parallel insert is consistently 1.4–1.6× faster (556 → 349 ms on 1.7 M).
+# fire both halves in parallel. The two inserts share the one sessionless CH
+# client — a sessionless client places no concurrency limit on its queries, so
+# the parallelism lives in the client's HTTP connection pool, not in separate
+# client instances. 100K rows is the break-even point we measured — below that,
+# the thread pool / Arrow-slice overhead exceeds the wire-time savings; above it
+# the parallel insert is consistently 1.4–1.6× faster (556 → 349 ms on 1.7 M).
 _PARALLEL_INSERT_THRESHOLD = 100_000
 
 
@@ -81,25 +80,25 @@ def _validate_columns(df: pl.DataFrame) -> None:
 
 def _insert_arrow_parallel(
     ch_client,
-    aux_clients: list,
     table: str,
     arrow: pa.Table,
     *,
     settings: dict,
 ) -> None:
-    """Insert a large Arrow batch via two CH clients in parallel.
+    """Insert a large Arrow batch as two concurrent halves on one CH client.
 
     Splits ``arrow`` roughly in half by row range (``Table.slice`` is
-    zero-copy) and fires both halves through a 2-worker thread pool.
-    Falls back to a single serial insert if the row count is below the
-    parallel-insert threshold or no aux clients are available.
+    zero-copy) and fires both halves through a 2-worker thread pool. Both
+    inserts run on ``ch_client``; it is sessionless, so its two queries
+    overlap over the client's HTTP connection pool. Falls back to a single
+    serial insert below the parallel-insert threshold.
 
     Two parallel inserts produce two parts instead of one — CH merges them
     in the background, and at the row counts we hit (one batch per write)
     this stays well within the part budget. ``max_partitions_per_insert_block``
     is applied to each half independently.
     """
-    if arrow.num_rows < _PARALLEL_INSERT_THRESHOLD or not aux_clients:
+    if arrow.num_rows < _PARALLEL_INSERT_THRESHOLD:
         ch_client.insert_arrow(table, arrow, settings=settings)
         return
 
@@ -108,22 +107,22 @@ def _insert_arrow_parallel(
     b = arrow.slice(half, arrow.num_rows - half)
     with ThreadPoolExecutor(max_workers=2) as ex:
         fa = ex.submit(ch_client.insert_arrow, table, a, settings=settings)
-        fb = ex.submit(aux_clients[0].insert_arrow, table, b, settings=settings)
+        fb = ex.submit(ch_client.insert_arrow, table, b, settings=settings)
         fa.result()
         fb.result()
 
 
-def _run_inserts(ch_client, aux: list, values_arrow: pa.Table, rs_arrow: pa.Table) -> None:
-    """Insert ``series_values`` and ``run_series`` concurrently, one client per lane.
+def _run_inserts(ch_client, values_arrow: pa.Table, rs_arrow: pa.Table) -> None:
+    """Insert ``series_values`` and ``run_series`` concurrently on one CH client.
 
     Every insert pays a fixed per-insert commit latency (~135 ms on ClickHouse
     Cloud, where each part is committed to object storage before the ack), so
     running the tiny ``run_series`` insert after the values insert doubles the
-    CH cost of a small write. Instead the two ride separate client instances:
-    the values lane keeps the existing large-batch split (``ch_client`` +
-    ``aux[0]``), the run_series lane takes the next free sidecar (``aux[1]``
-    when the split is active, ``aux[0]`` otherwise). With no sidecars at all,
-    both lanes run serially on ``ch_client`` as before.
+    CH cost of a small write. Instead the two lanes overlap: ``ch_client`` is
+    sessionless, so its concurrent queries run in parallel over the client's
+    HTTP connection pool. When the values batch is large it splits further (see
+    :func:`_insert_arrow_parallel`), for up to three inserts in flight at once —
+    still well within the pool. Lanes with no rows are skipped.
 
     Every lane is awaited even when another fails — leaking an in-flight
     insert past the write call would leave its outcome unknown to the caller.
@@ -133,33 +132,22 @@ def _run_inserts(ch_client, aux: list, values_arrow: pa.Table, rs_arrow: pa.Tabl
 
     def _values() -> None:
         with profiling._phase(profiling.PHASE_WRITE_SERIES_VALUES_INSERT):
-            _insert_arrow_parallel(ch_client, aux[:1], "series_values", values_arrow, settings=_CH_INSERT_SETTINGS)
+            _insert_arrow_parallel(ch_client, "series_values", values_arrow, settings=_CH_INSERT_SETTINGS)
 
-    def _run_series(client) -> None:
+    def _run_series() -> None:
         with profiling._phase(profiling.PHASE_WRITE_RUN_SERIES_INSERT):
-            client.insert_arrow("run_series", rs_arrow, settings=_CH_INSERT_SETTINGS)
+            ch_client.insert_arrow("run_series", rs_arrow, settings=_CH_INSERT_SETTINGS)
 
     if not n_rs:
         if n_values:
             _values()
         return
     if not n_values:
-        _run_series(ch_client)
-        return
-
-    # Both lanes have work: pick the run_series client that doesn't collide
-    # with the values lane (which occupies ch_client, plus aux[0] when split).
-    split = n_values >= _PARALLEL_INSERT_THRESHOLD and bool(aux)
-    rs_client = (aux[1] if len(aux) > 1 else None) if split else (aux[0] if aux else None)
-    if rs_client is None:
-        # Not enough client lanes to overlap; keep the (bigger-win) values
-        # split and run the run_series insert serially after it.
-        _values()
-        _run_series(ch_client)
+        _run_series()
         return
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        futures = [ex.submit(_values), ex.submit(_run_series, rs_client)]
+        futures = [ex.submit(_values), ex.submit(_run_series)]
         errors: list[BaseException] = []
         for f in futures:
             try:
@@ -253,7 +241,6 @@ def write(
     knowledge_time: datetime | None = None,
     skip_unchanged: bool = False,
     unchanged_scope: UnchangedScope = "valid_time",
-    aux_clients: Callable[[int], list] | None = None,
 ) -> WriteResult:
     """Write time-series rows into ``series_values`` plus their ``run_series`` mapping.
 
@@ -373,11 +360,7 @@ def write(
         profiling._record(profiling.PHASE_WRITE_NORMALIZE, time.perf_counter() - _t_norm)
 
     if values_arrow.num_rows > 0 or rs_arrow.num_rows > 0:
-        # One sidecar client for the run_series lane, a second when the values
-        # batch is large enough to split.
-        split = values_arrow.num_rows >= _PARALLEL_INSERT_THRESHOLD
-        aux = aux_clients(2 if split else 1) if aux_clients is not None else []
-        _run_inserts(ch_client, aux, values_arrow, rs_arrow)
+        _run_inserts(ch_client, values_arrow, rs_arrow)
 
     if _prof:
         profiling._record(profiling.PHASE_WRITE_TOTAL, time.perf_counter() - _t_total)

@@ -68,24 +68,20 @@ _CH_TABLES = ["series_values", "run_series"]
 
 
 class TimeDBClient:
-    # Auxiliary CH clients for parallel inserts: one so the tiny ``run_series``
-    # insert can overlap the ``series_values`` insert (each insert pays a fixed
-    # per-insert commit latency — ~135 ms on ClickHouse Cloud — so serializing
-    # them doubles it), plus a second when a large values batch is split.
-    # Two-way is the split sweet spot: measured 556 ms → 349 ms (1.59×) on the
-    # 1.7 M-row insert; 4-way is no better because the CH-side write pipeline
-    # (parsing + merge tree insert) saturates first.
-    #
-    # Clients are sessionless (see ``_new_client``), so a single client could
-    # in principle carry all insert lanes concurrently; the sidecar pool is a
-    # removal candidate once that path is re-benchmarked.
+    # One CH client. The write path overlaps its ``series_values`` and
+    # ``run_series`` inserts (and, for a large values batch, two split halves)
+    # concurrently on this single client — it is sessionless (see
+    # ``_new_client``), so its queries run in parallel over the client's HTTP
+    # connection pool rather than contending for one session. This overlap saves
+    # the fixed per-insert commit latency (~135 ms on ClickHouse Cloud) that
+    # serializing the lanes would pay twice; measured 556 ms → 349 ms (1.59×) on
+    # the 1.7 M-row split insert.
 
     def __init__(self, ch_url: str | None = None):
         self._ch_url = ch_url or _get_ch_url()
         self._ch_timeout = _get_ch_timeout()
         self._ch_connect_timeout = _get_ch_connect_timeout()
         self._ch = self._new_client()
-        self._aux_clients: list = []
 
     def _new_client(self):
         # Sessionless on purpose: a ClickHouse session serializes queries (the
@@ -102,16 +98,6 @@ class TimeDBClient:
             send_receive_timeout=self._ch_timeout,
             autogenerate_session_id=False,
         )
-
-    def _ensure_aux_clients(self, n: int) -> list:
-        """Return at least ``n`` sidecar insert clients, grown lazily.
-
-        A small-write-only process never builds more than one (the
-        ``run_series`` lane); the second appears on the first split insert.
-        """
-        while len(self._aux_clients) < n:
-            self._aux_clients.append(self._new_client())
-        return self._aux_clients
 
     # ------------------------------------------------------------------
     # Schema
@@ -153,7 +139,6 @@ class TimeDBClient:
             knowledge_time=knowledge_time,
             skip_unchanged=skip_unchanged,
             unchanged_scope=unchanged_scope,
-            aux_clients=self._ensure_aux_clients,
         )
 
     def read(
