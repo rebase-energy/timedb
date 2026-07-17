@@ -10,7 +10,7 @@ timedb = ["sql/*.sql"]
 
 [project]
 name = "timedb"
-version = "0.8.0"
+version = "0.8.1"
 description = "Minimal stateless ClickHouse library for 3-dimensional time series"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,7 +27,7 @@ dependencies = [
   "polars>=1.0.0",
   "pyarrow>=14.0",
   "numpy>=1.24",
-  "timedatamodel==0.8.0",
+  "timedatamodel==0.8.1",
   "uuid6>=2024.1",
   "clickhouse-connect>=0.15.1",
 ]
