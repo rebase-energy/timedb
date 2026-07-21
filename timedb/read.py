@@ -82,7 +82,11 @@ class PgEngineMeta:
     * ``root_path`` — a node subtree (the root itself + descendants, path-prefix match);
     * ``paths`` — an exact set of node paths (path-routed manifests);
     * ``node_uuids`` / ``edge_uuids`` — owner-uuid sets (uuid-routed manifests, edge scopes);
-    * ``edge_triple`` — one ``(from_path, to_path, edge_type)`` edge identity.
+    * ``edge_triple`` — one ``(from_path, to_path, edge_type)`` edge identity (edge scopes);
+    * ``edge_triples`` — a set of ``(from_path, to_path, edge_type)`` identities
+      (triple-routed manifests), pushed down as three single-column ``IN`` filters. Like
+      the set-valued ``data_type`` / ``name`` below, this resolves a *cartesian superset*
+      of the requested triples; the caller trims against its exactly-resolved meta.
 
     ``data_type`` / ``name`` narrow the series set; each accepts a scalar (scope reads) or a
     set of values (manifests). Set-valued filters make the engine-resolved ids a *superset*
@@ -96,6 +100,7 @@ class PgEngineMeta:
     node_uuids: tuple[str, ...] | None = None
     edge_uuids: tuple[str, ...] | None = None
     edge_triple: tuple[str, str, str] | None = None
+    edge_triples: tuple[tuple[str, str, str], ...] | None = None
     data_type: str | tuple[str, ...] | None = None
     name: str | tuple[str, ...] | None = None
 
@@ -144,8 +149,24 @@ def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
             "edge_type = {ms_etype:String}",
         ]
         params |= {"ms_from": ms.edge_triple[0], "ms_to": ms.edge_triple[1], "ms_etype": ms.edge_triple[2]}
+    elif ms.edge_triples is not None:
+        # Set-valued: three single-column INs over the unique per-column values.
+        # This resolves the cartesian superset of the requested triples (index-
+        # friendly, one round-trip); the caller trims to the exact PG resolve.
+        conds = [
+            "from_path IN {ms_from:Array(String)}",
+            "to_path IN {ms_to:Array(String)}",
+            "edge_type IN {ms_etype:Array(String)}",
+        ]
+        params |= {
+            "ms_from": list({t[0] for t in ms.edge_triples}),
+            "ms_to": list({t[1] for t in ms.edge_triples}),
+            "ms_etype": list({t[2] for t in ms.edge_triples}),
+        }
     else:
-        raise ValueError("PgEngineMeta needs one of root_path / paths / node_uuids / edge_uuids / edge_triple.")
+        raise ValueError(
+            "PgEngineMeta needs one of root_path / paths / node_uuids / edge_uuids / edge_triple / edge_triples."
+        )
 
     if ms.data_type is not None:
         _scalar_or_set(conds, params, "data_type", ms.data_type, "ms_dt")
