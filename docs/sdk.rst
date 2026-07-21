@@ -42,6 +42,17 @@ Connecting
    td = TimeDBClient()                                  # reads TIMEDB_CH_URL
    td = TimeDBClient(ch_url="http://localhost:8123/")   # explicit
 
+``ch_url`` is the only constructor argument; with it omitted the client reads
+``TIMEDB_CH_URL`` and raises ``ValueError`` if unset. Two optional environment
+variables tune the underlying ``clickhouse-connect`` client:
+
+- ``TIMEDB_CH_TIMEOUT`` — response read timeout in seconds (default ``900``).
+- ``TIMEDB_CH_CONNECT_TIMEOUT`` — connect / request-send timeout in seconds
+  (default ``60``).
+
+The client is **sessionless** on purpose, so multiple reads can overlap
+concurrently on one instance.
+
 
 Schema management
 -----------------
