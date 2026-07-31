@@ -36,7 +36,7 @@ At the heart of TimeDB is its three-dimensional approach to time. We track not j
 - 🔄 **Auditable Updates:** Corrections are new rows with a fresh `change_time`; reads collapse them into the latest state, with full history available on demand.
 - ⏪ **True Backtesting:** Query historical data as of any point in time (*"What did our model know last Monday?"*), or use `read_relative()` for per-window day-ahead cutoffs.
 - 🗂️ **Retention Tiers:** Pick `short` / `medium` / `long` / `forever` per series; ClickHouse drops whole partitions when TTLs expire.
-- 🧹 **Idempotent Writes:** Opt into `write(..., skip_unchanged=True)` and rows that only duplicate the latest stored value are dropped before insert — writing the same window repeatedly stops bloating storage. Off by default; full provenance kept unless you ask.
+- 🧹 **Idempotent Writes:** Opt into `write(..., skip_unchanged=True)` and rows that only duplicate the latest stored value are dropped before insert — writing the same window repeatedly stops bloating storage. Off by default; full provenance kept unless you ask. `unchanged_scope="auto"` applies a different comparison key per series in one call, so a frame mixing plain actuals with versioned publications dedupes each correctly.
 - 🪶 **Stateless & Minimal:** One class, two tables, no catalog. Series identity (`series_id`) is owned by the caller — no naming, units, or labels to keep in sync.
 
 ---

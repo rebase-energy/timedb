@@ -15,6 +15,16 @@ Public API
    :members:
    :show-inheritance:
 
+.. autodata:: timedb.UnchangedScope
+
+   The comparison key for ``write(skip_unchanged=True)``: ``"valid_time"``,
+   ``"knowledge_time"``, or ``"auto"`` (per-series, driven by
+   ``knowledge_time_scoped_series``).
+
+.. autoclass:: timedb.PgEngineMeta
+   :members:
+   :show-inheritance:
+
 Profiling helpers
 -----------------
 

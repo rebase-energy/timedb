@@ -1,81 +1,53 @@
 # timedb Tests
 
-This directory contains the test suite for timedb.
+The full guide is [TESTING.md](../TESTING.md); this is the short version.
 
-## Running Tests
+## Prerequisites
 
-### Prerequisites
-
-1. **Test Database**: You need ClickHouse for testing. Set the connection string:
-   ```bash
-   # Bash/Zsh
-   export TIMEDB_CH_URL='http://default:devpassword@localhost:8123/default'
-   ```
-
-   ```fish
-   # Fish
-   set -x TIMEDB_CH_URL http://default:devpassword@localhost:8123/default
-   ```
-
-2. **Install Test Dependencies**:
-   ```bash
-   pip install -e ".[test]"
-   ```
-
-### Run All Tests
+ClickHouse is the only service the tests need:
 
 ```bash
-pytest tests/
+# Bash/Zsh
+export TIMEDB_CH_URL='http://default:devpassword@localhost:8123/default'
 ```
 
-### Run Specific Test File
+```fish
+# Fish
+set -x TIMEDB_CH_URL http://default:devpassword@localhost:8123/default
+```
 
 ```bash
-pytest tests/test_insert.py
+pip install -e ".[test]"
 ```
 
-### Run with Coverage
+> Without `TIMEDB_CH_URL` the live tests **skip** rather than fail. Check the
+> `N passed, M skipped` summary — a non-zero skip count means ClickHouse
+> wasn't reachable.
+
+## Running
 
 ```bash
-pytest tests/ --cov=timedb --cov-report=html
+pytest tests/                                 # all
+pytest tests/ -v                              # verbose
+pytest tests/test_integration.py              # one file
+pytest tests/ --cov=timedb --cov-report=html  # coverage
 ```
 
-### Run with Verbose Output
+## Files
 
-```bash
-pytest tests/ -v
-```
+- `test_integration.py` — end-to-end write/read against live ClickHouse
+- `test_write_validation.py` — input validation, `skip_unchanged` scopes
+- `test_write_concurrency.py` — concurrent and split inserts
+- `test_client_sessionless.py` — overlapping queries on one client
+- `test_imports.py` — public API imports
 
-## Test Structure
+No `conftest.py`: modules needing ClickHouse skip themselves at import time,
+and shared helpers live in the file that uses them.
 
-- `conftest.py`: Pytest fixtures and configuration
-- `test_insert.py`: Tests for inserting runs and values
-- `test_read.py`: Tests for reading values
-- `test_update.py`: Tests for updating records
+## Conventions
 
-## Test Fixtures
-
-The test suite uses fixtures defined in `conftest.py`:
-
-- `test_db_conninfo`: Provides the test database connection string
-- `clean_db`: Creates a fresh database schema for each test
-- `sample_run_id`: Generates a UUID for test runs
-- `sample_workflow_id`: Provides a test workflow ID
-- `sample_datetime`: Provides a sample datetime for testing
-
-## Writing New Tests
-
-When writing new tests:
-
-1. Use the `clean_db` fixture to get a clean database for each test
-2. Use the sample fixtures (`sample_run_id`, etc.) for consistent test data
-3. Follow the existing test patterns for consistency
-4. Add docstrings explaining what each test verifies
-
-## Notes
-
-- Tests are designed to be independent and can run in any order
-- Each test gets a fresh database schema (via the `clean_db` fixture)
-- Tests use timezone-aware datetimes (UTC) as required by timedb
-- The test database should be separate from your development database
-
+- Allocate fresh `series_id`s per test — timedb has no catalog, so the caller
+  owns identity.
+- Timezone-aware UTC datetimes only; naive timestamps raise.
+- Anchor timestamps relative to `now()`, never a fixed literal (the `short`
+  tier's 180-day TTL would eventually drop the rows).

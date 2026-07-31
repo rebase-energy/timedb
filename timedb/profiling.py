@@ -6,7 +6,7 @@ to collect phase-level timing breakdowns.
 
 Not thread-safe; designed for single-threaded benchmark use.
 
-Usage:
+Usage::
 
     from timedb import profiling
 
@@ -16,7 +16,8 @@ Usage:
     phases = profiling.collect()   # dict of phase -> elapsed seconds
     profiling.disable()
 
-    # Or, for hot-path instrumentation:
+Or, for hot-path instrumentation::
+
     with profiling._phase(profiling.PHASE_EDB_RESOLVE):
         ...
 """

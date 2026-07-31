@@ -156,6 +156,32 @@ Pass ``skip_unchanged=True`` to drop them at write time:
   knowledge_time)``. A near-noop unless you pass a *stable* ``knowledge_time``:
   the default stamps ``now()`` per batch, so every row otherwise lands under a
   fresh, never-before-seen ``knowledge_time`` and nothing matches.
+- ``"auto"`` — apply **both** keys in one call, split per series. The
+  knowledge-time key is used for the series ids listed in
+  ``knowledge_time_scoped_series``; the valid-time key for every other series
+  in the frame. Requires ``knowledge_time_scoped_series`` (an empty
+  collection is valid and makes ``"auto"`` equivalent to ``"valid_time"``);
+  supplying that argument with any other scope raises.
+
+.. code-block:: python
+
+   # Series 7 and 9 hold versioned publications: a re-publication at a new
+   # knowledge_time is real data even when its values repeat. Everything
+   # else in the frame is deduped against the winning value per valid_time.
+   td.write(
+       df,
+       skip_unchanged=True,
+       unchanged_scope="auto",
+       knowledge_time_scoped_series={7, 9},
+   )
+
+``"auto"`` exists because the right comparison key is a property of the
+*series*, not of the call: a frame spanning both kinds cannot be deduped
+correctly by any single key. timedb stays agnostic about *why* a series needs
+the knowledge-time key — the caller supplies the id set. (energydb derives it
+from each series' registered ``timeseries_type`` and defaults its own writes
+to ``"auto"``.) The split costs one bounded read-back per partition and still
+produces a single insert.
 
 The filter runs one bounded read-back over the incoming ``valid_time`` range
 (pruned by ``series_id`` and retention) plus a NaN-aware anti-join on the
