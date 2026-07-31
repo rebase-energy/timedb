@@ -222,8 +222,11 @@ def test_skip_unchanged_auto_scope_mixes_keys_in_one_write(td):
 
     # The new vintage is readable at its own knowledge time — the data that the
     # uniform valid_time scope would have silently lost.
-    history = td.read(series_ids=[2], retention="medium", include_updates=True)
+    history = td.read(series_ids=[2], retention="medium", include_knowledge_time=True)
     assert set(history.get_column("knowledge_time").to_list()) == {KT_1, KT_2}
+    # ...and the deduped series kept only the original vintage.
+    flat_history = td.read(series_ids=[1], retention="medium", include_knowledge_time=True)
+    assert set(flat_history.get_column("knowledge_time").to_list()) == {KT_1}
 
 
 def test_skip_unchanged_auto_with_empty_set_matches_valid_time(td):
