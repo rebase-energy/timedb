@@ -8,7 +8,7 @@ Pure time-series I/O. No metadata, no runs table, no shape dispatch. Callers
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta
 from datetime import time as dt_time
 from importlib import resources
@@ -131,6 +131,7 @@ class TimeDBClient:
         knowledge_time: datetime | None = None,
         skip_unchanged: bool = False,
         unchanged_scope: _write.UnchangedScope = "valid_time",
+        knowledge_time_scoped_series: Collection[int] | None = None,
     ) -> _write.WriteResult:
         return _write.write(
             self._ch,
@@ -139,6 +140,7 @@ class TimeDBClient:
             knowledge_time=knowledge_time,
             skip_unchanged=skip_unchanged,
             unchanged_scope=unchanged_scope,
+            knowledge_time_scoped_series=knowledge_time_scoped_series,
         )
 
     def read(

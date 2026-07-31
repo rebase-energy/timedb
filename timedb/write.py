@@ -8,6 +8,7 @@ identity resolution — both are the caller's responsibility (energydb).
 from __future__ import annotations
 
 import time
+from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Literal, NamedTuple
@@ -166,7 +167,18 @@ class WriteResult(NamedTuple):
     skipped: int
 
 
-UnchangedScope = Literal["valid_time", "knowledge_time"]
+UnchangedScope = Literal["valid_time", "knowledge_time", "auto"]
+"""Comparison key for ``skip_unchanged``.
+
+``"valid_time"`` and ``"knowledge_time"`` apply one key to the whole batch.
+``"auto"`` applies the knowledge_time-scoped key to the series named by
+``write(knowledge_time_scoped_series=...)`` and the valid_time-scoped key to
+every other series, so one call can write series that need different
+comparisons. timedb has no notion of *why* a series needs the finer key —
+that judgement (e.g. energydb's OVERLAPPING series type) belongs to the
+caller, which is also why the parameter is named for what timedb does with
+the set rather than for what the caller means by it.
+"""
 
 
 def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) -> pl.DataFrame:
@@ -233,6 +245,43 @@ def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) 
     return j.filter(keep).select(pl_df.columns)
 
 
+def _filter_unchanged_auto(
+    ch_client, pl_df: pl.DataFrame, *, knowledge_time_scoped_series: Collection[int]
+) -> pl.DataFrame:
+    """Per-series dispatch for ``unchanged_scope="auto"``.
+
+    Splits the stamped frame on membership in ``knowledge_time_scoped_series``
+    and runs :func:`_filter_unchanged` over each side with its own scope, so
+    series needing ``(series_id, valid_time, knowledge_time)`` and series
+    needing ``(series_id, valid_time)`` are compared correctly in the same
+    call. At most two read-backs, each *narrower* than the single-scope query
+    would be (the series-id, retention, and valid_time bounds are computed per
+    partition). The pipeline continues to one Arrow insert either way.
+
+    Row order is not preserved across the split — irrelevant, since the only
+    consumer is an unordered bulk insert.
+    """
+    kt_ids = list(knowledge_time_scoped_series)
+    if not kt_ids:
+        # No series needs the finer key: exactly today's default behavior.
+        return _filter_unchanged(ch_client, pl_df, scope="valid_time")
+
+    is_kt = pl.col("series_id").is_in(kt_ids)
+    kt_part = pl_df.filter(is_kt)
+    vt_part = pl_df.filter(~is_kt)
+    # Skip a partition that this batch doesn't touch — no wasted read-back.
+    if kt_part.is_empty():
+        return _filter_unchanged(ch_client, pl_df, scope="valid_time")
+    if vt_part.is_empty():
+        return _filter_unchanged(ch_client, pl_df, scope="knowledge_time")
+    return pl.concat(
+        [
+            _filter_unchanged(ch_client, kt_part, scope="knowledge_time"),
+            _filter_unchanged(ch_client, vt_part, scope="valid_time"),
+        ]
+    )
+
+
 def write(
     ch_client,
     df: pd.DataFrame | pl.DataFrame,
@@ -241,6 +290,7 @@ def write(
     knowledge_time: datetime | None = None,
     skip_unchanged: bool = False,
     unchanged_scope: UnchangedScope = "valid_time",
+    knowledge_time_scoped_series: Collection[int] | None = None,
 ) -> WriteResult:
     """Write time-series rows into ``series_values`` plus their ``run_series`` mapping.
 
@@ -270,11 +320,25 @@ def write(
 
     When ``skip_unchanged`` is set, rows whose latest stored
     ``(value, annotation, changed_by)`` already matches are dropped before the
-    insert (one bounded read-back). ``unchanged_scope="valid_time"`` (default)
-    compares the winning value per ``(series_id, valid_time)``;
-    ``"knowledge_time"`` compares per ``(series_id, valid_time, knowledge_time)``
-    — a near-noop unless a stable ``knowledge_time`` is supplied, since the
-    default stamps ``now()`` per batch. Returns counts of rows written/skipped.
+    insert (one bounded read-back). ``unchanged_scope`` picks the comparison key:
+
+    * ``"valid_time"`` (default) — the winning value per
+      ``(series_id, valid_time)``.
+    * ``"knowledge_time"`` — per ``(series_id, valid_time, knowledge_time)``.
+      A near-noop unless a stable ``knowledge_time`` is supplied, since the
+      default stamps ``now()`` per batch.
+    * ``"auto"`` — the ``"knowledge_time"`` key for series listed in
+      ``knowledge_time_scoped_series`` and the ``"valid_time"`` key for all
+      others, in a single call. Required when one batch mixes series that need
+      different keys; ``knowledge_time_scoped_series`` must then be supplied
+      (an empty collection is valid and behaves exactly like ``"valid_time"``).
+
+    ``knowledge_time_scoped_series`` is only meaningful for ``"auto"`` — pairing
+    it with another scope raises rather than silently ignoring it, same spirit
+    as the retention column/kwarg guard above. Both arguments are ignored
+    entirely when ``skip_unchanged`` is false.
+
+    Returns counts of rows written/skipped.
     """
     _prof = profiling._enabled
     _t_total = time.perf_counter() if _prof else 0.0
@@ -338,13 +402,30 @@ def write(
 
     skipped = 0
     if skip_unchanged:
-        if unchanged_scope not in ("valid_time", "knowledge_time"):
+        if unchanged_scope not in ("valid_time", "knowledge_time", "auto"):
             raise ValueError(
-                f"Unknown unchanged_scope {unchanged_scope!r}. Valid values: 'valid_time', 'knowledge_time'."
+                f"Unknown unchanged_scope {unchanged_scope!r}. Valid values: 'valid_time', 'knowledge_time', 'auto'."
+            )
+        if unchanged_scope == "auto" and knowledge_time_scoped_series is None:
+            raise ValueError(
+                "unchanged_scope='auto' requires knowledge_time_scoped_series: the set of "
+                "series_ids to compare per (series_id, valid_time, knowledge_time). Pass an "
+                "empty collection if no series needs that key."
+            )
+        if unchanged_scope != "auto" and knowledge_time_scoped_series is not None:
+            raise ValueError(
+                f"knowledge_time_scoped_series is only meaningful with unchanged_scope='auto'; "
+                f"got unchanged_scope={unchanged_scope!r}. Use one or the other."
             )
         with profiling._phase(profiling.PHASE_WRITE_SKIP_UNCHANGED):
             before = pl_df.height
-            pl_df = _filter_unchanged(ch_client, pl_df, scope=unchanged_scope)
+            if unchanged_scope == "auto":
+                assert knowledge_time_scoped_series is not None  # guarded above
+                pl_df = _filter_unchanged_auto(
+                    ch_client, pl_df, knowledge_time_scoped_series=knowledge_time_scoped_series
+                )
+            else:
+                pl_df = _filter_unchanged(ch_client, pl_df, scope=unchanged_scope)
             skipped = before - pl_df.height
 
     values_cols = [c for c in _SERIES_VALUES_COLUMNS if c in pl_df.columns]

@@ -241,3 +241,188 @@ def test_unknown_unchanged_scope_rejected():
             skip_unchanged=True,
             unchanged_scope="bogus",  # ty: ignore[invalid-argument-type]
         )
+
+
+# ── unchanged_scope="auto": per-series comparison keys ───────────────────────
+
+_KT_LATER = datetime(2024, 6, 2, tzinfo=UTC)
+_H0 = datetime(2024, 1, 1, 0, tzinfo=UTC)
+
+
+def _stored_kt_table(rows: list[tuple]) -> pa.Table:
+    """``(series_id, valid_time, knowledge_time, value, annotation, changed_by)`` —
+    the knowledge_time-scope read-back shape."""
+    return pa.table(
+        {
+            "series_id": pa.array([r[0] for r in rows], type=pa.uint64()),
+            "valid_time": pa.array([r[1] for r in rows], type=_VT_TYPE),
+            "knowledge_time": pa.array([r[2] for r in rows], type=_VT_TYPE),
+            "value": pa.array([r[3] for r in rows], type=pa.float64()),
+            "annotation": pa.array([r[4] for r in rows], type=pa.string()),
+            "changed_by": pa.array([r[5] for r in rows], type=pa.string()),
+        }
+    )
+
+
+class _ScopeAwareClient(_RecordingClient):
+    """Serves the read-back shape matching each query's scope.
+
+    ``"auto"`` issues one query per partition, so a single canned table can't
+    answer both — this dispatches on the projected columns and records which
+    scopes were asked for, which is how the partitioning itself gets asserted.
+    """
+
+    def __init__(self, *, vt_rows: list[tuple], kt_rows: list[tuple]):
+        super().__init__()
+        self._vt = _stored_table(vt_rows)
+        self._kt = _stored_kt_table(kt_rows)
+        self.scopes: list[str] = []
+
+    def query_arrow(self, sql, parameters=None):  # noqa: ARG002
+        self.query_calls += 1
+        # The kt-scoped projection carries knowledge_time; the vt-scoped one does not.
+        if "valid_time, knowledge_time, value" in sql:
+            self.scopes.append("knowledge_time")
+            return self._kt
+        self.scopes.append("valid_time")
+        return self._vt
+
+
+def _mixed_incoming() -> pl.DataFrame:
+    """One row each for series 1 (valid_time-scoped) and series 2, 3 (kt-scoped)."""
+    return pl.DataFrame(
+        {
+            "series_id": [1, 2, 3],
+            "valid_time": [_H0, _H0, _H0],
+            "value": [5.0, 7.0, 9.0],
+        }
+    )
+
+
+def test_auto_with_empty_set_matches_valid_time_scope():
+    """No series needs the finer key → 'auto' is exactly today's default, one read-back."""
+
+    def run(**kw):
+        client = _RecordingClient(
+            stored=_stored_table([(1, _H0, 0.0, "", ""), (1, datetime(2024, 1, 1, 1, tzinfo=UTC), 99.0, "", "")])
+        )
+        res = write(
+            client, _incoming([0.0, 1.0, 2.0]), retention="medium", knowledge_time=_KT, skip_unchanged=True, **kw
+        )
+        return res, client.query_calls
+
+    baseline, baseline_queries = run(unchanged_scope="valid_time")
+    auto, auto_queries = run(unchanged_scope="auto", knowledge_time_scoped_series=[])
+
+    assert (auto.written, auto.skipped) == (baseline.written, baseline.skipped)
+    assert auto_queries == baseline_queries == 1
+
+
+def test_auto_applies_the_right_key_per_series():
+    """The core of the fix, in one batch:
+
+    * series 1 (valid_time-scoped) re-sent with an unchanged value at a *new*
+      knowledge_time → skipped, as before;
+    * series 2 (kt-scoped) re-sent with an unchanged value at a new
+      knowledge_time → **written** — a genuine republication, which the
+      valid_time key would have silently dropped;
+    * series 3 (kt-scoped) re-sent identically at the *same* knowledge_time →
+      skipped, so exact re-sends still dedupe.
+    """
+    client = _ScopeAwareClient(
+        vt_rows=[(1, _H0, 5.0, "", "")],  # series 1's winner: same value → drop
+        kt_rows=[
+            (2, _H0, _KT, 7.0, "", ""),  # series 2 stored at the OLD kt → no match at _KT_LATER → keep
+            (3, _H0, _KT_LATER, 9.0, "", ""),  # series 3 stored at THIS kt, same value → drop
+        ],
+    )
+    res = write(
+        client,
+        _mixed_incoming(),
+        retention="medium",
+        knowledge_time=_KT_LATER,
+        skip_unchanged=True,
+        unchanged_scope="auto",
+        knowledge_time_scoped_series=[2, 3],
+    )
+    assert sorted(client.scopes) == ["knowledge_time", "valid_time"]  # one read-back per partition
+    assert (res.written, res.skipped) == (1, 2)
+    assert res.written + res.skipped == 3
+    # Still a single values insert, carrying only the republication.
+    assert next(n for t, n in client.calls if t == "series_values") == 1
+
+
+def test_auto_without_the_series_set_is_rejected():
+    client = _RecordingClient()
+    with pytest.raises(ValueError, match="requires knowledge_time_scoped_series"):
+        write(
+            client,
+            _incoming([1.0]),
+            retention="medium",
+            knowledge_time=_KT,
+            skip_unchanged=True,
+            unchanged_scope="auto",
+        )
+    assert client.query_calls == 0
+
+
+@pytest.mark.parametrize("scope", ["valid_time", "knowledge_time"])
+def test_series_set_without_auto_scope_is_rejected(scope):
+    """Ambiguous: the set would be silently ignored. Same spirit as the
+    retention column/kwarg guard."""
+    client = _RecordingClient()
+    with pytest.raises(ValueError, match="only meaningful with unchanged_scope='auto'"):
+        write(
+            client,
+            _incoming([1.0]),
+            retention="medium",
+            knowledge_time=_KT,
+            skip_unchanged=True,
+            unchanged_scope=scope,
+            knowledge_time_scoped_series=[1],
+        )
+    assert client.query_calls == 0
+
+
+def test_skip_unchanged_off_ignores_both_auto_arguments():
+    """With the flag off there is no comparison at all, so neither argument is
+    validated or used — including the otherwise-rejected combinations."""
+    client = _RecordingClient()
+    res = write(
+        client,
+        _incoming([0.0, 1.0]),
+        retention="medium",
+        knowledge_time=_KT,
+        unchanged_scope="auto",  # would need the set if skip_unchanged were on
+        knowledge_time_scoped_series=None,
+    )
+    assert client.query_calls == 0
+    assert (res.written, res.skipped) == (2, 0)
+
+    client2 = _RecordingClient()
+    res2 = write(
+        client2,
+        _incoming([0.0, 1.0]),
+        retention="medium",
+        knowledge_time=_KT,
+        unchanged_scope="valid_time",  # would conflict with the set if the flag were on
+        knowledge_time_scoped_series=[1],
+    )
+    assert client2.query_calls == 0
+    assert (res2.written, res2.skipped) == (2, 0)
+
+
+def test_auto_skips_the_read_back_for_an_untouched_partition():
+    """kt_ids naming series absent from this batch costs no extra query."""
+    client = _ScopeAwareClient(vt_rows=[], kt_rows=[])
+    res = write(
+        client,
+        _incoming([0.0, 1.0]),  # series 1 only
+        retention="medium",
+        knowledge_time=_KT,
+        skip_unchanged=True,
+        unchanged_scope="auto",
+        knowledge_time_scoped_series=[999],
+    )
+    assert client.scopes == ["valid_time"]
+    assert (res.written, res.skipped) == (2, 0)

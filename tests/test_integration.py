@@ -196,6 +196,53 @@ def test_skip_unchanged_knowledge_time_scope(td):
     assert _row_count(td, 1) == before + 2
 
 
+def test_skip_unchanged_auto_scope_mixes_keys_in_one_write(td):
+    """``"auto"`` applies each series its own comparison key in a single call.
+
+    Series 1 gets the valid_time key, series 2 the knowledge_time key. Both are
+    re-sent unchanged at a new kt: series 1 is skipped (a duplicate under its
+    key) while series 2 is written (a genuine new vintage). This is the mixed
+    batch that neither uniform scope can handle correctly.
+    """
+    flat, kt_scoped = _flat_df(series_id=1, n=2), _flat_df(series_id=2, n=2)
+    td.write(pl.concat([flat, kt_scoped]), retention="medium", knowledge_time=KT_1)
+    before_1, before_2 = _row_count(td, 1), _row_count(td, 2)
+
+    res = td.write(
+        pl.concat([flat, kt_scoped]),
+        retention="medium",
+        knowledge_time=KT_2,
+        skip_unchanged=True,
+        unchanged_scope="auto",
+        knowledge_time_scoped_series=[2],
+    )
+    assert (res.written, res.skipped) == (2, 2)
+    assert _row_count(td, 1) == before_1  # valid_time key: unchanged → dropped
+    assert _row_count(td, 2) == before_2 + 2  # knowledge_time key: new vintage → kept
+
+    # The new vintage is readable at its own knowledge time — the data that the
+    # uniform valid_time scope would have silently lost.
+    history = td.read(series_ids=[2], retention="medium", include_updates=True)
+    assert set(history.get_column("knowledge_time").to_list()) == {KT_1, KT_2}
+
+
+def test_skip_unchanged_auto_with_empty_set_matches_valid_time(td):
+    """No kt-scoped series → 'auto' is exactly the default scope."""
+    df = _flat_df(series_id=1, n=3)
+    td.write(df, retention="medium", knowledge_time=KT_1)
+    before = _row_count(td, 1)
+    res = td.write(
+        df,
+        retention="medium",
+        knowledge_time=KT_2,
+        skip_unchanged=True,
+        unchanged_scope="auto",
+        knowledge_time_scoped_series=[],
+    )
+    assert (res.written, res.skipped) == (0, 3)
+    assert _row_count(td, 1) == before
+
+
 def test_read_null_value_roundtrip(td):
     """A null written value (stored as the NaN sentinel) reads back as null;
     non-null values are untouched. Guards the gated NaN-to-null conversion in
