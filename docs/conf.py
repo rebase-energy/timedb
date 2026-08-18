@@ -42,8 +42,15 @@ if os.path.exists(_dev_md_src):
 project = "timedb"
 copyright = "2024, timedb contributors"
 author = "timedb contributors"
-release = "0.1.4"
-version = "0.1.4"
+# Read the version from the installed package metadata so it never drifts
+# from pyproject.toml.
+try:
+    from importlib.metadata import version as _pkg_version
+
+    release = _pkg_version("timedb")
+except Exception:  # pragma: no cover - docs build without the package installed
+    release = "0.0.0"
+version = release
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -101,5 +108,6 @@ napoleon_use_rtype = True
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
+    "polars": ("https://docs.pola.rs/api/python/stable/", None),
     "pint": ("https://pint.readthedocs.io/en/stable/", None),
 }

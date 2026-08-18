@@ -133,6 +133,35 @@ class TimeDBClient:
         unchanged_scope: _write.UnchangedScope = "valid_time",
         knowledge_time_scoped_series: Collection[int] | None = None,
     ) -> _write.WriteResult:
+        """Write time-series rows into ``series_values`` and their
+        ``run_series`` mapping.
+
+        ``df`` may be a Pandas or Polars frame. Required columns:
+        ``series_id``, ``valid_time``, ``value``. Optional columns get a
+        per-batch default when absent: ``knowledge_time`` (this kwarg, else
+        ``datetime.now(UTC)``), ``change_time`` (``now(UTC)``), ``run_id``
+        (one client-generated UUID7 truncated to 63 bits), ``valid_time_end``
+        (the ``2200-01-01`` sentinel), and ``changed_by`` / ``annotation``
+        (empty strings). Every timestamp column must be timezone-aware —
+        naive values raise ``ValueError``.
+
+        ``retention`` and ``knowledge_time`` may be given as a kwarg *or* a
+        column, never both. ``retention`` defaults to ``"forever"`` (no TTL);
+        see :data:`~timedb.RETENTION_TIERS` for the valid tiers.
+
+        With ``skip_unchanged=True``, rows whose latest stored
+        ``(value, annotation, changed_by)`` already matches are dropped
+        before the insert, at the cost of one bounded read-back.
+        ``unchanged_scope`` picks the comparison key — ``"valid_time"``
+        (default), ``"knowledge_time"``, or ``"auto"``, which applies the
+        knowledge-time key to the ids in ``knowledge_time_scoped_series``
+        and the valid-time key to every other series in the frame.
+        Supplying ``knowledge_time_scoped_series`` with any other scope
+        raises.
+
+        Returns a :class:`~timedb.WriteResult` — a
+        ``NamedTuple(written, skipped)`` of row counts.
+        """
         return _write.write(
             self._ch,
             df,
@@ -156,6 +185,31 @@ class TimeDBClient:
         include_knowledge_time: bool = False,
         meta_source: _read.PgEngineMeta | None = None,
     ) -> pl.DataFrame:
+        """Read values for ``series_ids``, returning a Polars DataFrame.
+
+        By default this collapses to the latest value per ``valid_time`` —
+        the row with the largest ``(knowledge_time, change_time)`` — and
+        returns ``series_id, valid_time, value``. Two flags widen it:
+
+        * ``include_knowledge_time=True`` — one row per
+          ``(knowledge_time, valid_time)``, i.e. every forecast run
+          side-by-side, adding ``knowledge_time``.
+        * ``include_updates=True`` — the full correction chain on the
+          winning run, adding ``change_time``, ``changed_by`` and
+          ``annotation``.
+
+        Setting both returns the complete 3-dimensional audit log.
+
+        ``retention`` accepts one tier or a sequence of tiers and prunes
+        whole partitions. ``start_valid`` / ``end_valid`` bound
+        ``valid_time``; ``start_known`` / ``end_known`` bound
+        ``knowledge_time``. All datetimes must be timezone-aware.
+
+        ``meta_source`` is an advanced hook: pass a
+        :class:`~timedb.PgEngineMeta` to have ClickHouse resolve the series
+        set itself through a PostgreSQL engine table instead of sending an
+        explicit id array (energydb's concurrent read path uses it).
+        """
         return _read.read(
             self._ch,
             series_ids=series_ids,
@@ -183,6 +237,25 @@ class TimeDBClient:
         time_of_day: dt_time | None = None,
         meta_source: _read.PgEngineMeta | None = None,
     ) -> pl.DataFrame:
+        """Per-window cutoff read: for each window, the latest forecast
+        issued at or before that window's cutoff.
+
+        This is what backtests and day-ahead simulations need — "what
+        forecast was available at decision time" — and it returns
+        ``series_id, valid_time, value``.
+
+        Two mutually exclusive parameter sets address the windows; mixing
+        them raises ``ValueError``:
+
+        * **Low-level** — ``window_length`` plus ``issue_offset`` (relative
+          to each window start) and ``start_window``.
+        * **Daily shorthand** — ``days_ahead`` plus ``time_of_day``, giving
+          fixed 1-day windows with a human-friendly cutoff.
+
+        ``start_valid`` / ``end_valid`` bound the returned range,
+        ``retention`` prunes partitions, and ``meta_source`` behaves as in
+        :meth:`read`. All datetimes must be timezone-aware.
+        """
         return _read.read_relative(
             self._ch,
             series_ids=series_ids,

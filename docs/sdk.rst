@@ -340,6 +340,29 @@ DataFrame. ``run_series`` indexes the (series, run) pairs:
    run_ids = td.read_run_series(series_id=42)
 
 
+Profiling a slow query
+----------------------
+
+The read and write paths are instrumented with a lightweight phase timer,
+off by default. Turn it on around a call to see where the wall time went —
+SQL execution, deserialization, the ``run_series`` insert, and so on:
+
+.. code-block:: python
+
+   from timedb import profiling
+
+   profiling.enable()
+   td.read(series_ids=[42], include_knowledge_time=True)
+   print(profiling.collect())        # {"phase": seconds, ...}
+
+   profiling.reset()                 # clear timings, stay enabled
+   profiling.disable()               # stop collecting and clear
+
+``profiling.is_enabled()`` reports the current state. Timings accumulate
+across calls until ``reset()`` or ``disable()``, so wrap one operation at a
+time when comparing.
+
+
 Best practices
 --------------
 
