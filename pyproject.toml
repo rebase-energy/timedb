@@ -29,7 +29,7 @@ dependencies = [
   "numpy>=1.24",
   "timedatamodel==0.11.0",
   "uuid6>=2024.1",
-  "clickhouse-connect>=0.15.1",
+  "clickhouse-connect>=1.7.2",
 ]
 
 [project.optional-dependencies]
