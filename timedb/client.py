@@ -21,14 +21,10 @@ import polars as pl
 from . import read as _read
 from . import write as _write
 
-# ClickHouse Cloud marks some insert settings (e.g.
-# max_partitions_per_insert_block) readonly for the connecting role.
-# clickhouse-connect's default is to raise on any unknown/readonly setting;
-# drop makes it skip them (with a logged warning) instead, so the same insert
-# settings work on Cloud and self-hosted alike. Dropped
-# guards like the partition-block limit just fall back to the server default,
-# which is safe, and on Cloud the limit is readonly so it could not be raised
-# regardless.
+# Cloud marks some insert settings readonly for the connecting role, and the
+# driver's default is to raise on those. Dropping them instead lets one set of
+# insert settings work on Cloud and self-hosted alike; a dropped guard falls
+# back to the server default.
 clickhouse_connect.common.set_setting("invalid_setting_action", "drop")
 
 
@@ -39,17 +35,10 @@ def _get_ch_url() -> str:
     return ch_url
 
 
-# CH client HTTP timeouts (seconds), both env-tunable without a code change.
-#
-# send_receive_timeout (TIMEDB_CH_TIMEOUT) is the response read timeout.
-#
-# connect_timeout (TIMEDB_CH_CONNECT_TIMEOUT) is the TCP/TLS connect timeout
-# AND, crucially, the socket timeout urllib3 uses while *sending the request
-# body*. It only switches to the read timeout once the body is fully sent. So a
-# large bulk insert over a slow or distant link (e.g. a laptop → ClickHouse
-# Cloud in another region) is bounded by connect_timeout, not the read one:
-# clickhouse-connect's default of 10s kills the upload mid-flight while it is
-# still legitimately streaming. Raise it; for a very slow uplink, raise it more.
+# connect_timeout also bounds the socket while the request body is being sent,
+# switching to the read timeout only once the body is away. A large insert over
+# a slow link is therefore bounded by connect_timeout, not send_receive_timeout,
+# and the driver's default is low enough to kill a healthy upload mid-flight.
 _DEFAULT_CH_TIMEOUT_S = 900
 _DEFAULT_CH_CONNECT_TIMEOUT_S = 60
 
@@ -70,14 +59,9 @@ _CH_TABLES = ["series_values", "run_series"]
 
 
 class TimeDBClient:
-    # One CH client. The write path overlaps its series_values and
-    # run_series inserts (and, for a large values batch, two split halves)
-    # concurrently on this single client: it is sessionless (see
-    # _new_client), so its queries run in parallel over the client's HTTP
-    # connection pool rather than contending for one session. This overlap saves
-    # the fixed per-insert commit latency (~135 ms on ClickHouse Cloud) that
-    # serializing the lanes would pay twice; measured 556 ms → 349 ms (1.59×) on
-    # the 1.7 M-row split insert.
+    # One client, shared on purpose: it is sessionless (see _new_client), so the
+    # write path can overlap its series_values and run_series inserts instead of
+    # paying the fixed per-insert commit latency twice.
 
     def __init__(self, ch_url: str | None = None):
         self._ch_url = ch_url or _get_ch_url()
@@ -86,24 +70,16 @@ class TimeDBClient:
         self._ch = self._new_client()
 
     def _new_client(self):
-        # Sessionless on purpose: a ClickHouse session serializes queries (the
-        # driver raises "concurrent queries within the same session"), while
-        # sessionless queries on one client may overlap freely; that is what
-        # lets callers fan out reads with asyncio.gather / threads on a single
-        # TimeDBClient. Nothing here needs session state (settings ride inline
-        # per query/insert; no temp tables, no SET). Trade-off: no sticky
-        # replica routing on ClickHouse Cloud, so read-after-write across
-        # replicas is eventually consistent (typically sub-second).
+        # Sessionless on purpose: a session serializes queries, so callers could
+        # not fan out reads on one TimeDBClient. Nothing here needs session
+        # state. The trade-off is no sticky replica routing on Cloud, so
+        # read-after-write across replicas is eventually consistent.
         return clickhouse_connect.get_client(
             dsn=self._ch_url,
             connect_timeout=self._ch_connect_timeout,
             send_receive_timeout=self._ch_timeout,
             autogenerate_session_id=False,
         )
-
-    # -----------------------------------------------------------------------
-    # Schema
-    # -----------------------------------------------------------------------
 
     def create(self) -> None:
         """Create the series_values table and run_series mapping."""
@@ -120,10 +96,6 @@ class TimeDBClient:
         """Drop both CH tables."""
         for name in _CH_TABLES:
             self._ch.command(f"DROP TABLE IF EXISTS {name}")
-
-    # -----------------------------------------------------------------------
-    # I/O
-    # -----------------------------------------------------------------------
 
     def write(
         self,
@@ -152,14 +124,13 @@ class TimeDBClient:
         see :data:`~timedb.RETENTION_TIERS` for the valid tiers.
 
         With ``skip_unchanged=True``, rows whose latest stored
-        ``(value, annotation, changed_by)`` already matches are dropped
-        before the insert, at the cost of one bounded read-back.
-        ``unchanged_scope`` picks the comparison key: ``"valid_time"``
-        (default), ``"knowledge_time"``, or ``"auto"``, which applies the
-        knowledge-time key to the ids in ``knowledge_time_scoped_series``
-        and the valid-time key to every other series in the frame.
-        Supplying ``knowledge_time_scoped_series`` with any other scope
-        raises.
+        ``(value, annotation, changed_by)`` already matches are dropped before
+        the insert, at the cost of one bounded read-back. ``unchanged_scope``
+        picks the comparison key: ``"valid_time"`` (default),
+        ``"knowledge_time"``, or ``"auto"``, which applies the knowledge-time
+        key to the ids in ``knowledge_time_scoped_series`` and the valid-time
+        key to every other series. Any other scope paired with
+        ``knowledge_time_scoped_series`` raises.
 
         Returns a :class:`~timedb.WriteResult`: a
         ``NamedTuple(written, skipped)`` of row counts.
@@ -194,8 +165,8 @@ class TimeDBClient:
         returns ``series_id, valid_time, value``. Two flags widen it:
 
         * ``include_knowledge_time=True``: one row per
-          ``(knowledge_time, valid_time)``, i.e. every forecast run
-          side-by-side, adding ``knowledge_time``.
+          ``(knowledge_time, valid_time)``, every forecast run side by side,
+          adding ``knowledge_time``.
         * ``include_updates=True``: the full correction chain on the
           winning run, adding ``change_time``, ``changed_by`` and
           ``annotation``.
@@ -207,10 +178,10 @@ class TimeDBClient:
         ``valid_time``; ``start_known`` / ``end_known`` bound
         ``knowledge_time``. All datetimes must be timezone-aware.
 
-        ``meta_source`` is an advanced hook: pass a
-        :class:`~timedb.PgEngineMeta` to have ClickHouse resolve the series
-        set itself through a PostgreSQL engine table instead of sending an
-        explicit id array (energydb's concurrent read path uses it).
+        ``meta_source`` takes a :class:`~timedb.PgEngineMeta` to have
+        ClickHouse resolve the series set itself through a PostgreSQL engine
+        table instead of receiving an explicit id array. energydb's concurrent
+        read path uses it.
         """
         return _read.read(
             self._ch,
@@ -242,8 +213,8 @@ class TimeDBClient:
         """Per-window cutoff read: for each window, the latest forecast
         issued at or before that window's cutoff.
 
-        This is what backtests and day-ahead simulations need, "what
-        forecast was available at decision time", and it returns
+        This is the "what forecast was available at decision time" read that
+        backtests and day-ahead simulations need. Returns
         ``series_id, valid_time, value``.
 
         Two mutually exclusive parameter sets address the windows; mixing

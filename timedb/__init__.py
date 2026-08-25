@@ -11,9 +11,8 @@ Usage:
 
 from dotenv import load_dotenv
 
-# Load only the .env in the current working directory (no upward tree-walk).
-# override=False so an already-set env var (Docker, CI, uv run --env-file, a
-# caller that loaded its own .env first) always wins over this dev fallback.
+# cwd only, no upward tree-walk. override=False so an already-set env var wins
+# over this dev fallback.
 load_dotenv(".env")
 
 from . import profiling  # noqa: E402

@@ -25,10 +25,6 @@ Or, for hot-path instrumentation::
 import time as _time
 from contextlib import contextmanager
 
-# ---------------------------------------------------------------------------
-# Write phase constants
-# ---------------------------------------------------------------------------
-
 PHASE_WRITE_NORMALIZE = "write.normalize"  # Polars prep: cast, fill_null, lit stamps
 PHASE_WRITE_SERIES_VALUES_INSERT = "write.series_values_insert"  # CH insert_arrow into series_values
 PHASE_WRITE_RUN_SERIES_INSERT = "write.run_series_insert"  # CH insert_arrow into run_series
@@ -36,19 +32,11 @@ PHASE_WRITE_SKIP_UNCHANGED = "write.skip_unchanged"  # read-back + anti-join fil
 PHASE_WRITE_TOTAL = "write.total"  # Full td.write() wall time
 
 
-# ---------------------------------------------------------------------------
-# Read phase constants
-# ---------------------------------------------------------------------------
-
 PHASE_READ_SQL_EXEC = "read.sql_exec"  # ch_client.query_arrow(), CH query + Arrow transfer
 PHASE_READ_BUILD_ARROW = "read.build_arrow"  # result.select + NaN-masking for null handling
 PHASE_READ_TO_POLARS = "read.to_polars"  # pl.from_arrow() conversion
 PHASE_READ_TOTAL = "read.total"  # Full td.read() wall time
 
-
-# ---------------------------------------------------------------------------
-# EnergyDB phase constants (used from energydb scope/_io/_join/client)
-# ---------------------------------------------------------------------------
 
 PHASE_EDB_CONN_ACQUIRE = "edb.conn_acquire"  # pool.connection() checkout (per acquire)
 PHASE_EDB_RESOLVE_SUBTREE = "edb.resolve_subtree"  # recursive subtree CTE in _resolve_target_node_uuids
@@ -61,17 +49,8 @@ PHASE_EDB_HIERARCHY_JOIN = "edb.hierarchy_join"  # join_hierarchy / join_edge_hi
 PHASE_EDB_OUTPUT_CONVERT = "edb.output_convert"  # to_polars(input) + to_output(result) boundary conversions
 
 
-# ---------------------------------------------------------------------------
-# Internal state
-# ---------------------------------------------------------------------------
-
 _enabled: bool = False
 _timings: dict[str, float] = {}
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def enable() -> None:
@@ -102,11 +81,6 @@ def is_enabled() -> bool:
 def collect() -> dict[str, float]:
     """Return a copy of accumulated timings (in seconds)."""
     return dict(_timings)
-
-
-# ---------------------------------------------------------------------------
-# Internal recording (called by DB layer)
-# ---------------------------------------------------------------------------
 
 
 def _record(phase: str, elapsed_s: float) -> None:

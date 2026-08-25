@@ -55,10 +55,8 @@ def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
     _t = _time.perf_counter() if _prof else 0.0
     table = _empty(cols) if result.num_rows == 0 else result.select(cols)
     if "value" in table.schema.names:
-        # NaN is the storage sentinel for null. Detect via Arrow compute (a
-        # zero-copy SIMD scan) and only rebuild the column with a null mask when
-        # NaNs actually exist, so the rebuild's O(rows) numpy copy is skipped
-        # when there are none.
+        # NaN is the storage sentinel for null. Only rebuild the column with a
+        # null mask when NaNs are actually present, to skip the copy otherwise.
         idx = table.schema.get_field_index("value")
         col = table.column(idx)
         # ty: pyarrow.compute kernels are generated at runtime; the stubs lack them.
@@ -151,9 +149,8 @@ def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
         ]
         params |= {"ms_from": ms.edge_triple[0], "ms_to": ms.edge_triple[1], "ms_etype": ms.edge_triple[2]}
     elif ms.edge_triples is not None:
-        # Set-valued: three single-column INs over the unique per-column values.
-        # This resolves the cartesian superset of the requested triples (index-
-        # friendly, one round-trip); the caller trims to the exact PG resolve.
+        # Three single-column INs resolve the cartesian superset of the requested
+        # triples in one round-trip; the caller trims to the exact PG resolve.
         conds = [
             "from_path IN {ms_from:Array(String)}",
             "to_path IN {ms_to:Array(String)}",
@@ -203,8 +200,8 @@ def _where(
                 filters.append("retention IN {retentions:Array(String)}")
                 params["retentions"] = list(retention)
     else:
-        # ids + retentions come from the engine-resolved scalar (prefixed onto the query);
-        # _meta.1 = Array(UInt64) series_ids, _meta.2 = Array(String) retentions.
+        # _meta.1 is Array(UInt64) series_ids, _meta.2 Array(String) retentions,
+        # both from the engine-resolved scalar prefixed onto the query.
         filters = [
             "series_id IN _meta.1",
             "retention IN _meta.2",
@@ -223,11 +220,6 @@ def _where(
         filters.append("knowledge_time < {end_known:DateTime64(6, 'UTC')}")
         params["end_known"] = end_known
     return "WHERE " + " AND ".join(filters), params
-
-
-# ---------------------------------------------------------------------------
-# Latest reads: one row per (series_id, valid_time)
-# ---------------------------------------------------------------------------
 
 
 def _read_latest(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
@@ -254,8 +246,8 @@ def _read_latest_with_changes(ch_client, where: str, params: dict, cte: str = ""
     Emits only real state transitions (consecutive duplicates collapsed by
     the lagInFrame distinct-from-previous filter).
     """
-    # Semi-join: the inner query picks max(knowledge_time) per (sid, vt) along
-    # the sort-key prefix; the outer filter is a tuple PK match (seek, not sort).
+    # The inner query picks max(knowledge_time) per (sid, vt) along the sort-key
+    # prefix, so the outer filter is a PK seek rather than a sort.
     sql = f"""
     {cte}
     SELECT series_id, valid_time, change_time, value, changed_by, annotation
@@ -286,11 +278,6 @@ def _read_latest_with_changes(ch_client, where: str, params: dict, cte: str = ""
         params,
         ["series_id", "valid_time", "change_time", "value", "changed_by", "annotation"],
     )
-
-
-# ---------------------------------------------------------------------------
-# Overlapping reads: one row per (series_id, valid_time, knowledge_time)
-# ---------------------------------------------------------------------------
 
 
 def _read_overlapping(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
@@ -345,11 +332,6 @@ def _read_overlapping_with_changes(ch_client, where: str, params: dict, cte: str
     )
 
 
-# ---------------------------------------------------------------------------
-# Relative read
-# ---------------------------------------------------------------------------
-
-
 def _read_relative_sql(
     ch_client,
     *,
@@ -395,11 +377,6 @@ def _read_relative_sql(
     SETTINGS optimize_aggregation_in_order = 1
     """
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
-
-
-# ---------------------------------------------------------------------------
-# Public entry points
-# ---------------------------------------------------------------------------
 
 
 def read(

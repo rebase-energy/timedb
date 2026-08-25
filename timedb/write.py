@@ -41,18 +41,13 @@ RETENTION_TIERS``."""
 _VALID_RETENTIONS = RETENTION_TIERS  # backwards-compat alias for in-module use
 _DEFAULT_RETENTION = "forever"
 
-# Allow inserts that span many monthly partitions (e.g. multi-year backfills).
-# ClickHouse's default of 100 is too tight for a time-series store intentionally
-# partitioned by month × retention.
+# ClickHouse's default partition-per-insert limit is too tight for multi-year
+# backfills across month × retention partitions.
 _CH_INSERT_SETTINGS = {"max_partitions_per_insert_block": 1000}
 
-# When values_arrow exceeds this row count we split the batch in half and
-# fire both halves in parallel. The two inserts share the one sessionless CH
-# client: a sessionless client places no concurrency limit on its queries, so
-# the parallelism lives in the client's HTTP connection pool, not in separate
-# client instances. 100K rows is the measured break-even point: below it the
-# thread pool / Arrow-slice overhead exceeds the wire-time savings; above it the
-# parallel insert is consistently 1.4–1.6× faster (556 → 349 ms on 1.7 M).
+# Measured break-even for splitting the insert in half: below it, slice and
+# thread overhead exceeds the wire-time saving. Both halves share the one
+# sessionless client, which imposes no per-query concurrency limit.
 _PARALLEL_INSERT_THRESHOLD = 100_000
 
 
@@ -212,8 +207,7 @@ def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) 
         "min_vt": pl_df.get_column("valid_time").min(),
         "max_vt": pl_df.get_column("valid_time").max(),
     }
-    # Coarse: reads the whole [min_vt, max_vt] valid_time slab per series.
-    # Fine for contiguous write windows; revisit if sparse batches dominate.
+    # Reads the whole [min_vt, max_vt] slab per series, so sparse batches over-read.
     sql = f"""
     SELECT {cols}
     FROM series_values
@@ -229,8 +223,7 @@ def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) 
     if stored.is_empty():
         return pl_df
 
-    # changed_by is LowCardinality (arrives as an Arrow dictionary → Categorical);
-    # annotation is plain String. Cast both so the == comparison stays Utf8.
+    # changed_by arrives as a Categorical (LowCardinality); cast so == stays Utf8.
     stored = stored.with_columns(
         pl.col("annotation").cast(pl.Utf8),
         pl.col("changed_by").cast(pl.Utf8),
@@ -263,13 +256,11 @@ def _filter_unchanged_auto(
     """
     kt_ids = list(knowledge_time_scoped_series)
     if not kt_ids:
-        # No series needs the finer key, which matches the default behavior.
         return _filter_unchanged(ch_client, pl_df, scope="valid_time")
 
     is_kt = pl.col("series_id").is_in(kt_ids)
     kt_part = pl_df.filter(is_kt)
     vt_part = pl_df.filter(~is_kt)
-    # Skip a partition that this batch doesn't touch, so no wasted read-back.
     if kt_part.is_empty():
         return _filter_unchanged(ch_client, pl_df, scope="valid_time")
     if vt_part.is_empty():
@@ -307,16 +298,13 @@ def write(
             ``"forever"`` (no TTL, appropriate for actuals).
 
     ``retention`` and ``knowledge_time`` cannot be supplied as both column and
-    kwarg at once: that is almost always a producer bug, so timedb raises rather
-    than guessing which takes precedence.
+    kwarg at once; timedb raises rather than guessing which wins.
 
-    ``(series_id, run_id)`` pairs are also written to ``run_series`` so that
-    "which runs touched this series" lookups don't need to scan ``series_values``.
-    That insert runs concurrently with the ``series_values`` insert (each CH
-    insert pays a fixed commit latency; see :func:`_run_inserts`), so a failed
+    ``(series_id, run_id)`` pairs also go to ``run_series``, so "which runs
+    touched this series" needs no scan of ``series_values``. That insert runs
+    concurrently with the values insert (see :func:`_run_inserts`), so a failed
     values insert can leave ``run_series`` rows for a run whose data never
-    landed: the mirror image of the values-without-``run_series`` failure mode,
-    detectable by ``run_id`` either way.
+    landed, and vice versa. Either case is detectable by ``run_id``.
 
     When ``skip_unchanged`` is set, rows whose latest stored
     ``(value, annotation, changed_by)`` already matches are dropped before the
@@ -328,15 +316,14 @@ def write(
       A near-noop unless a stable ``knowledge_time`` is supplied, since the
       default stamps ``now()`` per batch.
     * ``"auto"``: the ``"knowledge_time"`` key for series listed in
-      ``knowledge_time_scoped_series`` and the ``"valid_time"`` key for all
-      others, in a single call. Required when one batch mixes series that need
-      different keys; ``knowledge_time_scoped_series`` must then be supplied
-      (an empty collection is valid and behaves exactly like ``"valid_time"``).
+      ``knowledge_time_scoped_series``, the ``"valid_time"`` key for all others,
+      in one call. Required when a batch mixes series needing different keys;
+      ``knowledge_time_scoped_series`` must then be supplied, and an empty
+      collection is valid and behaves like ``"valid_time"``.
 
-    ``knowledge_time_scoped_series`` is only meaningful for ``"auto"``, pairing
-    it with another scope raises rather than silently ignoring it, same spirit
-    as the retention column/kwarg guard above. Both arguments are ignored
-    entirely when ``skip_unchanged`` is false.
+    ``knowledge_time_scoped_series`` is only meaningful for ``"auto"``; pairing
+    it with another scope raises rather than ignoring it. Both arguments are
+    ignored entirely when ``skip_unchanged`` is false.
 
     Returns counts of rows written/skipped.
     """
@@ -381,7 +368,6 @@ def write(
         kt = knowledge_time if knowledge_time is not None else datetime.now(UTC)
         stamps.append(pl.lit(kt, dtype=pl.Datetime("us", "UTC")).alias("knowledge_time"))
 
-    # change_time: one per batch unless passed as column
     if "change_time" not in pl_df.columns:
         ct = datetime.now(UTC)
         stamps.append(pl.lit(ct, dtype=pl.Datetime("us", "UTC")).alias("change_time"))
@@ -429,11 +415,9 @@ def write(
             skipped = before - pl_df.height
 
     values_cols = [c for c in _SERIES_VALUES_COLUMNS if c in pl_df.columns]
-    # rechunk() on the polars side beats pyarrow's combine_chunks()
-    # by ~1.4× on the 1.7M-row insert (36 ms → 26 ms measured), and still
-    # produces the single-chunk Arrow table that clickhouse-connect's insert
-    # path needs: without it, per-chunk HTTP framing and compression-context
-    # resets cost ~120 ms on the forecast_write @ 200 path.
+    # rechunk() is required, not an optimization: the insert path needs a
+    # single-chunk Arrow table, or per-chunk framing and compression resets
+    # dominate the insert.
     values_arrow = pl_df.select(values_cols).rechunk().to_arrow()
     rs_arrow = pl_df.select(["series_id", "run_id"]).unique().rechunk().to_arrow()
 
