@@ -1,4 +1,4 @@
-"""Unit tests for write-time validation — no ClickHouse required."""
+"""Unit tests for write-time validation: no ClickHouse required."""
 
 from datetime import UTC, datetime
 
@@ -11,7 +11,7 @@ _VT_TYPE = pa.timestamp("us", tz="UTC")
 
 
 class _RecordingClient:
-    """Minimal fake for clickhouse_connect client — captures insert_arrow calls
+    """Minimal fake for clickhouse_connect client: captures insert_arrow calls
     and serves a canned ``query_arrow`` result for the skip_unchanged read-back."""
 
     def __init__(self, stored: pa.Table | None = None):
@@ -184,7 +184,9 @@ def test_multiple_run_ids_produces_multiple_run_series_rows():
     assert rs_rows == 2
 
 
-# ── skip_unchanged ────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# skip_unchanged
+# ---------------------------------------------------------------------------
 
 _KT = datetime(2024, 6, 1, tzinfo=UTC)
 
@@ -243,14 +245,16 @@ def test_unknown_unchanged_scope_rejected():
         )
 
 
-# ── unchanged_scope="auto": per-series comparison keys ───────────────────────
+# ---------------------------------------------------------------------------
+# unchanged_scope="auto": per-series comparison keys
+# ---------------------------------------------------------------------------
 
 _KT_LATER = datetime(2024, 6, 2, tzinfo=UTC)
 _H0 = datetime(2024, 1, 1, 0, tzinfo=UTC)
 
 
 def _stored_kt_table(rows: list[tuple]) -> pa.Table:
-    """``(series_id, valid_time, knowledge_time, value, annotation, changed_by)`` —
+    """``(series_id, valid_time, knowledge_time, value, annotation, changed_by)``,
     the knowledge_time-scope read-back shape."""
     return pa.table(
         {
@@ -268,7 +272,7 @@ class _ScopeAwareClient(_RecordingClient):
     """Serves the read-back shape matching each query's scope.
 
     ``"auto"`` issues one query per partition, so a single canned table can't
-    answer both — this dispatches on the projected columns and records which
+    answer both; this dispatches on the projected columns and records which
     scopes were asked for, which is how the partitioning itself gets asserted.
     """
 
@@ -324,8 +328,8 @@ def test_auto_applies_the_right_key_per_series():
     * series 1 (valid_time-scoped) re-sent with an unchanged value at a *new*
       knowledge_time → skipped, as before;
     * series 2 (kt-scoped) re-sent with an unchanged value at a new
-      knowledge_time → **written** — a genuine republication, which the
-      valid_time key would have silently dropped;
+      knowledge_time → **written**, since it is a genuine republication that
+      the valid_time key would have silently dropped;
     * series 3 (kt-scoped) re-sent identically at the *same* knowledge_time →
       skipped, so exact re-sends still dedupe.
     """
@@ -386,7 +390,7 @@ def test_series_set_without_auto_scope_is_rejected(scope):
 
 def test_skip_unchanged_off_ignores_both_auto_arguments():
     """With the flag off there is no comparison at all, so neither argument is
-    validated or used — including the otherwise-rejected combinations."""
+    validated or used, including the otherwise-rejected combinations."""
     client = _RecordingClient()
     res = write(
         client,

@@ -1,9 +1,9 @@
-"""The CH client must be sessionless — no ClickHouse required.
+"""The CH client must be sessionless: no ClickHouse required.
 
 A ClickHouse session serializes queries (clickhouse-connect raises
 "Attempt to execute concurrent queries within the same session"), so the
 client ``TimeDBClient`` builds must disable the auto-generated session id.
-That is what lets its queries overlap on one client — concurrent reads
+That is what lets its queries overlap on one client: concurrent reads
 (``asyncio.gather`` in energydb, threads in sync callers) and the write path's
 concurrent ``series_values`` / ``run_series`` insert lanes alike.
 """

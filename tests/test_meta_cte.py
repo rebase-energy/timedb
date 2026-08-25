@@ -1,4 +1,4 @@
-"""Unit tests for ``timedb.read._meta_cte`` — the scalar engine-meta subquery.
+"""Unit tests for ``timedb.read._meta_cte``: the scalar engine-meta subquery.
 
 Pure (no DB): asserts each addressing field renders the expected pushdown
 conditions and binds the expected params.

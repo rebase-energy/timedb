@@ -1,4 +1,4 @@
-"""Unit tests for the concurrent insert lanes in ``write`` — no ClickHouse required.
+"""Unit tests for the concurrent insert lanes in ``write``, no ClickHouse required.
 
 The ``series_values`` and ``run_series`` inserts overlap on a single sessionless
 CH client (each insert pays a fixed per-insert commit latency, so serializing
@@ -20,7 +20,7 @@ class _CountingClient:
     """Fake CH client recording ``(table, rows)`` per insert, thread-safe.
 
     All lanes share one client now, so inserts arrive from several threads at
-    once — hence the lock around ``calls``. Optional per-table hooks let a test
+    once, hence the lock around ``calls``. Optional per-table hooks let a test
     prove the lanes actually overlap (an event set by one lane, awaited by the
     other) or fail a chosen lane.
     """

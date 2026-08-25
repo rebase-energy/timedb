@@ -1,8 +1,8 @@
 """Bulk write path for timedb.
 
 Stamps defaults for any missing optional columns and issues one Arrow bulk
-insert each into ``series_values`` and ``run_series``. No run metadata, no
-identity resolution — both are the caller's responsibility (energydb).
+insert each into ``series_values`` and ``run_series``. No run metadata and no
+identity resolution; both are the caller's responsibility (energydb).
 """
 
 from __future__ import annotations
@@ -46,13 +46,13 @@ _DEFAULT_RETENTION = "forever"
 # partitioned by month × retention.
 _CH_INSERT_SETTINGS = {"max_partitions_per_insert_block": 1000}
 
-# When ``values_arrow`` exceeds this row count we split the batch in half and
+# When values_arrow exceeds this row count we split the batch in half and
 # fire both halves in parallel. The two inserts share the one sessionless CH
-# client — a sessionless client places no concurrency limit on its queries, so
+# client: a sessionless client places no concurrency limit on its queries, so
 # the parallelism lives in the client's HTTP connection pool, not in separate
-# client instances. 100K rows is the break-even point we measured — below that,
-# the thread pool / Arrow-slice overhead exceeds the wire-time savings; above it
-# the parallel insert is consistently 1.4–1.6× faster (556 → 349 ms on 1.7 M).
+# client instances. 100K rows is the measured break-even point: below it the
+# thread pool / Arrow-slice overhead exceeds the wire-time savings; above it the
+# parallel insert is consistently 1.4–1.6× faster (556 → 349 ms on 1.7 M).
 _PARALLEL_INSERT_THRESHOLD = 100_000
 
 
@@ -94,9 +94,9 @@ def _insert_arrow_parallel(
     overlap over the client's HTTP connection pool. Falls back to a single
     serial insert below the parallel-insert threshold.
 
-    Two parallel inserts produce two parts instead of one — CH merges them
-    in the background, and at the row counts we hit (one batch per write)
-    this stays well within the part budget. ``max_partitions_per_insert_block``
+    Two parallel inserts produce two parts instead of one, which CH merges in
+    the background; at the row counts we hit (one batch per write) this stays
+    well within the part budget. ``max_partitions_per_insert_block``
     is applied to each half independently.
     """
     if arrow.num_rows < _PARALLEL_INSERT_THRESHOLD:
@@ -122,11 +122,11 @@ def _run_inserts(ch_client, values_arrow: pa.Table, rs_arrow: pa.Table) -> None:
     CH cost of a small write. Instead the two lanes overlap: ``ch_client`` is
     sessionless, so its concurrent queries run in parallel over the client's
     HTTP connection pool. When the values batch is large it splits further (see
-    :func:`_insert_arrow_parallel`), for up to three inserts in flight at once —
+    :func:`_insert_arrow_parallel`), for up to three inserts in flight at once,
     still well within the pool. Lanes with no rows are skipped.
 
-    Every lane is awaited even when another fails — leaking an in-flight
-    insert past the write call would leave its outcome unknown to the caller.
+    Every lane is awaited even when another fails; leaking an in-flight insert
+    past the write call would leave its outcome unknown to the caller.
     The first error is re-raised, values lane first.
     """
     n_values, n_rs = values_arrow.num_rows, rs_arrow.num_rows
@@ -153,7 +153,7 @@ def _run_inserts(ch_client, values_arrow: pa.Table, rs_arrow: pa.Table) -> None:
         for f in futures:
             try:
                 f.result()
-            except BaseException as e:  # noqa: BLE001 — collected and re-raised below
+            except BaseException as e:  # noqa: BLE001  (collected and re-raised below)
                 errors.append(e)
         if errors:
             raise errors[0]
@@ -174,7 +174,7 @@ UnchangedScope = Literal["valid_time", "knowledge_time", "auto"]
 ``"auto"`` applies the knowledge_time-scoped key to the series named by
 ``write(knowledge_time_scoped_series=...)`` and the valid_time-scoped key to
 every other series, so one call can write series that need different
-comparisons. timedb has no notion of *why* a series needs the finer key —
+comparisons. timedb has no notion of *why* a series needs the finer key:
 that judgement (e.g. energydb's OVERLAPPING series type) belongs to the
 caller, which is also why the parameter is named for what timedb does with
 the set rather than for what the caller means by it.
@@ -186,7 +186,7 @@ def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) 
     match the latest stored state for their comparison key.
 
     ``scope="valid_time"`` compares against the single winning value per
-    ``(series_id, valid_time)`` (largest ``(knowledge_time, change_time)`` —
+    ``(series_id, valid_time)`` (largest ``(knowledge_time, change_time)``,
     identical to ``read._read_latest``'s argMax). ``scope="knowledge_time"``
     compares per ``(series_id, valid_time, knowledge_time)``.
 
@@ -212,7 +212,7 @@ def _filter_unchanged(ch_client, pl_df: pl.DataFrame, *, scope: UnchangedScope) 
         "min_vt": pl_df.get_column("valid_time").min(),
         "max_vt": pl_df.get_column("valid_time").max(),
     }
-    # ponytail: reads the whole [min_vt, max_vt] valid_time slab per series.
+    # Coarse: reads the whole [min_vt, max_vt] valid_time slab per series.
     # Fine for contiguous write windows; revisit if sparse batches dominate.
     sql = f"""
     SELECT {cols}
@@ -258,18 +258,18 @@ def _filter_unchanged_auto(
     would be (the series-id, retention, and valid_time bounds are computed per
     partition). The pipeline continues to one Arrow insert either way.
 
-    Row order is not preserved across the split — irrelevant, since the only
-    consumer is an unordered bulk insert.
+    Row order is not preserved across the split, which is irrelevant since the
+    only consumer is an unordered bulk insert.
     """
     kt_ids = list(knowledge_time_scoped_series)
     if not kt_ids:
-        # No series needs the finer key: exactly today's default behavior.
+        # No series needs the finer key, which matches the default behavior.
         return _filter_unchanged(ch_client, pl_df, scope="valid_time")
 
     is_kt = pl.col("series_id").is_in(kt_ids)
     kt_part = pl_df.filter(is_kt)
     vt_part = pl_df.filter(~is_kt)
-    # Skip a partition that this batch doesn't touch — no wasted read-back.
+    # Skip a partition that this batch doesn't touch, so no wasted read-back.
     if kt_part.is_empty():
         return _filter_unchanged(ch_client, pl_df, scope="valid_time")
     if vt_part.is_empty():
@@ -297,43 +297,43 @@ def write(
     Required columns on ``df``: ``series_id``, ``valid_time``, ``value``.
 
     Optional columns, stamped with defaults when absent:
-        knowledge_time  — kwarg, else ``datetime.now(UTC)`` for the whole batch.
-        change_time     — ``datetime.now(UTC)`` for the whole batch.
-        run_id          — one ``uuid7 & UINT64_MAX`` generated for the batch.
-        changed_by      — empty string.
-        annotation      — empty string.
-        valid_time_end  — CH sentinel default ``2200-01-01``.
-        retention       — kwarg or column; if neither is present, defaults to
-                          ``"forever"`` (no TTL — appropriate for actuals).
+        knowledge_time: kwarg, else ``datetime.now(UTC)`` for the whole batch.
+        change_time: ``datetime.now(UTC)`` for the whole batch.
+        run_id: one ``uuid7 & UINT64_MAX`` generated for the batch.
+        changed_by: empty string.
+        annotation: empty string.
+        valid_time_end: CH sentinel default ``2200-01-01``.
+        retention: kwarg or column; if neither is present, defaults to
+            ``"forever"`` (no TTL, appropriate for actuals).
 
     ``retention`` and ``knowledge_time`` cannot be supplied as both column and
-    kwarg at once — that's almost always a producer bug; we raise rather than
-    guess which takes precedence.
+    kwarg at once: that is almost always a producer bug, so timedb raises rather
+    than guessing which takes precedence.
 
     ``(series_id, run_id)`` pairs are also written to ``run_series`` so that
     "which runs touched this series" lookups don't need to scan ``series_values``.
     That insert runs concurrently with the ``series_values`` insert (each CH
     insert pays a fixed commit latency; see :func:`_run_inserts`), so a failed
     values insert can leave ``run_series`` rows for a run whose data never
-    landed — the mirror image of the pre-existing values-without-``run_series``
-    failure mode, detectable by ``run_id`` either way.
+    landed: the mirror image of the values-without-``run_series`` failure mode,
+    detectable by ``run_id`` either way.
 
     When ``skip_unchanged`` is set, rows whose latest stored
     ``(value, annotation, changed_by)`` already matches are dropped before the
     insert (one bounded read-back). ``unchanged_scope`` picks the comparison key:
 
-    * ``"valid_time"`` (default) — the winning value per
+    * ``"valid_time"`` (default): the winning value per
       ``(series_id, valid_time)``.
-    * ``"knowledge_time"`` — per ``(series_id, valid_time, knowledge_time)``.
+    * ``"knowledge_time"``: per ``(series_id, valid_time, knowledge_time)``.
       A near-noop unless a stable ``knowledge_time`` is supplied, since the
       default stamps ``now()`` per batch.
-    * ``"auto"`` — the ``"knowledge_time"`` key for series listed in
+    * ``"auto"``: the ``"knowledge_time"`` key for series listed in
       ``knowledge_time_scoped_series`` and the ``"valid_time"`` key for all
       others, in a single call. Required when one batch mixes series that need
       different keys; ``knowledge_time_scoped_series`` must then be supplied
       (an empty collection is valid and behaves exactly like ``"valid_time"``).
 
-    ``knowledge_time_scoped_series`` is only meaningful for ``"auto"`` — pairing
+    ``knowledge_time_scoped_series`` is only meaningful for ``"auto"``, pairing
     it with another scope raises rather than silently ignoring it, same spirit
     as the retention column/kwarg guard above. Both arguments are ignored
     entirely when ``skip_unchanged`` is false.
@@ -429,11 +429,11 @@ def write(
             skipped = before - pl_df.height
 
     values_cols = [c for c in _SERIES_VALUES_COLUMNS if c in pl_df.columns]
-    # ``rechunk()`` on the polars side beats pyarrow's ``combine_chunks()``
+    # rechunk() on the polars side beats pyarrow's combine_chunks()
     # by ~1.4× on the 1.7M-row insert (36 ms → 26 ms measured), and still
-    # produces the single-chunk Arrow table that clickhouse-connect's
-    # insert path needs — without it, per-chunk HTTP framing + compression
-    # context resets give back ~120 ms on the forecast_write @ 200 path.
+    # produces the single-chunk Arrow table that clickhouse-connect's insert
+    # path needs: without it, per-chunk HTTP framing and compression-context
+    # resets cost ~120 ms on the forecast_write @ 200 path.
     values_arrow = pl_df.select(values_cols).rechunk().to_arrow()
     rs_arrow = pl_df.select(["series_id", "run_id"]).unique().rechunk().to_arrow()
 

@@ -12,7 +12,7 @@ import pytest
 from timedb import TimeDBClient
 
 if not os.environ.get("TIMEDB_CH_URL"):
-    pytest.skip("TIMEDB_CH_URL not set — skipping integration tests", allow_module_level=True)
+    pytest.skip("TIMEDB_CH_URL not set: skipping integration tests", allow_module_level=True)
 
 
 # Anchor to a recent date *relative to now* so the 'short' retention (180-day
@@ -141,7 +141,9 @@ def test_empty_series_list_returns_empty(td):
     assert result.is_empty()
 
 
-# ── skip_unchanged ────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# skip_unchanged
+# ---------------------------------------------------------------------------
 
 
 def _row_count(td, series_id: int) -> int:
@@ -220,7 +222,7 @@ def test_skip_unchanged_auto_scope_mixes_keys_in_one_write(td):
     assert _row_count(td, 1) == before_1  # valid_time key: unchanged → dropped
     assert _row_count(td, 2) == before_2 + 2  # knowledge_time key: new vintage → kept
 
-    # The new vintage is readable at its own knowledge time — the data that the
+    # The new vintage is readable at its own knowledge time, the data that the
     # uniform valid_time scope would have silently lost.
     history = td.read(series_ids=[2], retention="medium", include_knowledge_time=True)
     assert set(history.get_column("knowledge_time").to_list()) == {KT_1, KT_2}

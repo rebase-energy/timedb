@@ -3,7 +3,9 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-# -- Path setup --------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Path setup
+# ---------------------------------------------------------------------------
 
 import os
 import sys
@@ -18,14 +20,11 @@ _docs_dir = os.path.dirname(os.path.abspath(__file__))
 _examples_src = os.path.join(_docs_dir, "..", "examples")
 _notebooks_dir = os.path.join(_docs_dir, "notebooks")
 
-# Create notebooks directory if it doesn't exist
 os.makedirs(_notebooks_dir, exist_ok=True)
 
-# Copy all .ipynb files from examples to docs/notebooks
 for nb_file in glob.glob(os.path.join(_examples_src, "*.ipynb")):
     basename = os.path.basename(nb_file)
     dest = os.path.join(_notebooks_dir, basename)
-    # Only copy if source is newer or dest doesn't exist
     if not os.path.exists(dest) or os.path.getmtime(nb_file) > os.path.getmtime(dest):
         shutil.copy2(nb_file, dest)
 
@@ -36,7 +35,9 @@ if os.path.exists(_dev_md_src):
     if not os.path.exists(_dev_md_dest) or os.path.getmtime(_dev_md_src) > os.path.getmtime(_dev_md_dest):
         shutil.copy2(_dev_md_src, _dev_md_dest)
 
-# -- Project information -----------------------------------------------------
+# ---------------------------------------------------------------------------
+# Project information
+# ---------------------------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "timedb"
@@ -48,11 +49,13 @@ try:
     from importlib.metadata import version as _pkg_version
 
     release = _pkg_version("timedb")
-except Exception:  # pragma: no cover - docs build without the package installed
+except Exception:  # pragma: no cover  (docs build without the package installed)
     release = "0.0.0"
 version = release
 
-# -- General configuration ---------------------------------------------------
+# ---------------------------------------------------------------------------
+# General configuration
+# ---------------------------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
@@ -78,7 +81,9 @@ nbsphinx_allow_errors = True  # Continue build even if notebooks have errors
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "README.md"]
 
-# -- Options for HTML output -------------------------------------------------
+# ---------------------------------------------------------------------------
+# Options for HTML output
+# ---------------------------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = "sphinx_rtd_theme"
@@ -89,7 +94,9 @@ html_theme_options = {
     "navigation_depth": 2,
 }
 
-# -- Extension configuration -------------------------------------------------
+# ---------------------------------------------------------------------------
+# Extension configuration
+# ---------------------------------------------------------------------------
 
 # Napoleon settings for NumPy/Google style docstrings
 napoleon_google_docstring = True

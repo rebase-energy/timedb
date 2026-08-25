@@ -1,4 +1,4 @@
-"""TimeDBClient — the ClickHouse-only public facade.
+"""TimeDBClient: the ClickHouse-only public facade.
 
 Pure time-series I/O. No metadata, no runs table, no shape dispatch. Callers
 (energydb) supply ``series_id``, ``run_id``, and ``retention`` as context;
@@ -21,12 +21,14 @@ import polars as pl
 from . import read as _read
 from . import write as _write
 
-# ClickHouse Cloud marks some insert settings (e.g. ``max_partitions_per_insert_block``)
-# readonly for the connecting role. clickhouse-connect's default action is to raise
-# on any unknown/readonly setting; ``drop`` makes it skip them (with a logged warning)
-# instead, so the same insert settings work on Cloud and self-hosted alike. Dropped
-# guards like the partition-block limit just fall back to the server default, which is
-# safe — and on Cloud the limit is readonly so it could not be raised regardless.
+# ClickHouse Cloud marks some insert settings (e.g.
+# max_partitions_per_insert_block) readonly for the connecting role.
+# clickhouse-connect's default is to raise on any unknown/readonly setting;
+# drop makes it skip them (with a logged warning) instead, so the same insert
+# settings work on Cloud and self-hosted alike. Dropped
+# guards like the partition-block limit just fall back to the server default,
+# which is safe, and on Cloud the limit is readonly so it could not be raised
+# regardless.
 clickhouse_connect.common.set_setting("invalid_setting_action", "drop")
 
 
@@ -39,13 +41,13 @@ def _get_ch_url() -> str:
 
 # CH client HTTP timeouts (seconds), both env-tunable without a code change.
 #
-# ``send_receive_timeout`` (TIMEDB_CH_TIMEOUT) is the response *read* timeout.
+# send_receive_timeout (TIMEDB_CH_TIMEOUT) is the response read timeout.
 #
-# ``connect_timeout`` (TIMEDB_CH_CONNECT_TIMEOUT) is the TCP/TLS connect timeout
-# AND — crucially — the socket timeout urllib3 uses while *sending the request
+# connect_timeout (TIMEDB_CH_CONNECT_TIMEOUT) is the TCP/TLS connect timeout
+# AND, crucially, the socket timeout urllib3 uses while *sending the request
 # body*. It only switches to the read timeout once the body is fully sent. So a
 # large bulk insert over a slow or distant link (e.g. a laptop → ClickHouse
-# Cloud in another region) is bounded by ``connect_timeout``, not the read one:
+# Cloud in another region) is bounded by connect_timeout, not the read one:
 # clickhouse-connect's default of 10s kills the upload mid-flight while it is
 # still legitimately streaming. Raise it; for a very slow uplink, raise it more.
 _DEFAULT_CH_TIMEOUT_S = 900
@@ -68,10 +70,10 @@ _CH_TABLES = ["series_values", "run_series"]
 
 
 class TimeDBClient:
-    # One CH client. The write path overlaps its ``series_values`` and
-    # ``run_series`` inserts (and, for a large values batch, two split halves)
-    # concurrently on this single client — it is sessionless (see
-    # ``_new_client``), so its queries run in parallel over the client's HTTP
+    # One CH client. The write path overlaps its series_values and
+    # run_series inserts (and, for a large values batch, two split halves)
+    # concurrently on this single client: it is sessionless (see
+    # _new_client), so its queries run in parallel over the client's HTTP
     # connection pool rather than contending for one session. This overlap saves
     # the fixed per-insert commit latency (~135 ms on ClickHouse Cloud) that
     # serializing the lanes would pay twice; measured 556 ms → 349 ms (1.59×) on
@@ -86,7 +88,7 @@ class TimeDBClient:
     def _new_client(self):
         # Sessionless on purpose: a ClickHouse session serializes queries (the
         # driver raises "concurrent queries within the same session"), while
-        # sessionless queries on one client may overlap freely — that is what
+        # sessionless queries on one client may overlap freely; that is what
         # lets callers fan out reads with asyncio.gather / threads on a single
         # TimeDBClient. Nothing here needs session state (settings ride inline
         # per query/insert; no temp tables, no SET). Trade-off: no sticky
@@ -99,9 +101,9 @@ class TimeDBClient:
             autogenerate_session_id=False,
         )
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Schema
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def create(self) -> None:
         """Create the series_values table and run_series mapping."""
@@ -119,9 +121,9 @@ class TimeDBClient:
         for name in _CH_TABLES:
             self._ch.command(f"DROP TABLE IF EXISTS {name}")
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # I/O
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def write(
         self,
@@ -142,8 +144,8 @@ class TimeDBClient:
         ``datetime.now(UTC)``), ``change_time`` (``now(UTC)``), ``run_id``
         (one client-generated UUID7 truncated to 63 bits), ``valid_time_end``
         (the ``2200-01-01`` sentinel), and ``changed_by`` / ``annotation``
-        (empty strings). Every timestamp column must be timezone-aware —
-        naive values raise ``ValueError``.
+        (empty strings). Every timestamp column must be timezone-aware; naive
+        values raise ``ValueError``.
 
         ``retention`` and ``knowledge_time`` may be given as a kwarg *or* a
         column, never both. ``retention`` defaults to ``"forever"`` (no TTL);
@@ -152,14 +154,14 @@ class TimeDBClient:
         With ``skip_unchanged=True``, rows whose latest stored
         ``(value, annotation, changed_by)`` already matches are dropped
         before the insert, at the cost of one bounded read-back.
-        ``unchanged_scope`` picks the comparison key — ``"valid_time"``
+        ``unchanged_scope`` picks the comparison key: ``"valid_time"``
         (default), ``"knowledge_time"``, or ``"auto"``, which applies the
         knowledge-time key to the ids in ``knowledge_time_scoped_series``
         and the valid-time key to every other series in the frame.
         Supplying ``knowledge_time_scoped_series`` with any other scope
         raises.
 
-        Returns a :class:`~timedb.WriteResult` — a
+        Returns a :class:`~timedb.WriteResult`: a
         ``NamedTuple(written, skipped)`` of row counts.
         """
         return _write.write(
@@ -187,14 +189,14 @@ class TimeDBClient:
     ) -> pl.DataFrame:
         """Read values for ``series_ids``, returning a Polars DataFrame.
 
-        By default this collapses to the latest value per ``valid_time`` —
-        the row with the largest ``(knowledge_time, change_time)`` — and
+        By default this collapses to the latest value per ``valid_time``,
+        the row with the largest ``(knowledge_time, change_time)``, and
         returns ``series_id, valid_time, value``. Two flags widen it:
 
-        * ``include_knowledge_time=True`` — one row per
+        * ``include_knowledge_time=True``: one row per
           ``(knowledge_time, valid_time)``, i.e. every forecast run
           side-by-side, adding ``knowledge_time``.
-        * ``include_updates=True`` — the full correction chain on the
+        * ``include_updates=True``: the full correction chain on the
           winning run, adding ``change_time``, ``changed_by`` and
           ``annotation``.
 
@@ -240,16 +242,16 @@ class TimeDBClient:
         """Per-window cutoff read: for each window, the latest forecast
         issued at or before that window's cutoff.
 
-        This is what backtests and day-ahead simulations need — "what
-        forecast was available at decision time" — and it returns
+        This is what backtests and day-ahead simulations need, "what
+        forecast was available at decision time", and it returns
         ``series_id, valid_time, value``.
 
         Two mutually exclusive parameter sets address the windows; mixing
         them raises ``ValueError``:
 
-        * **Low-level** — ``window_length`` plus ``issue_offset`` (relative
+        * **Low-level**: ``window_length`` plus ``issue_offset`` (relative
           to each window start) and ``start_window``.
-        * **Daily shorthand** — ``days_ahead`` plus ``time_of_day``, giving
+        * **Daily shorthand**: ``days_ahead`` plus ``time_of_day``, giving
           fixed 1-day windows with a human-friendly cutoff.
 
         ``start_valid`` / ``end_valid`` bound the returned range,
@@ -277,7 +279,7 @@ class TimeDBClient:
     ) -> list[int]:
         """Return run_ids that touched a given series_id, latest first.
 
-        Data only — the ``energydb.runs`` PG table hydrates the metadata.
+        Data only: the ``energydb.runs`` PG table hydrates the metadata.
         """
         sql = """
         SELECT run_id

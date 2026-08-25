@@ -57,8 +57,8 @@ def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
     if "value" in table.schema.names:
         # NaN is the storage sentinel for null. Detect via Arrow compute (a
         # zero-copy SIMD scan) and only rebuild the column with a null mask when
-        # NaNs actually exist — the rebuild's O(rows) numpy copy used to run on
-        # every read just to make this decision.
+        # NaNs actually exist, so the rebuild's O(rows) numpy copy is skipped
+        # when there are none.
         idx = table.schema.get_field_index("value")
         col = table.column(idx)
         # ty: pyarrow.compute kernels are generated at runtime; the stubs lack them.
@@ -79,19 +79,20 @@ class PgEngineMeta:
 
     Exactly one addressing field must be set:
 
-    * ``root_path`` — a node subtree (the root itself + descendants, path-prefix match);
-    * ``paths`` — an exact set of node paths (path-routed manifests);
-    * ``node_uuids`` / ``edge_uuids`` — owner-uuid sets (uuid-routed manifests, edge scopes);
-    * ``edge_triple`` — one ``(from_path, to_path, edge_type)`` edge identity (edge scopes);
-    * ``edge_triples`` — a set of ``(from_path, to_path, edge_type)`` identities
+    * ``root_path``: a node subtree (the root itself + descendants, path-prefix match);
+    * ``paths``: an exact set of node paths (path-routed manifests);
+    * ``node_uuids`` / ``edge_uuids``: owner-uuid sets (uuid-routed manifests, edge scopes);
+    * ``edge_triple``: one ``(from_path, to_path, edge_type)`` edge identity (edge scopes);
+    * ``edge_triples``: a set of ``(from_path, to_path, edge_type)`` identities
       (triple-routed manifests), pushed down as three single-column ``IN`` filters. Like
       the set-valued ``data_type`` / ``name`` below, this resolves a *cartesian superset*
       of the requested triples; the caller trims against its exactly-resolved meta.
 
     ``data_type`` / ``name`` narrow the series set; each accepts a scalar (scope reads) or a
     set of values (manifests). Set-valued filters make the engine-resolved ids a *superset*
-    (the cartesian of the sets) — every predicate here pushes down to PG as a single-column
-    comparison, and the caller is expected to trim against its exactly-resolved meta.
+    (the cartesian of the sets). Every predicate here pushes down to PG as a
+    single-column comparison, and the caller is expected to trim against its
+    exactly-resolved meta.
     """
 
     table: str
@@ -119,11 +120,11 @@ def _meta_cte(ms: PgEngineMeta) -> tuple[str, dict]:
     """Build the scalar ``WITH (...) AS _meta`` prefix + params for a :class:`PgEngineMeta` source.
 
     A **scalar** tuple subquery, not a named CTE: ClickHouse substitutes named CTEs
-    textually, so every ``IN (SELECT .. FROM meta)`` reference re-queried Postgres
-    through the engine (measured: 2 external queries per read, 4 for the
+    textually, so every ``IN (SELECT .. FROM meta)`` reference would re-query
+    Postgres through the engine (measured: 2 external queries per read, 4 for the
     latest-with-changes body, which embeds the WHERE twice). A scalar subquery is
-    evaluated exactly once and referenced as a constant — one engine round-trip per
-    read regardless of how many times the filters mention it, and ``IN <constant
+    evaluated exactly once and referenced as a constant: one engine round-trip
+    per read however many times the filters mention it, and ``IN <constant
     array>`` keeps index analysis and partition pruning.
 
     Size note: the scalar result must fit ClickHouse's constant-value limits; fine for
@@ -225,7 +226,7 @@ def _where(
 
 
 # ---------------------------------------------------------------------------
-# Latest reads — one row per (series_id, valid_time)
+# Latest reads: one row per (series_id, valid_time)
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +234,7 @@ def _read_latest(ch_client, where: str, params: dict, cte: str = "") -> pa.Table
     """Latest value per (series_id, valid_time).
 
     The tuple-argMax picks the row with the largest (knowledge_time,
-    change_time) — latest issue, latest correction within it.
+    change_time): the latest issue, and the latest correction within it.
     """
     sql = f"""
     {cte}
@@ -288,7 +289,7 @@ def _read_latest_with_changes(ch_client, where: str, params: dict, cte: str = ""
 
 
 # ---------------------------------------------------------------------------
-# Overlapping reads — one row per (series_id, valid_time, knowledge_time)
+# Overlapping reads: one row per (series_id, valid_time, knowledge_time)
 # ---------------------------------------------------------------------------
 
 

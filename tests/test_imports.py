@@ -11,7 +11,7 @@ def test_public_exports():
 
 
 def test_no_psycopg_pulled_in():
-    """timedb is a pure CH library — it must not pull in psycopg or pint."""
+    """timedb is a pure CH library: it must not pull in psycopg or pint."""
     for mod in list(sys.modules):
         if mod.startswith(("timedb", "psycopg", "pint")):
             del sys.modules[mod]
