@@ -8,6 +8,8 @@ That is what lets its queries overlap on one client: concurrent reads
 concurrent ``series_values`` / ``run_series`` insert lanes alike.
 """
 
+from unittest.mock import MagicMock
+
 import timedb.client as client_mod
 from timedb.client import TimeDBClient
 
@@ -27,3 +29,13 @@ def test_client_is_sessionless(monkeypatch):
 
     assert len(calls) == 2  # constructor + the explicit _new_client()
     assert all(c["autogenerate_session_id"] is False for c in calls)
+
+
+def test_close_closes_the_underlying_ch_client(monkeypatch):
+    fake_ch = MagicMock()
+    monkeypatch.setattr(client_mod.clickhouse_connect, "get_client", lambda **kwargs: fake_ch)
+
+    td = TimeDBClient(ch_url="http://user:pass@localhost:8123/db")
+    td.close()
+
+    fake_ch.close.assert_called_once()

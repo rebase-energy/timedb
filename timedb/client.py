@@ -81,6 +81,10 @@ class TimeDBClient:
             autogenerate_session_id=False,
         )
 
+    def close(self) -> None:
+        """Close the underlying ClickHouse connection."""
+        self._ch.close()
+
     def create(self) -> None:
         """Create the series_values table and run_series mapping."""
         for statement in _DDL.split(";"):
