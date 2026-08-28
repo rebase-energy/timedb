@@ -17,14 +17,17 @@ load_dotenv(".env")
 
 from . import profiling  # noqa: E402
 from .client import TimeDBClient  # noqa: E402
-from .read import PgEngineMeta  # noqa: E402
+from .read import RELATIVE_READ_COLUMNS, PgEngineMeta, empty_frame, read_columns  # noqa: E402
 from .write import RETENTION_TIERS, UnchangedScope, WriteResult  # noqa: E402
 
 __all__ = [
+    "RELATIVE_READ_COLUMNS",
     "PgEngineMeta",
     "RETENTION_TIERS",
     "TimeDBClient",
     "UnchangedScope",
     "WriteResult",
+    "empty_frame",
     "profiling",
+    "read_columns",
 ]

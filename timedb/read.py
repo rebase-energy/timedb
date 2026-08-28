@@ -44,6 +44,32 @@ def _empty(cols: list[str]) -> pa.Table:
     return pa.table({c: pa.array([], type=_COL_ARROW_TYPE[c]) for c in cols})
 
 
+RELATIVE_READ_COLUMNS: tuple[str, ...] = ("series_id", "valid_time", "value")
+
+
+def read_columns(*, include_updates: bool = False, include_knowledge_time: bool = False) -> list[str]:
+    """Column names, in order, that :func:`read` returns for these flags.
+
+    Mirrors the module docstring's output-shape table; used both by the real
+    reads and to build the correctly-shaped zero-row frame when no series
+    resolved.
+    """
+    if include_updates:
+        if include_knowledge_time:
+            return ["series_id", "valid_time", "knowledge_time", "change_time", "value", "changed_by", "annotation"]
+        return ["series_id", "valid_time", "change_time", "value", "changed_by", "annotation"]
+    if include_knowledge_time:
+        return ["series_id", "knowledge_time", "valid_time", "value"]
+    return ["series_id", "valid_time", "value"]
+
+
+def empty_frame(cols: list[str]) -> pl.DataFrame:
+    """A zero-row Polars frame with the correct dtypes for ``cols``."""
+    result = pl.from_arrow(_empty(cols))
+    assert isinstance(result, pl.DataFrame)
+    return result
+
+
 def _fetch(ch_client, sql: str, params: dict, cols: list[str]) -> pa.Table:
     _prof = profiling._enabled
 
@@ -397,7 +423,7 @@ def read(
 
     series_ids = list(series_ids)
     if meta_source is None and not series_ids:
-        return pl.DataFrame()
+        return empty_frame(read_columns(include_updates=include_updates, include_knowledge_time=include_knowledge_time))
 
     where, params = _where(
         series_ids=series_ids,
@@ -477,7 +503,7 @@ def read_relative(
 
     series_ids = list(series_ids)
     if meta_source is None and not series_ids:
-        return pl.DataFrame()
+        return empty_frame(list(RELATIVE_READ_COLUMNS))
 
     _prof = profiling._enabled
     _t_total = _time.perf_counter() if _prof else 0.0
