@@ -160,6 +160,8 @@ class TimeDBClient:
         end_known: datetime | None = None,
         include_updates: bool = False,
         include_knowledge_time: bool = False,
+        bucket_us: int | None = None,
+        bucket_dedup: bool = True,
         meta_source: _read.PgEngineMeta | None = None,
     ) -> pl.DataFrame:
         """Read values for ``series_ids``, returning a Polars DataFrame.
@@ -197,6 +199,8 @@ class TimeDBClient:
             end_known=end_known,
             include_updates=include_updates,
             include_knowledge_time=include_knowledge_time,
+            bucket_us=bucket_us,
+            bucket_dedup=bucket_dedup,
             meta_source=meta_source,
         )
 

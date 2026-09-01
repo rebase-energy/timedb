@@ -47,6 +47,62 @@ def _empty(cols: list[str]) -> pa.Table:
 RELATIVE_READ_COLUMNS: tuple[str, ...] = ("series_id", "valid_time", "value")
 
 
+def valid_time_range(ch_client, series_ids: Sequence[int]) -> tuple[datetime, datetime] | None:
+    """Overall ``[min, max]`` valid_time across ``series_ids`` — one cheap
+    aggregate, for callers that need the series extent without reading rows
+    (e.g. to default a read window to "the last week of data"). ``None``
+    when the series hold no rows."""
+    if not series_ids:
+        return None
+    rows = ch_client.query(
+        "SELECT minOrNull(valid_time), maxOrNull(valid_time) FROM series_values "
+        "WHERE series_id IN {series_ids:Array(UInt64)}",
+        parameters={"series_ids": list(series_ids)},
+    ).result_rows
+    lo, hi = rows[0]
+    if lo is None or hi is None:
+        return None
+    return lo, hi
+
+
+def resolved_stats(
+    ch_client,
+    series_ids: Sequence[int],
+    start_valid: datetime | None = None,
+    end_valid: datetime | None = None,
+) -> tuple[int, bool]:
+    """``(max_points, has_versions)`` for the window: the largest per-series
+    count of distinct valid_times (approximate, ``uniq``), and whether any
+    series carries multiple versions per valid_time.
+
+    Version detection compares row count to distinct-valid_time count with a
+    2% margin (well above uniq()'s error): forecasts overlap by design and
+    trip it; append-only sensor data does not. A series with only a handful
+    of corrections stays below the margin — for bucketed charting averages
+    that inaccuracy is negligible and buys the single-pass aggregate.
+    """
+    if not series_ids:
+        return 0, False
+    conds = ["series_id IN {series_ids:Array(UInt64)}"]
+    params: dict = {"series_ids": list(series_ids)}
+    if start_valid is not None:
+        conds.append("valid_time >= {start_valid:DateTime64(6, 'UTC')}")
+        params["start_valid"] = start_valid
+    if end_valid is not None:
+        conds.append("valid_time < {end_valid:DateTime64(6, 'UTC')}")
+        params["end_valid"] = end_valid
+    sql = (
+        "SELECT max(u), max(if(u = 0, 0, c / u)) FROM ("
+        "SELECT series_id, uniq(valid_time) AS u, count() AS c FROM series_values "
+        "WHERE " + " AND ".join(conds) + " GROUP BY series_id)"
+    )
+    rows = ch_client.query(sql, parameters=params).result_rows
+    if not rows or rows[0][0] is None:
+        return 0, False
+    max_points, ratio = rows[0]
+    return int(max_points), float(ratio or 0) > 1.02
+
+
 def read_columns(*, include_updates: bool = False, include_knowledge_time: bool = False) -> list[str]:
     """Column names, in order, that :func:`read` returns for these flags.
 
@@ -266,6 +322,52 @@ def _read_latest(ch_client, where: str, params: dict, cte: str = "") -> pa.Table
     return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
 
 
+def _read_latest_bucketed(
+    ch_client, where: str, params: dict, bucket_us: int, dedup_versions: bool, cte: str = ""
+) -> pa.Table:
+    """The resolved view, time-bucket averaged in ClickHouse.
+
+    For dense series (sensor data at Hz rates) this is the difference between
+    shipping millions of resolved rows to the client and shipping one row per
+    bucket — and for version-free data (``dedup_versions=False``) it is a
+    single-pass aggregate: no per-valid_time argMax state for millions of
+    groups, which measures ~10x faster on tens of millions of rows.
+    ``bucket_us`` is code-supplied (never user text), inlined as an integer.
+    """
+    bucket_us = int(bucket_us)
+    if bucket_us <= 0:
+        raise ValueError("bucket_us must be a positive number of microseconds")
+    bucket = f"toStartOfInterval(valid_time, INTERVAL {bucket_us} MICROSECOND)"
+    if dedup_versions:
+        # argMax by knowledge_time alone (no change_time tie-break): the
+        # change_time column never has to be read, which measures ~2x faster
+        # on tens of millions of rows. Corrections within one knowledge_time
+        # are therefore resolved arbitrarily here — irrelevant at bucket-mean
+        # granularity; exact reads keep the full tuple semantics.
+        sql = f"""
+        {cte}
+        SELECT series_id, {bucket} AS valid_time, avg(value) AS value
+        FROM (
+            SELECT series_id, valid_time, argMax(value, knowledge_time) AS value
+            FROM series_values
+            {where}
+            GROUP BY series_id, valid_time
+        )
+        GROUP BY series_id, valid_time
+        ORDER BY series_id, valid_time
+        """
+    else:
+        sql = f"""
+        {cte}
+        SELECT series_id, {bucket} AS valid_time, avg(value) AS value
+        FROM series_values
+        {where}
+        GROUP BY series_id, valid_time
+        ORDER BY series_id, valid_time
+        """
+    return _fetch(ch_client, sql, params, ["series_id", "valid_time", "value"])
+
+
 def _read_latest_with_changes(ch_client, where: str, params: dict, cte: str = "") -> pa.Table:
     """Correction chain of the winning forecast per (series_id, valid_time).
 
@@ -416,8 +518,12 @@ def read(
     end_known: datetime | None = None,
     include_updates: bool = False,
     include_knowledge_time: bool = False,
+    bucket_us: int | None = None,
+    bucket_dedup: bool = True,
     meta_source: PgEngineMeta | None = None,
 ) -> pl.DataFrame:
+    if bucket_us is not None and (include_updates or include_knowledge_time):
+        raise ValueError("bucket_us requires the plain resolved read (no updates / knowledge_time).")
     _prof = profiling._enabled
     _t_total = _time.perf_counter() if _prof else 0.0
 
@@ -445,6 +551,8 @@ def read(
             if include_knowledge_time
             else _read_latest_with_changes(ch_client, where, params, cte)
         )
+    elif bucket_us is not None:
+        arrow = _read_latest_bucketed(ch_client, where, params, bucket_us, bucket_dedup, cte)
     else:
         arrow = (
             _read_overlapping(ch_client, where, params, cte)
