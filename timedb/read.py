@@ -18,7 +18,7 @@ from __future__ import annotations
 import time as _time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 
 import numpy as np
@@ -62,6 +62,12 @@ def valid_time_range(ch_client, series_ids: Sequence[int]) -> tuple[datetime, da
     lo, hi = rows[0]
     if lo is None or hi is None:
         return None
+    # clickhouse-connect returns naive datetimes for DateTime64(…,'UTC') —
+    # stamp the timezone so callers can mix these with tz-aware inputs.
+    if lo.tzinfo is None:
+        lo = lo.replace(tzinfo=UTC)
+    if hi.tzinfo is None:
+        hi = hi.replace(tzinfo=UTC)
     return lo, hi
 
 
