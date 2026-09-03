@@ -109,6 +109,37 @@ def resolved_stats(
     return int(max_points), float(ratio or 0) > 1.02
 
 
+def distinct_knowledge_times(
+    ch_client,
+    series_ids: Sequence[int],
+    start_valid: datetime | None = None,
+    end_valid: datetime | None = None,
+    limit: int = 20,
+) -> list[datetime]:
+    """Newest-first distinct knowledge_times ("runs") across ``series_ids``
+    in the valid_time window. Returns up to ``limit + 1`` entries so callers
+    can detect truncation — run-structured data (forecast issues) has few;
+    streamed data has thousands and callers should treat it as unstructured.
+    """
+    if not series_ids:
+        return []
+    conds = ["series_id IN {series_ids:Array(UInt64)}"]
+    params: dict = {"series_ids": list(series_ids), "lim": int(limit) + 1}
+    if start_valid is not None:
+        conds.append("valid_time >= {start_valid:DateTime64(6, 'UTC')}")
+        params["start_valid"] = start_valid
+    if end_valid is not None:
+        conds.append("valid_time < {end_valid:DateTime64(6, 'UTC')}")
+        params["end_valid"] = end_valid
+    sql = (
+        "SELECT DISTINCT knowledge_time FROM series_values WHERE "
+        + " AND ".join(conds)
+        + " ORDER BY knowledge_time DESC LIMIT {lim:UInt32}"
+    )
+    rows = ch_client.query(sql, parameters=params).result_rows
+    return [r[0].replace(tzinfo=UTC) if r[0].tzinfo is None else r[0] for r in rows]
+
+
 def read_columns(*, include_updates: bool = False, include_knowledge_time: bool = False) -> list[str]:
     """Column names, in order, that :func:`read` returns for these flags.
 
